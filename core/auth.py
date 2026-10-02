@@ -18,20 +18,23 @@ See the dated CLAUDE.md entry for this refactor for the full rationale.
 import os
 import json
 import hmac
+import hashlib
 import time
 import threading
 from functools import wraps
+from urllib.parse import urlsplit
 from flask import request, g, session, redirect, Response, jsonify, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from core.config import ADMIN_USER, load_runtime_config, save_runtime_config, get_active_admin_pass
+from core.config import (ADMIN_USER, ADMIN_PASS, load_runtime_config, save_runtime_config, legacy_password_ok,
+                         config_write_lock, record_last_login, _text_eq)
 
 # --- Basic brute-force throttling for Basic Auth ---
 # In-memory only (resets on restart) and keyed by source IP, so it's not a
 # substitute for a real WAF/fail2ban setup on a network you don't control -
 # but it closes the "unlimited guesses" gap in the meantime.
 auth_fail_lock = threading.Lock()
-auth_fail_tracker = {}  # ip -> {"count": int, "locked_until": float|None}
+auth_fail_tracker = {}  # ip -> {"count": int, "locked_until": float|None, "first_failure_at": float}
 MAX_AUTH_FAILURES = 5
 LOCKOUT_SECONDS = 300
 
@@ -53,14 +56,14 @@ def _record_last_login(username):
     now = time.time()
     if now - _last_login_persist_times.get(username, 0) < LAST_LOGIN_PERSIST_INTERVAL:
         return
-    cfg = load_runtime_config()
-    user = find_user(username, cfg.get('users'))
-    if not user:
+    if not find_user(username):
         # Local-kiosk sentinel or the legacy single-shared-account login -
         # neither has a real per-user record to update.
         return
-    user['last_login'] = time.strftime("%Y-%m-%d %H:%M:%S")
-    save_runtime_config(cfg)
+    # Its own file since 2026-10-02 (core/config.py record_last_login): this
+    # used to rewrite runtime_config.json - the credential store - on logins,
+    # racing every other settings change.
+    record_last_login(username, time.strftime("%Y-%m-%d %H:%M:%S"))
     _last_login_persist_times[username] = now
 
 # --- Idle session timeout ---
@@ -106,16 +109,17 @@ def find_user(username, users=None):
     if users is None:
         users = load_runtime_config().get('users') or []
     for u in users:
-        if hmac.compare_digest(u.get('username', ''), username or ''):
+        if _text_eq(u.get('username', ''), username):
             return u
     return None
 
 def check_auth(username, password):
     # Two-tier: real multi-user accounts (runtime_config.json['users']) take
     # priority once any exist; otherwise fall back to the original single
-    # shared-login path unchanged, so a station that upgrades app.py via git
-    # pull but hasn't created a user yet keeps working exactly as before.
-    users = load_runtime_config().get('users')
+    # shared-login path, which now needs an explicitly configured password -
+    # see core/config.py legacy_password_ok().
+    cfg = load_runtime_config()
+    users = cfg.get('users')
     if users:
         user = find_user(username, users)
         if user:
@@ -124,24 +128,79 @@ def check_auth(username, password):
         return False
 
     # Constant-time comparison to avoid leaking credential info via timing.
-    user_ok = hmac.compare_digest(username or '', ADMIN_USER)
-    pass_ok = hmac.compare_digest(password or '', get_active_admin_pass())
+    user_ok = _text_eq(username, ADMIN_USER)
+    pass_ok = legacy_password_ok(password, cfg)
+    if user_ok and pass_ok and cfg.get('pass') is not None and not cfg.get('pass_hash'):
+        _migrate_legacy_plaintext_password(password)
     return user_ok and pass_ok
 
+def _migrate_legacy_plaintext_password(password):
+    """The shared login's password used to be stored in plaintext. Replace it
+    with a hash on its first successful use (2026-10-02 review). Best effort:
+    a failed save must not fail the login it rides on."""
+    try:
+        with config_write_lock:
+            cfg = load_runtime_config()
+            if cfg.get('pass') is None or cfg.get('pass_hash') or not _text_eq(password, cfg.get('pass')):
+                return
+            cfg['pass_hash'] = generate_password_hash(password)
+            cfg.pop('pass', None)
+            save_runtime_config(cfg)
+    except Exception:
+        pass
+
+def _password_fingerprint(username):
+    """A per-account value that changes whenever the account's password does
+    (the werkzeug hash is salted, so even a reset to the same password changes
+    it), keyed with the app secret so the cookie can't reveal the hash. None
+    when the account no longer exists."""
+    cfg = load_runtime_config()
+    users = cfg.get('users')
+    if users:
+        user = find_user(username, users)
+        if not user:
+            return None
+        material = user.get('password_hash', '')
+    else:
+        if not _text_eq(username, ADMIN_USER):
+            return None
+        material = cfg.get('pass_hash') or cfg.get('pass') or ADMIN_PASS or ''
+    key = current_app.secret_key
+    key = key.encode('utf-8') if isinstance(key, str) else key
+    return hmac.new(key, material.encode('utf-8'), hashlib.sha256).hexdigest()
+
+def stamp_session_password(username):
+    """Bind the current session to the account's current password - called at
+    login, and after the caller changes their own password so the session
+    they're using survives it while every OTHER session for that account
+    ends."""
+    session['pw_fp'] = _password_fingerprint(username) or ''
+
+def session_still_valid():
+    """A session only ever proves "this browser logged in as this user at
+    some point", so every request re-derives whether it still holds: the
+    account must still exist AND its password must not have changed since
+    the login (2026-10-02 review - a reset used to leave every existing
+    session, including an attacker's stolen cookie, working). A session from
+    before this check existed has no fingerprint and must log in again."""
+    username = session.get('username')
+    if not username:
+        return False
+    fingerprint = _password_fingerprint(username)
+    if fingerprint is None:
+        return False
+    return hmac.compare_digest(str(session.get('pw_fp') or ''), fingerprint)
+
 def _session_user_still_valid(username):
-    # Mirrors check_auth()'s two-tier logic, but for existence rather than a
-    # password match - a session only ever proves "this browser successfully
-    # logged in as this username at some point", so every subsequent request
-    # re-derives whether that identity still exists rather than trusting the
-    # cookie forever. This is what makes a deleted user's still-cached
-    # session cookie die on their very next request, for free, with no
-    # separate server-side session-revocation list needed.
+    # Existence-only check, kept for callers that have no session to compare
+    # a password fingerprint against. Request authentication uses
+    # session_still_valid() above.
     if not username:
         return False
     users = load_runtime_config().get('users')
     if users:
         return find_user(username, users) is not None
-    return hmac.compare_digest(username, ADMIN_USER)
+    return _text_eq(username, ADMIN_USER)
 
 def _effective_client_ip():
     """
@@ -178,6 +237,15 @@ def _effective_client_ip():
         return request.headers.get('X-Real-IP', remote_addr)
     return remote_addr
 
+_LOOPBACK_HOST_NAMES = ('127.0.0.1', 'localhost', '::1')
+
+
+def _request_host_name():
+    """The host name this request was addressed to (Host header), without the
+    port - nginx forwards it as $host, which drops the port."""
+    return (urlsplit('//' + (request.host or '')).hostname or '').lower()
+
+
 def is_local_kiosk_request():
     """
     True if this request is coming from the Pi's own local kiosk session,
@@ -186,8 +254,45 @@ def is_local_kiosk_request():
     whether TLS/nginx is set up - see install.py's autostart script. See
     _effective_client_ip() above for why this can't just check
     request.remote_addr directly.
+
+    The request must also be ADDRESSED to a loopback name (2026-10-02
+    review): with only the source address checked, a page in the kiosk's own
+    browser - or a DNS-rebinding site whose name resolves to 127.0.0.1 - could
+    send requests that arrived from loopback and so ran as the kiosk Admin.
     """
-    return _effective_client_ip() in ('127.0.0.1', '::1', 'localhost')
+    return (_effective_client_ip() in ('127.0.0.1', '::1', 'localhost')
+            and _request_host_name() in _LOOPBACK_HOST_NAMES)
+
+
+_UNSAFE_METHODS = ('POST', 'PUT', 'PATCH', 'DELETE')
+
+
+def cross_site_request():
+    """True for a state-changing request sent by a page from another site
+    (2026-10-02 review). The kiosk is authenticated by its source address, not
+    a cookie, so SameSite gives it no protection: any page shown in the kiosk
+    browser could POST to 127.0.0.1:5000 as Admin - one forged config restore
+    replaces every account. Same-origin fetch() always sends Origin; a
+    request with neither Origin nor Referer (curl, scripts) is allowed, a
+    request naming a different host - or the opaque "null" origin - is not.
+    Scheme and port are ignored: nginx terminates TLS and forwards $host
+    without the port."""
+    if request.method not in _UNSAFE_METHODS:
+        return False
+    origin = request.headers.get('Origin')
+    if origin is not None:
+        if origin.strip().lower() == 'null':
+            return True
+        return (urlsplit(origin.strip()).hostname or '').lower() != _request_host_name()
+    referer = request.headers.get('Referer')
+    if referer:
+        return (urlsplit(referer.strip()).hostname or '').lower() != _request_host_name()
+    return False
+
+
+def cross_site_refusal():
+    return jsonify({"success": False,
+                    "error": "Refused: this request came from a different site than this station's own pages."}), 403
 
 def get_offline_tiles_info():
     """Read install.py's optional offline OSM tile cache manifest, if that setup step was run.
@@ -217,12 +322,26 @@ def _is_locked_out(client_key):
         entry = auth_fail_tracker.get(client_key)
         return bool(entry and entry["locked_until"] and time.time() < entry["locked_until"])
 
+def _failure_entry_expired(entry, now):
+    """A lockout that has run out, or failures older than the window, start
+    over (2026-10-02 review): the count never reset, so after one lockout every
+    single later typo re-locked the address, and four mistakes spread over
+    weeks plus one more were a lockout."""
+    if entry.get("locked_until"):
+        return now >= entry["locked_until"]
+    return now - entry.get("first_failure_at", now) > LOCKOUT_SECONDS
+
 def _record_auth_failure(client_key):
     with auth_fail_lock:
-        entry = auth_fail_tracker.get(client_key, {"count": 0, "locked_until": None})
+        now = time.time()
+        for key in [k for k, e in auth_fail_tracker.items() if k != client_key and _failure_entry_expired(e, now)]:
+            del auth_fail_tracker[key]
+        entry = auth_fail_tracker.get(client_key)
+        if entry is None or _failure_entry_expired(entry, now):
+            entry = {"count": 0, "locked_until": None, "first_failure_at": now}
         entry["count"] += 1
         if entry["count"] >= MAX_AUTH_FAILURES:
-            entry["locked_until"] = time.time() + LOCKOUT_SECONDS
+            entry["locked_until"] = now + LOCKOUT_SECONDS
         auth_fail_tracker[client_key] = entry
 
 def _record_auth_success(client_key):
@@ -232,6 +351,10 @@ def _record_auth_success(client_key):
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Before anything else - including the kiosk bypass, which is exactly
+        # what a cross-site page would be trying to ride (2026-10-02 review).
+        if cross_site_request():
+            return cross_site_refusal()
         # Physical-kiosk-only auth bypass. Deliberately narrow: this only
         # matches genuine loopback origin with no X-Real-IP header (see
         # is_local_kiosk_request() above) - a remote client proxied through
@@ -258,7 +381,7 @@ def requires_auth(f):
         session_username = session.get('username')
         idle_expired = False
         if session_username:
-            if _session_user_still_valid(session_username):
+            if session_still_valid():
                 now = time.time()
                 last_activity = session.get('last_activity')
                 if last_activity is not None and (now - last_activity) > SESSION_IDLE_TIMEOUT_SECONDS:

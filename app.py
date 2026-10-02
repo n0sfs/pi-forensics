@@ -11,7 +11,10 @@ from flask import Flask, jsonify
 # comment at its call site) plus attempt_startup_auto_mounts() (imported
 # from routes/settings.py further down, alongside that blueprint's
 # registration) for the startup thread at the bottom of this file.
-from core.config import _get_or_create_secret_key
+from core.config import _get_or_create_secret_key, IMPORT_CHECK_ONLY
+# Request body limits, a JSON 413, anti-framing headers and the
+# runtime_config.json error handlers - see its docstring (2026-10-02 review).
+from core.web_hardening import install_web_hardening
 # Registered as an app-wide errorhandler at the bottom of this file - see
 # the comment there for why it is one handler rather than a try/except per
 # route.
@@ -32,6 +35,7 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 # the one that *restricts*, so leaving this False never regresses the
 # HTTPS-configured case, only avoids silently breaking the HTTP-only one).
 app.config['PERMANENT_SESSION_LIFETIME'] = 12 * 60 * 60  # 12h - a workstation shift, not a web app's short-lived token
+install_web_hardening(app)
 
 # ADMIN_USER/ADMIN_PASS, INSTALL_DIR and every path derived from it, the
 # mount-key helper, log_chain_of_custody(), load/save_runtime_config(),
@@ -65,7 +69,7 @@ from routes.case_index import case_index_bp
 app.register_blueprint(case_index_bp)
 from routes.reporting import reporting_bp
 app.register_blueprint(reporting_bp)
-from routes.settings import settings_bp, attempt_startup_auto_mounts
+from routes.settings import settings_bp, attempt_startup_auto_mounts, resume_pending_network_revert
 app.register_blueprint(settings_bp)
 from routes.auto_analyze import auto_analyze_bp
 app.register_blueprint(auto_analyze_bp)
@@ -152,7 +156,13 @@ def _handle_unavailable_case_index(e):
 # imports this module rather than executing it as __main__. Backgrounded so
 # a slow/unreachable share can't delay the app from becoming ready; harmless
 # no-op when no auto-mount shares are configured (the common case).
-threading.Thread(target=attempt_startup_auto_mounts, daemon=True).start()
+# Neither runs while Settings > Update App imports new code to check that it
+# still starts (core/config.py IMPORT_CHECK_ONLY).
+if not IMPORT_CHECK_ONLY:
+    threading.Thread(target=attempt_startup_auto_mounts, daemon=True).start()
+    # A network change applied and never confirmed before the last stop is
+    # reverted (or its window re-armed) - see routes/settings.py.
+    threading.Thread(target=resume_pending_network_revert, daemon=True).start()
 
 if __name__ == '__main__':
     # This dev-mode entrypoint is only used for `python3 app.py` directly.

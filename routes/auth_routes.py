@@ -16,7 +16,8 @@ from flask import Blueprint, render_template, jsonify, request, g, session, redi
 from core.auth import (
     requires_auth, check_auth, is_local_kiosk_request, get_offline_tiles_info,
     get_current_user_permissions, get_current_user_role,
-    _session_user_still_valid, _safe_next_path, _effective_client_ip,
+    session_still_valid, stamp_session_password, cross_site_request, cross_site_refusal,
+    _safe_next_path, _effective_client_ip,
     _record_last_login, _is_locked_out, _record_auth_failure, _record_auth_success,
 )
 from core.config import get_app_version, render_doc_html
@@ -28,8 +29,7 @@ auth_routes_bp = Blueprint('auth_routes', __name__)
 def login():
     if request.method == 'GET':
         # Already have a valid session - no need to show the form again.
-        existing = session.get('username')
-        if existing and _session_user_still_valid(existing):
+        if session_still_valid():
             return redirect(_safe_next_path(request.args.get('next')))
         return render_template(
             'login.html',
@@ -38,6 +38,11 @@ def login():
             app_version=get_app_version(),
         )
 
+    # A forged cross-site login POST used to count as a failed attempt against
+    # the examiner's own address - five from any page they visited locked
+    # them out (2026-10-02 review).
+    if cross_site_request():
+        return cross_site_refusal()
     client_key = _effective_client_ip()
     if _is_locked_out(client_key):
         return jsonify({
@@ -58,12 +63,15 @@ def login():
     session.clear()  # drop any prior identity outright rather than merge state into it
     session['username'] = username
     session['last_activity'] = time.time()
+    stamp_session_password(username)
     session.permanent = True
     return jsonify({"success": True, "redirect": _safe_next_path(req.get('next'))})
 
 
 @auth_routes_bp.route('/logout', methods=['POST'])
 def logout():
+    if cross_site_request():
+        return cross_site_refusal()
     session.clear()
     return jsonify({"success": True})
 

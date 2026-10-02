@@ -69,7 +69,7 @@ from core.paths import (
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, HISTORY_FILE, ALLOWED_HASH_ALGOS,
-    load_runtime_config, save_runtime_config,
+    load_runtime_config, save_runtime_config, serializes_config_writes,
     get_report_defaults, get_custom_case_fields,
 )
 from core.jobs import (mark_job_slot_claimed, _read_case_file, _write_case_file, current_job, job_lock, update_job,
@@ -101,6 +101,7 @@ reporting_bp = Blueprint('reporting', __name__)
 
 @reporting_bp.route('/api/settings/case_reporting', methods=['GET', 'POST'])
 @requires_auth
+@serializes_config_writes
 def settings_case_reporting():
     if request.method == 'GET':
         cfg = load_runtime_config()
@@ -469,6 +470,7 @@ def _custom_report_template_from_payload(req):
 
 @reporting_bp.route('/api/report_templates/custom', methods=['GET', 'POST'])
 @requires_auth
+@serializes_config_writes
 def report_templates_custom():
     cfg = load_runtime_config()
     if request.method == 'GET':
@@ -523,6 +525,7 @@ def report_templates_custom():
 @reporting_bp.route('/api/report_templates/custom/<template_id>', methods=['PUT', 'DELETE'])
 @requires_auth
 @requires_permission('settings', 'reporting')
+@serializes_config_writes
 def report_templates_custom_detail(template_id):
     cfg = load_runtime_config()
     templates = cfg.get('custom_report_templates', [])
@@ -558,6 +561,7 @@ REPORT_LOGO_MAX_BYTES = 2_000_000
 @reporting_bp.route('/api/settings/report_logo', methods=['POST'])
 @requires_auth
 @requires_permission('settings')
+@serializes_config_writes
 def upload_report_logo():
     logo_file = request.files.get('logo')
     if not logo_file or not logo_file.filename:
@@ -594,6 +598,7 @@ def upload_report_logo():
 @reporting_bp.route('/api/settings/report_logo/clear', methods=['POST'])
 @requires_auth
 @requires_permission('settings')
+@serializes_config_writes
 def clear_report_logo():
     cfg = load_runtime_config()
     logo_path = cfg.get('report_defaults', {}).get('branding', {}).get('logo_path', '')

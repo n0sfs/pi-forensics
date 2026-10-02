@@ -37,6 +37,7 @@ from core.paths import (
     describe_usb_port, sanitize_case_slug, case_status_blocking_new_work, system_disk_names, destination_is_on_source_device,
 )
 from core.config import (
+    IMPORT_CHECK_ONLY,
     EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists,
     detect_pi_model, usb_port_diagram_supported,
 )
@@ -282,7 +283,8 @@ def _live_collection_startup_reconciliation():
                 source_ip=None, user="system-startup",
             )
 
-threading.Thread(target=_live_collection_startup_reconciliation, daemon=True).start()
+if not IMPORT_CHECK_ONLY:  # see core/config.py
+    threading.Thread(target=_live_collection_startup_reconciliation, daemon=True).start()
 
 
 # Thin alias - the actual "whole disk or partition" check now lives in
@@ -966,7 +968,8 @@ def _luks_startup_loop_device_reconciliation():
                 source_ip=None, user="system-startup",
             )
 
-threading.Thread(target=_luks_startup_loop_device_reconciliation, daemon=True).start()
+if not IMPORT_CHECK_ONLY:  # see core/config.py
+    threading.Thread(target=_luks_startup_loop_device_reconciliation, daemon=True).start()
 
 # --- Hash & Recovery Output Parsers ---
 def parse_dc3dd_hashes(log_path):

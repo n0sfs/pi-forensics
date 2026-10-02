@@ -25,7 +25,7 @@ from werkzeug.security import generate_password_hash
 
 import core.config as config
 from routes.settings import settings_bp, _BACKUP_MAGIC, _derive_backup_key
-from tests.conftest import RemoteTestClient
+from tests.conftest import RemoteTestClient, login_user_session
 
 
 @pytest.fixture
@@ -53,9 +53,7 @@ def _seed(runtime_config_file):
 
 
 def _login(client, username):
-    with client.session_transaction() as sess:
-        sess["username"] = username
-        sess["last_activity"] = time.time()
+    login_user_session(client, username)
 
 
 def test_manage_users_cannot_create_an_admin(client, runtime_config_file):
@@ -103,9 +101,7 @@ def test_first_account_must_be_admin(client, runtime_config_file):
     cfg["users"] = []
     config.save_runtime_config(cfg)
     # no users = legacy shared-login mode; the caller is treated as admin
-    with client.session_transaction() as sess:
-        sess["username"] = config.load_runtime_config().get("user", "admin")
-        sess["last_activity"] = time.time()
+    login_user_session(client, config.load_runtime_config().get("user", "admin"))
     res = client.post("/api/users/create", json={"username": "first", "password": "longenough1", "group_id": "analyst"})
     assert res.status_code == 400
 

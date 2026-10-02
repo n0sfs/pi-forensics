@@ -30,7 +30,7 @@ from werkzeug.security import generate_password_hash
 
 import core.config as config
 from routes.case_management import case_management_bp
-from tests.conftest import RemoteTestClient
+from tests.conftest import RemoteTestClient, login_user_session
 
 
 @pytest.fixture
@@ -64,9 +64,7 @@ def _save_user(username, password, group_id):
 
 
 def _login(client, username):
-    with client.session_transaction() as sess:
-        sess["username"] = username
-        sess["last_activity"] = time.time()
+    login_user_session(client, username)
 
 
 def test_create_case_rejects_a_user_with_none_of_the_four_permissions(client, runtime_config_file, evidence_root):

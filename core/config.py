@@ -8,26 +8,56 @@ the dated CLAUDE.md entry for this refactor for the full rationale.
 import os
 import re
 import sys
+import hmac
 import json
 import html
+import functools
 import threading
 import secrets
 import tempfile
 import markdown
 from cryptography.fernet import Fernet, InvalidToken
+from werkzeug.security import check_password_hash
 
 # Authentication Config
 ADMIN_USER = os.environ.get('FORENSIC_USER', 'admin')
-ADMIN_PASS = os.environ.get('FORENSIC_PASS', 'forensics')
+# The pre-multi-user shared login's password. No implicit default any more
+# (2026-10-02 review): it used to fall back to the published 'forensics', and
+# a corrupt runtime_config.json read as "no users", so that default became a
+# full Admin login from the LAN. Only an explicitly configured FORENSIC_PASS
+# (install.py sets one whenever it can't seed a real account) enables it.
+ADMIN_PASS = os.environ.get('FORENSIC_PASS') or None
 
-if ADMIN_USER == 'admin' and ADMIN_PASS == 'forensics':
-    print("[SECURITY WARNING] FORENSIC_USER/FORENSIC_PASS are still set to the default "
-          "admin/forensics credentials. Set unique values via environment variables "
-          "(see install.py / the generated systemd unit) before deploying this on any network.")
+if ADMIN_PASS == 'forensics':
+    print("[SECURITY WARNING] FORENSIC_PASS is set to the published default 'forensics'. Set a unique "
+          "value (see install.py / the generated systemd unit) or create a user account and remove it.")
 
 # INSTALL_DIR mirrors install.py's INSTALL_DIR so this stays correct regardless
 # of which system user the installer's service account ends up being.
 INSTALL_DIR = os.environ.get('FORENSIC_INSTALL_DIR', '/opt/pi-forensics')
+
+# Set by Settings > Update App while it imports freshly pulled code in a child
+# process to prove it still starts (routes/settings.py git_update_application).
+# Every import-time side effect - startup threads that mount shares, revert a
+# pending network change, reconcile devices - checks this and stays off.
+IMPORT_CHECK_ONLY = os.environ.get('PIF_IMPORT_CHECK') == '1'
+
+# Request body limits (2026-10-02 review). There was no limit at all, so one
+# multi-GB JSON body could exhaust the single gunicorn worker's memory and take
+# every running job with it. app.py applies these per endpoint; anything not
+# listed gets REQUEST_BODY_DEFAULT_MAX_BYTES. nginx's client_max_body_size
+# (install.py) must stay at least as large as the biggest value here.
+_MiB = 1024 * 1024
+REQUEST_BODY_DEFAULT_MAX_BYTES = 32 * _MiB
+CONFIG_RESTORE_MAX_BYTES = 256 * _MiB
+REQUEST_BODY_ENDPOINT_MAX_BYTES = {
+    'settings.config_restore': CONFIG_RESTORE_MAX_BYTES,
+    'reporting.add_case_note': 128 * _MiB,      # several attachments of up to 25 MB each
+    'settings.url_lists': 64 * _MiB,
+    'settings.url_list_detail': 64 * _MiB,
+    'settings.hash_lists': 40 * _MiB,           # up to 500k hashes
+    'settings.hash_list_detail': 40 * _MiB,
+}
 HISTORY_FILE = os.path.join(INSTALL_DIR, "mount_history.json")
 
 # scalpel ships with every file signature disabled in its stock config -
@@ -184,18 +214,64 @@ def _decrypt_secret(token):
     except (InvalidToken, ValueError):
         return ""
 
+class RuntimeConfigUnreadable(Exception):
+    """runtime_config.json EXISTS but could not be read or parsed (2026-10-02
+    review). It used to come back as {} - "no users, no groups, no lists" - so
+    authentication fell through to the shared-login fallback with every
+    permission granted, and the next settings save wrote that empty dict back
+    over the real file, erasing every account, group and list. A missing file
+    is still {} (a genuinely fresh station); anything else raises, and app.py
+    turns it into one clear 503. The physical kiosk never loads this file to
+    authenticate, so it stays usable - and a config restore writes without
+    reading first, so it can repair the file."""
+
+
+class RuntimeConfigWriteFailed(Exception):
+    """runtime_config.json could not be written (2026-10-02 review). Saves used
+    to print the error and carry on, so routes reported "saved" when nothing
+    had been written."""
+
+
+# Serialises every load -> change -> save of runtime_config.json (2026-10-02
+# review). runtime_config_lock (above) only covers each individual read or
+# write, so two settings changes in flight together - an Admin resetting a
+# compromised account while a MalwareBazaar refresh is still fetching - each
+# saved its own stale copy and silently undid the other. Re-entrant so a
+# decorated route can call helpers that take it too. One process-wide lock is
+# enough: the service runs a single gunicorn worker (install.py ExecStart).
+config_write_lock = threading.RLock()
+
+
+def serializes_config_writes(fn):
+    """Route decorator: hold config_write_lock for the route's whole
+    load -> change -> save. Slow work (network fetches) belongs before the
+    locked section - use `with config_write_lock:` there instead."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with config_write_lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 def load_runtime_config():
     with runtime_config_lock:
-        if os.path.exists(RUNTIME_CONFIG_FILE):
-            try:
-                with open(RUNTIME_CONFIG_FILE, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Error loading runtime config: {e}")
-        return {}
+        try:
+            with open(RUNTIME_CONFIG_FILE, 'r') as f:
+                raw = f.read()
+        except FileNotFoundError:
+            return {}
+        except OSError as e:
+            raise RuntimeConfigUnreadable(f"{RUNTIME_CONFIG_FILE} could not be read: {e}") from e
+    try:
+        cfg = json.loads(raw)
+    except ValueError as e:
+        raise RuntimeConfigUnreadable(f"{RUNTIME_CONFIG_FILE} is not valid JSON: {e}") from e
+    if not isinstance(cfg, dict):
+        raise RuntimeConfigUnreadable(f"{RUNTIME_CONFIG_FILE} does not contain a settings object.")
+    return cfg
 
 def save_runtime_config(cfg):
-    with runtime_config_lock:
+    with config_write_lock, runtime_config_lock:
         try:
             # Write-to-temp-then-atomic-rename, not write-then-chmod - this
             # file holds password hashes and Fernet-encrypted network-mount
@@ -218,6 +294,8 @@ def save_runtime_config(cfg):
             try:
                 with os.fdopen(fd, 'w') as f:
                     json.dump(cfg, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
                 os.replace(tmp_path, RUNTIME_CONFIG_FILE)
             except Exception:
                 try:
@@ -226,10 +304,66 @@ def save_runtime_config(cfg):
                     pass
                 raise
         except Exception as e:
-            print(f"Error saving runtime config: {e}")
+            raise RuntimeConfigWriteFailed(f"Settings could not be saved: {e}") from e
 
-def get_active_admin_pass():
-    return load_runtime_config().get('pass', ADMIN_PASS)
+
+def _text_eq(a, b):
+    """Constant-time string comparison that also works for non-ASCII text -
+    hmac.compare_digest() raises TypeError on a str containing any non-ASCII
+    character, which turned one such username into a 500 on every login
+    (2026-10-02 review)."""
+    return hmac.compare_digest((a or '').encode('utf-8'), (b or '').encode('utf-8'))
+
+
+def legacy_password_ok(password, cfg=None):
+    """The pre-multi-user shared login's password check. Stored as a werkzeug
+    hash since 2026-10-02 ('pass_hash'); an older plaintext 'pass' is still
+    accepted (check_auth migrates it on the next successful login), then an
+    explicitly configured FORENSIC_PASS. With none of those, nothing matches -
+    there is no default password."""
+    cfg = load_runtime_config() if cfg is None else cfg
+    stored_hash = cfg.get('pass_hash')
+    if stored_hash:
+        return check_password_hash(stored_hash, password or '')
+    if cfg.get('pass') is not None:
+        return _text_eq(password, cfg.get('pass'))
+    if ADMIN_PASS:
+        return _text_eq(password, ADMIN_PASS)
+    return False
+
+
+# Last-login times live in their own file (2026-10-02 review): recording one
+# used to rewrite the whole runtime_config.json - the credential store - on
+# every login, racing every other settings change. Best effort by design: a
+# failure here must never fail a login.
+LAST_LOGIN_FILE = os.path.join(INSTALL_DIR, "last_logins.json")
+_last_login_lock = threading.Lock()
+
+
+def get_last_logins():
+    try:
+        with open(LAST_LOGIN_FILE, 'r') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def record_last_login(username, when):
+    with _last_login_lock:
+        data = get_last_logins()
+        data[username] = when
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(LAST_LOGIN_FILE) or '.',
+                                            prefix='.last_logins_', suffix='.tmp')
+            with os.fdopen(fd, 'w') as f:
+                json.dump(data, f)
+            os.replace(tmp_path, LAST_LOGIN_FILE)
+        except OSError:
+            try:
+                os.remove(tmp_path)
+            except (OSError, UnboundLocalError):
+                pass
 
 # Station-wide report export defaults and custom case-field definitions,
 # both edited together from Settings > Case & Reporting. Stored in the same

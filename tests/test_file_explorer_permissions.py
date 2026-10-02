@@ -27,7 +27,7 @@ from werkzeug.security import generate_password_hash
 
 import core.config as config
 from routes.file_explorer import file_explorer_bp
-from tests.conftest import RemoteTestClient
+from tests.conftest import RemoteTestClient, login_user_session
 
 
 @pytest.fixture
@@ -65,9 +65,7 @@ def _save_user(username, password, group_id):
 
 
 def _login(client, username):
-    with client.session_transaction() as sess:
-        sess["username"] = username
-        sess["last_activity"] = time.time()
+    login_user_session(client, username)
 
 
 def _make_test_file(evidence_root):

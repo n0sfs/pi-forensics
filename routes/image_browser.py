@@ -37,7 +37,7 @@ from core.paths import (closed_case_refusal,
     safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
     is_valid_block_device_or_partition,
 )
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists, load_yara_ruleset_sources, get_yara_rulesets, get_url_lists, load_url_list_sets
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists, load_yara_ruleset_sources, get_yara_rulesets, get_url_lists, load_url_list_sets, IMPORT_CHECK_ONLY
 import yara
 from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME,
@@ -177,7 +177,8 @@ def _device_preview_sweep_loop():
             log_chain_of_custody("device_preview_auto_revoked", {"device": device_path, "reason": "idle_timeout"},
                                   source_ip=None, user="system-idle-sweep")
 
-threading.Thread(target=_device_preview_sweep_loop, daemon=True).start()
+if not IMPORT_CHECK_ONLY:  # see core/config.py
+    threading.Thread(target=_device_preview_sweep_loop, daemon=True).start()
 
 def _device_preview_startup_reconciliation():
     """One-shot check at process start (not a recurring sweep - a leaked ACL
@@ -225,7 +226,8 @@ def _device_preview_startup_reconciliation():
                 source_ip=None, user="system-startup",
             )
 
-threading.Thread(target=_device_preview_startup_reconciliation, daemon=True).start()
+if not IMPORT_CHECK_ONLY:  # see core/config.py
+    threading.Thread(target=_device_preview_startup_reconciliation, daemon=True).start()
 
 def _touch_device_preview(device_path):
     """Bumps last_activity for an active preview grant - called by every

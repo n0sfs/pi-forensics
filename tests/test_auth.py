@@ -20,10 +20,42 @@ def _save_user(username, password, group_id="analyst", extra=None):
 
 # --- check_auth() ---
 
-def test_check_auth_legacy_single_account_when_no_users_exist(runtime_config_file):
-    assert auth.check_auth(config.ADMIN_USER, config.get_active_admin_pass())
+def test_check_auth_legacy_single_account_when_no_users_exist(runtime_config_file, monkeypatch):
+    monkeypatch.setattr(config, "ADMIN_PASS", "legacy-shared-pass")
+    assert auth.check_auth(config.ADMIN_USER, "legacy-shared-pass")
     assert not auth.check_auth(config.ADMIN_USER, "wrong-password")
-    assert not auth.check_auth("nobody", config.get_active_admin_pass())
+    assert not auth.check_auth("nobody", "legacy-shared-pass")
+
+
+def test_no_users_and_no_configured_password_means_no_remote_login(runtime_config_file, monkeypatch):
+    """2026-10-02 review: the fallback used to be the published 'forensics'."""
+    monkeypatch.setattr(config, "ADMIN_PASS", None)
+    assert not auth.check_auth(config.ADMIN_USER, "forensics")
+
+
+def test_a_corrupt_config_fails_closed_not_open(runtime_config_file, monkeypatch):
+    """A corrupt file read as {} - "no users" - so the shared default login
+    became an Admin login from the LAN."""
+    import pytest
+    monkeypatch.setattr(config, "ADMIN_PASS", None)
+    runtime_config_file.write_text("{corrupt")
+    with pytest.raises(config.RuntimeConfigUnreadable):
+        auth.check_auth(config.ADMIN_USER, "forensics")
+
+
+def test_a_plaintext_shared_password_is_hashed_on_first_use(runtime_config_file, monkeypatch):
+    monkeypatch.setattr(config, "ADMIN_PASS", None)
+    config.save_runtime_config({"pass": "old-plaintext-pass"})
+    assert auth.check_auth(config.ADMIN_USER, "old-plaintext-pass")
+    saved = config.load_runtime_config()
+    assert "pass" not in saved and saved.get("pass_hash")
+    assert auth.check_auth(config.ADMIN_USER, "old-plaintext-pass")
+
+
+def test_a_non_ascii_username_does_not_break_login(runtime_config_file):
+    _save_user("José", "s3cret-phrase")
+    assert auth.check_auth("José", "s3cret-phrase")
+    assert not auth.check_auth("Jose", "s3cret-phrase")
 
 
 def test_check_auth_multi_user_mode_once_real_users_exist(runtime_config_file):
@@ -34,7 +66,7 @@ def test_check_auth_multi_user_mode_once_real_users_exist(runtime_config_file):
     # The legacy single-shared-account path stops being checked entirely
     # once real per-user accounts exist - matches check_auth()'s own
     # documented two-tier priority.
-    assert not auth.check_auth(config.ADMIN_USER, config.get_active_admin_pass())
+    assert not auth.check_auth(config.ADMIN_USER, "forensics")
 
 
 # --- _session_user_still_valid() ---

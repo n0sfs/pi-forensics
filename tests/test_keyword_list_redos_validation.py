@@ -18,7 +18,7 @@ from werkzeug.security import generate_password_hash
 
 import core.config as config
 from routes.settings import settings_bp
-from tests.conftest import RemoteTestClient
+from tests.conftest import RemoteTestClient, login_user_session
 
 
 @pytest.fixture
@@ -44,9 +44,7 @@ def _save_user(username, password, group_id="admin"):
 
 
 def _login(client, username):
-    with client.session_transaction() as sess:
-        sess["username"] = username
-        sess["last_activity"] = time.time()
+    login_user_session(client, username)
 
 
 def test_creating_a_catastrophic_regex_keyword_list_is_rejected(client, runtime_config_file, mount_key_file):
