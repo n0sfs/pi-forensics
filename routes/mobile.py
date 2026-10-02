@@ -94,6 +94,16 @@ _ANDROID_SERIAL_RE = re.compile(r'^[a-zA-Z0-9_\-\.:]{4,64}$')
 # above.
 _ANDROID_BLOCK_PATH_RE = re.compile(r'^/dev/block/[A-Za-z0-9_/.\-]{1,128}$')
 
+
+def is_valid_android_block_path(path):
+    """The whole string must match (fullmatch - `$` also matched before a
+    trailing newline), and no path segment may be '.' or '..', which the
+    character class allows and which would step out of /dev/block
+    (2026-10-02)."""
+    if not isinstance(path, str) or not _ANDROID_BLOCK_PATH_RE.fullmatch(path):
+        return False
+    return not any(seg in ('.', '..') for seg in path.split('/'))
+
 # Physical/raw acquisition needs a genuinely seekable destination format -
 # confirmed live (2026-08-30) that ewfacquire cannot read from a piped/
 # non-seekable source at all ("Illegal seek"), while dc3dd and dcfldd both
@@ -279,9 +289,14 @@ def execution_worker_ios_backup(udid, dest_dir, encrypt_password, report_file_pa
             append_log("[*] Enabling encrypted backup on device (confirm passcode on-screen if prompted)...")
             update_job(status="Waiting for on-device encryption confirmation...")
             try:
+                # The password goes in BACKUP_PASSWORD (idevicebackup2 --help:
+                # "can be passed via environment variable BACKUP_PASSWORD"), not
+                # argv, where every local process could read it from the process
+                # list for the length of the call (2026-10-02).
                 enc_res = subprocess.run(
-                    ["idevicebackup2", "-u", udid, "encryption", "on", encrypt_password],
-                    capture_output=True, text=True, timeout=90
+                    ["idevicebackup2", "-u", udid, "encryption", "on"],
+                    capture_output=True, text=True, timeout=90,
+                    env=dict(os.environ, BACKUP_PASSWORD=encrypt_password),
                 )
                 out = (enc_res.stdout + enc_res.stderr).strip()
                 if out:
@@ -1532,7 +1547,7 @@ def start_android_acquisition():
         engine = req.get('format', 'dc3dd')
         hashes = [h for h in req.get('hashes', ['sha256']) if h in ALLOWED_HASH_ALGOS]
 
-        if not _ANDROID_BLOCK_PATH_RE.match(target):
+        if not is_valid_android_block_path(target):
             update_job(active=False)
             return jsonify({"error": "Invalid or missing target device path. Pick a target from the "
                                       "enumerated list, or enter a valid /dev/block/... path manually."}), 400

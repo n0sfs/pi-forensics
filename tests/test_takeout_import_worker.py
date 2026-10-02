@@ -68,7 +68,8 @@ class TestExecutionWorkerImportTakeout:
 
         with mock.patch.object(file_explorer, "prepare_takeout_root", return_value=prepare_return) as mock_prepare, \
              mock.patch.object(file_explorer, "import_takeout_archive", return_value=import_result), \
-             mock.patch.object(file_explorer, "_record_parsed_artifacts") as mock_record, \
+             mock.patch.object(file_explorer, "_record_parsed_artifacts",
+                               return_value=len(import_result["records"])) as mock_record, \
              mock.patch.object(file_explorer, "_auto_tag_case_artifact") as mock_tag:
             file_explorer.execution_worker_import_takeout(
                 [takeout_root], case_folder, dest_dir, source_ip=source_ip, user=user)
@@ -110,7 +111,7 @@ class TestExecutionWorkerImportTakeout:
         assert args[1]["source_type"] == "real_fs"
         assert args[1]["name"] == "Google Takeout Import"
         assert args[2] == records
-        assert "Recorded 1 record(s)" in job["log"]
+        assert "Recorded 1 of 1 parsed record(s)" in job["log"]
 
     def test_records_are_not_recorded_when_the_case_folder_has_no_real_consolidated_marker(self, tmp_path, evidence_root):
         fake_case_folder = os.path.join(evidence_root, "not-a-real-case")
@@ -131,7 +132,8 @@ class TestExecutionWorkerImportTakeout:
         assert job["status"] == "Completed Successfully"
         mock_tag.assert_called_once()
         kml_path = mock_tag.call_args[0][1]
-        assert kml_path.endswith("takeout_location_history.kml")
+        # One KML per import (2026-10-02) - a fixed name overwrote the last one.
+        assert os.path.basename(kml_path).startswith("takeout_location_history_") and kml_path.endswith(".kml")
         with open(kml_path, "r", encoding="utf-8") as f:
             content = f.read()
         assert "40.712800" in content or "40.7128" in content
@@ -155,7 +157,9 @@ class TestExecutionWorkerImportTakeout:
         mock_prepare.assert_called_once()
         args = mock_prepare.call_args[0]
         assert args[0] == [str(tmp_path / "Takeout")]
-        assert args[1] == os.path.join(str(tmp_path), "takeout_import_work")
+        # Its own folder per import (2026-10-02) - a fixed name merged imports.
+        assert os.path.dirname(args[1]) == str(tmp_path)
+        assert os.path.basename(args[1]).startswith("takeout_import_work_")
 
     def test_an_unexpected_exception_during_prepare_is_caught_and_reported_as_failed(self, tmp_path):
         # No explicit source_ip/user needed here - the exception happens

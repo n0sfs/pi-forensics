@@ -35,10 +35,19 @@ def test_check_regex_pattern_for_redos_flags_a_known_catastrophic_pattern():
 
 
 def test_check_regex_pattern_for_redos_does_not_flag_an_ordinary_safe_pattern():
-    # No false positives - a normal, real-world-shaped pattern (matches
-    # this app's own built-in email category) must pass cleanly.
-    safe = re.compile(rb"[\w.+-]+@[\w-]+\.[\w.-]+", re.IGNORECASE)
+    # No false positives - this app's own CURRENT built-in email pattern (the
+    # control used to be the old, quadratic one - which this check, by only
+    # probing 33-byte strings, then wrongly passed; 2026-10-02).
+    safe = case_index_db.TRIAGE_PATTERNS["emails"]
     assert case_index_db.check_regex_pattern_for_redos(safe) is None
+
+
+def test_a_quadratic_pattern_is_flagged_too():
+    """Not exponential, so the short probes finish instantly - but over an
+    8 MB chunk with no '@' every start position rescans to the end."""
+    quadratic = re.compile(rb"[\w.+-]+@[\w-]+\.[\w.-]+", re.IGNORECASE)
+    error = case_index_db.check_regex_pattern_for_redos(quadratic)
+    assert error is not None
 
 
 def test_check_regex_pattern_for_redos_does_not_flag_a_simple_alternation():

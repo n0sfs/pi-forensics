@@ -28,11 +28,11 @@
                                                      until one of those two workarounds - calls the same shared
                                                      refreshDrives() every other drive-select already uses. -->
                                                 <div class="input-group input-group-sm mb-1">
-                                                    <select id="recoverySourceDrive" class="form-select form-select-sm drive-select" data-placeholder="-- Choose Source Drive --"></select>
+                                                    <select id="recoverySourceDrive" class="form-select form-select-sm drive-select" data-placeholder="-- Choose Source Drive --" onchange="onRecoverySourceDriveChange()"></select>
                                                     <button class="btn btn-outline-info fw-bold" type="button" onclick="refreshDrives()" title="Re-scan for connected drives"><i class="bi bi-arrow-clockwise"></i></button>
                                                 </div>
                                                 <div class="input-group input-group-sm mt-1">
-                                                    <input type="text" id="recoverySourcePath" class="form-control font-monospace" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
+                                                    <input type="text" id="recoverySourcePath" class="form-control font-monospace" oninput="onRecoverySourcePathInput()" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
                                                     <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('recoverySource')" title="Browse to an image file"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                                 </div>
                                             </div>
