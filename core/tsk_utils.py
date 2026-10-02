@@ -22,6 +22,27 @@ TSK_READ_CHUNK_BYTES = 1024 * 1024
 TSK_MAX_TIMELINE_ENTRIES = 5000
 TSK_MAX_WALK_DIRS = 5000   # safety cap against pathological/looping directory structures
 TSK_MAX_WALK_DEPTH = 25
+TSK_WALK_UNREADABLE_PATHS_KEPT = 10  # how many unreadable directory paths a walk's stats name
+
+
+class ImageUnreadable(Exception):
+    """The image (or device) itself could not be opened by the Sleuth Kit - a
+    missing or unreadable file, an I/O error, a format pytsk3 cannot read.
+
+    _tsk_resolve_filesystems() used to return [] for this - the same value as
+    "opened fine, no filesystem inside" - so every in-image tool told the
+    examiner "No recognized filesystem found in this image" about an image
+    that was never read at all. routes/image_browser.py registers the one
+    app-wide handler for it; the deliberate aggregate readers (the report
+    timeline, Auto Analyze's detection) catch it and say so instead."""
+
+
+class TskShortRead(Exception):
+    """A file inside an image could not be read to its recorded size - the
+    read stopped early (a truncated image, an unreadable run). Raised by
+    _tsk_stream_file() so a partial file is never hashed, scanned, parsed or
+    extracted as if it were the whole file; a caller that can use a partial
+    read (a preview) asks for that explicitly."""
 
 def _tsk_parse_inode(raw):
     """Directory/file navigation uses the base inode address only - NTFS's
@@ -97,7 +118,14 @@ def _tsk_walk(fs, start_inode_num=None, max_dirs=TSK_MAX_WALK_DIRS, max_depth=TS
     `stats`, if given, is a dict this function WRITES into so a caller can tell
     whether either cap actually bit (added 2026-09-15):
 
-        {"dirs_visited": int, "dirs_capped": bool, "depth_capped": bool}
+        {"dirs_visited": int, "dirs_capped": bool, "depth_capped": bool,
+         "dirs_unreadable": int, "unreadable_paths": [str, ...],
+         "max_dirs": int, "max_depth": int}
+
+    A directory whose listing fails is counted in dirs_unreadable (and the
+    first few named in unreadable_paths) - it used to be skipped in silence, so
+    everything under it was missing with nothing saying so (2026-10-02).
+    walk_incomplete_notes() turns these stats into readable sentences.
 
     Both caps used to stop the walk silently. Depth 25 is the one that bites in
     practice - deeply nested real paths (node_modules trees, mail stores,
@@ -112,6 +140,10 @@ def _tsk_walk(fs, start_inode_num=None, max_dirs=TSK_MAX_WALK_DIRS, max_depth=TS
         stats.setdefault("dirs_visited", 0)
         stats.setdefault("dirs_capped", False)
         stats.setdefault("depth_capped", False)
+        stats.setdefault("dirs_unreadable", 0)
+        stats.setdefault("unreadable_paths", [])
+        stats["max_dirs"] = max_dirs
+        stats["max_depth"] = max_depth
 
     def _walk(inode_num, path, depth):
         if visited[0] >= max_dirs:
@@ -125,6 +157,10 @@ def _tsk_walk(fs, start_inode_num=None, max_dirs=TSK_MAX_WALK_DIRS, max_depth=TS
         try:
             entries = _tsk_list_dir(fs, inode_num)
         except Exception:
+            if stats is not None:
+                stats["dirs_unreadable"] += 1
+                if len(stats["unreadable_paths"]) < TSK_WALK_UNREADABLE_PATHS_KEPT:
+                    stats["unreadable_paths"].append(path or '/')
             return
         visited[0] += 1
         if stats is not None:
@@ -137,7 +173,37 @@ def _tsk_walk(fs, start_inode_num=None, max_dirs=TSK_MAX_WALK_DIRS, max_depth=TS
 
     yield from _walk(start_inode_num, '', 0)
 
-def _tsk_stream_file(tsk_file, write_fn, max_bytes=None):
+
+def walk_incomplete_notes(stats, where=None):
+    """Readable reasons a _tsk_walk() did not cover its whole filesystem, from
+    the `stats` dict it filled in - [] when it covered everything. `where`
+    (a partition label, an evidence ID) prefixes each note for a caller that
+    walks more than one filesystem."""
+    prefix = f"{where}: " if where else ""
+    notes = []
+    if stats.get("depth_capped"):
+        notes.append(f"{prefix}directories nested deeper than {stats.get('max_depth', TSK_MAX_WALK_DEPTH)} "
+                     f"levels were not walked, so nothing below them is included.")
+    if stats.get("dirs_capped"):
+        notes.append(f"{prefix}the walk stopped after {stats.get('max_dirs', TSK_MAX_WALK_DIRS)} directories "
+                     f"(a guard against looping directory structures), so later directories were not reached.")
+    unreadable = stats.get("dirs_unreadable") or 0
+    if unreadable:
+        named = list(stats.get("unreadable_paths") or [])
+        more = ", ..." if unreadable > len(named) else ""
+        noun = "directory" if unreadable == 1 else "directories"
+        verb = "was" if unreadable == 1 else "were"
+        notes.append(f"{prefix}{unreadable} {noun} could not be read, so {verb} not walked "
+                     f"({', '.join(named)}{more}).")
+    return notes
+
+
+def _tsk_stream_file(tsk_file, write_fn, max_bytes=None, allow_short=False):
+    """Feeds a file's content (up to max_bytes) to write_fn in chunks and
+    returns the number of bytes delivered. Raises TskShortRead when the read
+    stops before that size - unless allow_short, for a caller that shows
+    partial content and says so (a preview) rather than treating it as the
+    file."""
     size = tsk_file.info.meta.size if tsk_file.info.meta else 0
     if max_bytes is not None:
         size = min(size, max_bytes)
@@ -148,12 +214,21 @@ def _tsk_stream_file(tsk_file, write_fn, max_bytes=None):
             break
         write_fn(chunk)
         read_offset += len(chunk)
+    if read_offset < size and not allow_short:
+        raise TskShortRead(f"only {read_offset} of {size} bytes could be read from the image")
     return read_offset
 
-def _tsk_resolve_filesystems(image_path):
+def _tsk_resolve_filesystems(image_path, skipped=None):
     """Returns [{'offset': sectors, 'label': str}, ...] for every ALLOCATED
     partition (or the whole image, if unpartitioned) that opens as a real
     filesystem via pytsk3.
+
+    Raises ImageUnreadable when the image itself cannot be opened - that is
+    not the same answer as "no filesystem in it" (2026-10-02). `skipped`, if
+    given, is a list this function appends {'offset', 'label', 'error'} to
+    for each allocated partition that does NOT open as a filesystem (a
+    reserved/swap partition, an encrypted volume, a damaged one), so a caller
+    can say which parts of the image it never searched.
 
     Deliberately does NOT attempt to open every Volume_Info slot -
     Volume_Info lists unallocated/meta placeholder regions alongside real
@@ -168,8 +243,8 @@ def _tsk_resolve_filesystems(image_path):
     entries only avoids that."""
     try:
         img = pytsk3.Img_Info(image_path)
-    except Exception:
-        return []
+    except Exception as e:
+        raise ImageUnreadable(f"The image could not be opened: {e}") from e
 
     try:
         vol = pytsk3.Volume_Info(img)
@@ -186,11 +261,14 @@ def _tsk_resolve_filesystems(image_path):
     for part in vol:
         if int(part.flags) != pytsk3.TSK_VS_PART_FLAG_ALLOC:
             continue
+        label = part.desc.decode('utf-8', errors='replace')
         try:
             _tsk_open_fs(image_path, part.start)
-        except Exception:
+        except Exception as e:
+            if skipped is not None:
+                skipped.append({"offset": part.start, "label": label, "error": str(e)})
             continue
-        filesystems.append({"offset": part.start, "label": part.desc.decode('utf-8', errors='replace')})
+        filesystems.append({"offset": part.start, "label": label})
     return filesystems
 
 
@@ -232,8 +310,15 @@ def classify_image_profile(image_path):
     Reuses _tsk_resolve_filesystems()'s own already-hardened partition
     selection (allocated partitions only, whole-image fallback when there's
     no partition table) - this function only adds the real filesystem-type
-    read on top of it."""
-    resolved = _tsk_resolve_filesystems(image_path)
+    read on top of it.
+
+    An image that cannot be opened at all comes back as profile "unknown"
+    with "error" set, rather than raising - both callers (Auto Analyze's
+    detection, the acquisition chain) report it instead of guessing."""
+    try:
+        resolved = _tsk_resolve_filesystems(image_path)
+    except ImageUnreadable as e:
+        return {"profile": "unknown", "filesystems": [], "error": str(e)}
     filesystems = []
     saw_windows = False
     saw_linux = False

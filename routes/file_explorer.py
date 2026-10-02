@@ -2189,10 +2189,16 @@ def parse_mobile_artifacts():
     counts = {}
     files_parsed = 0
     any_encrypted = False
+    # A Manifest.db or app database that could not be read is reported, never
+    # folded into "nothing found" (core/mobile_artifacts.py, 2026-10-02).
+    unreadable = []
     for manifest_dir in manifest_dirs:
         records, summary = parse_mobile_backup_manifest(manifest_dir, requested_types)
         if summary.get("encrypted"):
             any_encrypted = True
+        for artifact_type, reason in summary.get("unreadable", {}).items():
+            unreadable.append({"backup": os.path.basename(manifest_dir), "artifact_type": artifact_type,
+                               "reason": reason})
         if not records:
             continue
         files_parsed += 1
@@ -2204,10 +2210,12 @@ def parse_mobile_artifacts():
     log_chain_of_custody("mobile_artifacts_parsed", {
         "directory": target_dir, "candidates_found": len(manifest_dirs),
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated, "any_encrypted": any_encrypted,
+        "unreadable": unreadable,
     })
     return jsonify({
         "success": True, "candidates_found": len(manifest_dirs), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder), "any_encrypted": any_encrypted,
+        "unreadable": unreadable,
     })
 
 @file_explorer_bp.route('/api/files/parse_email', methods=['POST'])

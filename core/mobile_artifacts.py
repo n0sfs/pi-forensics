@@ -51,10 +51,12 @@ encrypted backup gets an honest "cannot extract - backup is encrypted"
 signal instead of looking identical to "found nothing."
 """
 import os
+import re
 import sqlite3
 import plistlib
 
 from core.browser_artifacts import _open_sqlite_readonly
+from core.paths import path_is_within
 
 _SCAN_SKIP_DIR_NAMES = {'RECOVERED_FILES'}
 _SCAN_SKIP_DIR_SUFFIXES = ('_photorec', '_foremost', '_scalpel', '_triagescan')
@@ -163,6 +165,25 @@ MOBILE_ARTIFACT_TARGET_PATHS = {
 }
 
 
+class MobileArtifactUnreadable(Exception):
+    """A file one of this backup's parsers needs is named but could not be
+    used: Manifest.db or the app's own database would not open or query, or
+    Manifest.db gives the app's file a fileID that is not a SHA-1.
+
+    Distinct from found=False ("this app's data is not in the backup") and
+    from found=True with no records ("it is, and it is empty") - both of
+    which these failures used to be reported as.
+    """
+
+
+# A fileID is the SHA-1 of "domain-relativePath" (40 hex digits) and it IS the
+# on-disk path (<fileID[0:2]>/<fileID>), so it is validated before it is ever
+# joined: an arbitrary string from the evidence's Manifest.db - "//etc/x", or
+# "../.." - would otherwise point the parser, and the in-image extractor's
+# writes (routes/image_browser.py), anywhere on the station.
+_MANIFEST_FILE_ID_RE = re.compile(r'[0-9a-fA-F]{40}')
+
+
 def _resolve_manifest_files_query_only(manifest_dir, domain, relative_path):
     """The query half of _resolve_manifest_files() below, split out so
     routes/image_browser.py's in-image resolver can reuse it - that caller
@@ -170,20 +191,31 @@ def _resolve_manifest_files_query_only(manifest_dir, domain, relative_path):
     in-image) location separately, rather than _resolve_manifest_files()'s
     real-fs os.path.isfile() existence check, which is meaningless for a
     path that only exists inside an unmounted image. Returns the fileID
-    string, or None."""
+    string, or None when Manifest.db has no row for it. Raises
+    MobileArtifactUnreadable when Manifest.db cannot be queried or the
+    fileID it gives is not a 40-digit hex SHA-1."""
     manifest_db = os.path.join(manifest_dir, 'Manifest.db')
     try:
         conn, _sqlite_cleanup = _open_sqlite_readonly(manifest_db)
-        cur = conn.execute(
+    except sqlite3.Error as e:
+        raise MobileArtifactUnreadable(f"Manifest.db could not be opened: {e}") from e
+    try:
+        row = conn.execute(
             "SELECT fileID FROM Files WHERE domain=? AND relativePath=? LIMIT 1",
-            (domain, relative_path))
-        row = cur.fetchone()
+            (domain, relative_path)).fetchone()
+    except sqlite3.Error as e:
+        raise MobileArtifactUnreadable(f"Manifest.db could not be read: {e}") from e
+    finally:
         conn.close()
         _sqlite_cleanup()
-    except sqlite3.Error as e:
-        print(f"Warning: could not query Manifest.db at {manifest_db}: {e}")
+    if not row:
         return None
-    return row[0] if row else None
+    file_id = row[0]
+    if not isinstance(file_id, str) or not _MANIFEST_FILE_ID_RE.fullmatch(file_id):
+        raise MobileArtifactUnreadable(
+            f"Manifest.db lists {domain}/{relative_path} under an invalid fileID ({str(file_id)[:60]!r}) - "
+            "not a 40-digit hex SHA-1, so it was not followed.")
+    return file_id
 
 
 def _resolve_manifest_files(manifest_dir, domain, relative_path):
@@ -192,13 +224,18 @@ def _resolve_manifest_files(manifest_dir, domain, relative_path):
     (<manifest_dir>/<fileID[0:2]>/<fileID>), and confirms that path actually
     exists before returning it - a stale/renamed/never-backed-up file
     correctly yields nothing rather than a dangling path. Returns the
-    resolved absolute path, or None."""
+    resolved absolute path, or None. Raises MobileArtifactUnreadable (see
+    _resolve_manifest_files_query_only()), and also when the content file
+    is a link that resolves outside the backup folder."""
     file_id = _resolve_manifest_files_query_only(manifest_dir, domain, relative_path)
     if not file_id:
         return None
     content_path = os.path.join(manifest_dir, file_id[0:2], file_id)
     if not os.path.isfile(content_path):
         return None
+    if not path_is_within(os.path.realpath(content_path), os.path.realpath(manifest_dir)):
+        raise MobileArtifactUnreadable(
+            f"{domain}/{relative_path}'s content file is a link that leads outside the backup folder - not followed.")
     return content_path
 
 
@@ -213,6 +250,7 @@ def parse_mobile_sms(manifest_dir):
     if not content_path:
         return [], False
     records = []
+    conn = None
     try:
         conn, _sqlite_cleanup = _open_sqlite_readonly(content_path)
         cur = conn.execute(
@@ -230,11 +268,12 @@ def parse_mobile_sms(manifest_dir):
                 "url": "", "value": text, "timestamp": cocoa_time_to_unix(date),
                 "extra": {"row_id": row_id, "direction": direction, "counterpart": counterpart},
             })
-        conn.close()
-        _sqlite_cleanup()
     except sqlite3.Error as e:
-        print(f"Warning: could not parse sms.db at {content_path}: {e}")
-        return [], True
+        raise MobileArtifactUnreadable(f"sms.db could not be read: {e}") from e
+    finally:
+        if conn is not None:
+            conn.close()
+            _sqlite_cleanup()
     return records, True
 
 
@@ -265,6 +304,7 @@ def parse_mobile_contacts(manifest_dir):
     if not content_path:
         return [], False
     records = []
+    conn = None
     try:
         conn, _sqlite_cleanup = _open_sqlite_readonly(content_path)
         phones_by_person, emails_by_person = {}, {}
@@ -287,11 +327,12 @@ def parse_mobile_contacts(manifest_dir):
                 "timestamp": None,
                 "extra": {"row_id": row_id, "organization": org, "phones": phones, "emails": emails},
             })
-        conn.close()
-        _sqlite_cleanup()
     except sqlite3.Error as e:
-        print(f"Warning: could not parse AddressBook.sqlitedb at {content_path}: {e}")
-        return [], True
+        raise MobileArtifactUnreadable(f"AddressBook.sqlitedb could not be read: {e}") from e
+    finally:
+        if conn is not None:
+            conn.close()
+            _sqlite_cleanup()
     return records, True
 
 
@@ -308,6 +349,7 @@ def parse_mobile_call_history(manifest_dir):
     if not content_path:
         return [], False
     records = []
+    conn = None
     try:
         conn, _sqlite_cleanup = _open_sqlite_readonly(content_path)
         cur = conn.execute(
@@ -324,11 +366,12 @@ def parse_mobile_call_history(manifest_dir):
                 "extra": {"row_id": row_id, "address": address, "direction": direction,
                           "duration_seconds": duration, "answered": bool(answered)},
             })
-        conn.close()
-        _sqlite_cleanup()
     except sqlite3.Error as e:
-        print(f"Warning: could not parse CallHistory.storedata at {content_path}: {e}")
-        return [], True
+        raise MobileArtifactUnreadable(f"CallHistory.storedata could not be read: {e}") from e
+    finally:
+        if conn is not None:
+            conn.close()
+            _sqlite_cleanup()
     return records, True
 
 
@@ -346,22 +389,31 @@ def parse_mobile_backup_manifest(manifest_dir, requested_types=None):
     type, whether that app's data file was even found in this backup -
     honest disclosure over a bare empty list that could otherwise read as
     "nothing found" when the truth might be "this backup is encrypted" or
-    "this app was never installed/backed up"."""
+    "this app was never installed/backed up".
+
+    summary["unreadable"] maps each type that could NOT be checked to the
+    reason (MobileArtifactUnreadable, or the parser failing outright); such a
+    type is absent from summary["found"], because neither answer is known."""
     encrypted = _is_backup_encrypted(manifest_dir)
     types = requested_types if requested_types else list(MOBILE_ARTIFACT_PARSERS.keys())
     all_records = []
     per_type_found = {}
+    unreadable = {}
     if encrypted:
-        return [], {"encrypted": True, "found": {}}
+        return [], {"encrypted": True, "found": {}, "unreadable": {}}
     for artifact_type in types:
         parser = MOBILE_ARTIFACT_PARSERS.get(artifact_type)
         if not parser:
             continue
         try:
             records, found = parser(manifest_dir)
+        except MobileArtifactUnreadable as e:
+            unreadable[artifact_type] = str(e)
+            continue
         except Exception as e:
             print(f"Warning: mobile artifact parser for {artifact_type} failed on {manifest_dir}: {e}")
-            records, found = [], False
+            unreadable[artifact_type] = f"The parser failed: {e}"
+            continue
         per_type_found[artifact_type] = found
         all_records.extend(records)
-    return all_records, {"encrypted": False, "found": per_type_found}
+    return all_records, {"encrypted": False, "found": per_type_found, "unreadable": unreadable}

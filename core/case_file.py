@@ -14,7 +14,7 @@ import functools
 
 from flask import request, jsonify
 
-from core.paths import case_consolidated_path, safe_path, case_record_read_only_status
+from core.paths import case_consolidated_path, safe_path, case_record_read_only_status, closed_case_refusal
 
 
 class CaseFileUnreadable(Exception):
@@ -162,6 +162,48 @@ def refuses_read_only_case(field):
             else:
                 raw = request.form.get(field)
             refusal = read_only_case_refusal(raw if isinstance(raw, str) else None)
+            if refusal:
+                return refusal
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def closed_case_work_refusal(*raw_paths):
+    """(response, 409) when any of the client-supplied `raw_paths` - an output
+    folder, a case folder - lies inside a case closed to new work
+    (core/paths.py CASE_STATUSES_CLOSED_TO_NEW_WORK), else None. A missing,
+    invalid or out-of-root path answers None: the route's own validation
+    reports that, and a job with no active case is a supported workflow."""
+    paths = [safe_path(p) if isinstance(p, str) and p else None for p in raw_paths]
+    status = closed_case_refusal(*paths)
+    if not status:
+        return None
+    return jsonify({
+        "success": False,
+        "closed_case": status,
+        "error": f"This case is marked {status}. Re-open it from the Case Manager before adding new work to it.",
+    }), 409
+
+
+def refuses_closed_case_work(*fields):
+    """Route decorator: refuse with 409 when any of the request's `fields`
+    (read from the JSON body, else the form) is a folder inside a case closed
+    to new work - see closed_case_work_refusal(). Stack it under
+    @requires_auth/@requires_permission.
+
+    It runs before the route body, so a job route refuses before it claims the
+    shared job slot and has nothing to release. Added 2026-10-02 for the
+    in-image tools: the hash manifest, YARA sweep, triage scan, geolocation,
+    shadow-copy materialization, contact sheet, deleted-file recovery and every
+    parse_* route wrote into a Closed or Archived case without asking."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                body = request.form
+            refusal = closed_case_work_refusal(*(body.get(f) for f in fields))
             if refusal:
                 return refusal
             return fn(*args, **kwargs)
