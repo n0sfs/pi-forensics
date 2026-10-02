@@ -91,3 +91,42 @@ def test_the_walk_still_stops_at_the_caps(monkeypatch):
     shallow = list(tsk_utils._tsk_walk(_FakeFs(), start_inode_num=0, max_depth=3))
     deep = list(tsk_utils._tsk_walk(_FakeFs(), start_inode_num=0, max_depth=8))
     assert len(shallow) < len(deep)
+
+
+# --- unreadable directories (2026-10-02) -------------------------------------------
+
+def test_an_unreadable_directory_is_counted_and_named(monkeypatch):
+    """A directory whose listing failed used to be skipped in silence - every
+    file under it simply absent, with "no caps hit" reported."""
+    def list_dir(fs, inode_num):
+        if inode_num == 7:
+            raise IOError("corrupt index")
+        if inode_num is None:
+            return [{"name": "Users", "inode": 7, "is_dir": True, "deleted": False, "is_virtual": False},
+                    {"name": "ok.txt", "inode": 8, "is_dir": False, "deleted": False, "is_virtual": False}]
+        return []
+
+    monkeypatch.setattr(tsk_utils, "_tsk_list_dir", list_dir)
+    stats = {}
+    entries = list(tsk_utils._tsk_walk(_FakeFs(), stats=stats))
+    assert [p for _e, p in entries] == ["/Users", "/ok.txt"]
+    assert stats["dirs_unreadable"] == 1
+    assert stats["unreadable_paths"] == ["/Users"]
+    notes = tsk_utils.walk_incomplete_notes(stats)
+    assert len(notes) == 1 and "/Users" in notes[0] and "could not be read" in notes[0]
+
+
+def test_a_complete_walk_has_no_notes(monkeypatch):
+    _install_fake_listdir(monkeypatch, depth=3)
+    stats = {}
+    list(tsk_utils._tsk_walk(_FakeFs(), start_inode_num=0, stats=stats))
+    assert tsk_utils.walk_incomplete_notes(stats) == []
+
+
+def test_notes_name_the_caps_that_bit(monkeypatch):
+    _install_fake_listdir(monkeypatch, depth=100, fanout=3)
+    stats = {}
+    list(tsk_utils._tsk_walk(_FakeFs(), start_inode_num=0, max_dirs=10, max_depth=4, stats=stats))
+    notes = " ".join(tsk_utils.walk_incomplete_notes(stats, where="NTFS (sector 2048)"))
+    assert "NTFS (sector 2048):" in notes
+    assert "deeper than 4 levels" in notes or "after 10 directories" in notes

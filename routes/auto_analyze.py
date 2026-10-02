@@ -140,6 +140,12 @@ def auto_analyze_detect():
 
     if ext in DISK_IMAGE_EXTENSIONS or ext in _AMBIGUOUS_EXTENSIONS:
         result = classify_image_profile(path)
+        if result.get("error"):
+            # The file could not be opened at all - not "no filesystem in it",
+            # which for a .raw would wrongly suggest a memory image.
+            log_chain_of_custody("auto_analyze_detect", {"path": path, "detected_profile": "unreadable",
+                                                         "error": result["error"]})
+            return jsonify({"success": False, "error": f"{result['error']} Nothing was analyzed."}), 422
         if ext in _AMBIGUOUS_EXTENSIONS and result["profile"] == "unknown":
             # .raw with no recognizable filesystem inside it - plausibly a
             # memory dump instead of a disk image. Never silently assumed

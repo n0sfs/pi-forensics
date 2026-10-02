@@ -35,7 +35,7 @@ from flask import Blueprint, jsonify, request, g
 from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import (closed_case_refusal, 
     safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
-    is_valid_block_device_or_partition,
+    is_valid_block_device_or_partition, path_is_within,
 )
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists, load_yara_ruleset_sources, get_yara_rulesets, get_url_lists, load_url_list_sets, IMPORT_CHECK_ONLY
 import yara
@@ -46,10 +46,11 @@ from core.jobs import (mark_job_slot_claimed,
 from core.tsk_utils import (
     _tsk_walk, _tsk_resolve_filesystems, _tsk_entry_dict,
     _tsk_open_fs, _tsk_list_dir, _tsk_stream_file, _tsk_parse_inode,
-    TSK_MAX_TIMELINE_ENTRIES,
+    TSK_MAX_TIMELINE_ENTRIES, ImageUnreadable, TskShortRead, walk_incomplete_notes,
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 from core.decrypted_sources import get_decrypted_source_kind
+from core.case_file import refuses_closed_case_work
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label, scan_match_is_reportable,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
@@ -118,6 +119,18 @@ from core.android_backup_utils import (
 
 image_browser_bp = Blueprint('image_browser', __name__)
 
+
+# One app-wide answer for an image the Sleuth Kit could not open at all
+# (core/tsk_utils.py ImageUnreadable, 2026-10-02) rather than a try/except in
+# each of the ~40 routes that resolve an image's filesystems - registered
+# app-wide from here because this blueprint owns the in-image layer. "No
+# recognized filesystem found" is a different answer, about an image that WAS
+# read; until this existed, an unreadable image got that answer too.
+@image_browser_bp.app_errorhandler(ImageUnreadable)
+def _handle_unreadable_image(e):
+    return jsonify({"success": False, "image_unreadable": True,
+                    "error": f"{e} Nothing in it was searched or changed."}), 422
+
 # --- Live Device Preview: browse a raw block device read-only, before it's
 # ever acquired (FTK Imager's "Preview" feature). The unprivileged gunicorn
 # worker this app runs as has no reliable read access to a block device
@@ -150,16 +163,39 @@ def _grant_device_preview_acl(device_path):
     return True, None
 
 def _revoke_device_preview_acl(device_path):
-    # Best-effort - a device that was unplugged mid-preview has nothing left
-    # to revoke the ACL on, and that's fine (the ACL dies with the device
-    # node); never let a revoke failure block the tracking-state cleanup.
+    """Removes the service account's read ACL from device_path. Returns
+    (revoked, error). A device that is no longer present has nothing left to
+    revoke - the ACL dies with the node - so that counts as revoked. Any other
+    failure is returned, never assumed done: the result used to be ignored,
+    so a failed revoke read as a clean exit (2026-10-02). `setfacl -x` of an
+    entry that is not there exits 0 (checked on the station), so this is
+    safe to call for a device that may or may not still carry the grant."""
+    if not os.path.exists(device_path):
+        return True, None
     try:
-        subprocess.run(
+        res = subprocess.run(
             ["sudo", "/usr/bin/setfacl", "-x", f"u:{_SERVICE_ACCOUNT_NAME}", device_path],
-            capture_output=True, timeout=15,
+            capture_output=True, text=True, timeout=15,
         )
+    except Exception as e:
+        return False, str(e)[:300]
+    if res.returncode != 0:
+        if not os.path.exists(device_path):
+            return True, None  # unplugged between the check and the call
+        return False, (res.stderr or res.stdout or f"setfacl exited {res.returncode}").strip()[:300]
+    return True, None
+
+def _service_account_acl_present(device_path):
+    """True when device_path carries a read-ACL entry for this app's own
+    service account. Plain unprivileged getfacl - see
+    _device_preview_startup_reconciliation()'s docstring for why that works
+    on a root:disk device node."""
+    try:
+        res = subprocess.run(['getfacl', '-p', device_path], capture_output=True, text=True, timeout=5)
     except Exception:
-        pass
+        return False
+    return res.returncode == 0 and any(
+        line.startswith(f'user:{_SERVICE_ACCOUNT_NAME}:') for line in res.stdout.splitlines())
 
 def _device_preview_sweep_loop():
     while True:
@@ -173,8 +209,9 @@ def _device_preview_sweep_loop():
             for device_path in stale:
                 del active_device_previews[device_path]
         for device_path in stale:
-            _revoke_device_preview_acl(device_path)
-            log_chain_of_custody("device_preview_auto_revoked", {"device": device_path, "reason": "idle_timeout"},
+            revoked, error = _revoke_device_preview_acl(device_path)
+            log_chain_of_custody("device_preview_auto_revoked" if revoked else "device_preview_revoke_failed",
+                                  {"device": device_path, "reason": "idle_timeout", "error": error},
                                   source_ip=None, user="system-idle-sweep")
 
 if not IMPORT_CHECK_ONLY:  # see core/config.py
@@ -188,14 +225,13 @@ def _device_preview_startup_reconciliation():
     reconciliation (routes/acquisition.py). active_device_previews is always
     empty at a fresh start, so any read-ACL grant for this app's own service
     account found on a candidate device at this point cannot be explained by
-    this process's own state - logs a disclosure, never auto-revokes
-    (matching this project's "disclose, don't silently act" posture used for
-    the LUKS case), even though the risk here is unusually low to actually
-    act on: this specific ACL entry can ONLY ever have been created by this
-    app's own code - no other legitimate reason exists for the service
-    account to hold an explicit read grant on a raw block device - unlike
-    LUKS's loop-device case, where a genuinely unrelated legitimate use
-    could theoretically exist.
+    this process's own state. It is revoked, and both the finding and the
+    revoke's result are logged (2026-10-02 - it used to be logged only, which
+    left the unprivileged service account able to read that raw device until
+    someone noticed the log line). Revoking is safe here in a way it is not
+    for LUKS's loop devices: this specific ACL entry can ONLY ever have been
+    created by this app's own code - no other legitimate reason exists for
+    the service account to hold an explicit read grant on a raw block device.
 
     Enumerates every /dev/sd*, /dev/nvme*, /dev/mmcblk* node, filtered to
     exactly the whole-disk-or-partition whitelist
@@ -212,19 +248,17 @@ def _device_preview_startup_reconciliation():
     for device_path in candidates:
         if not is_valid_block_device_or_partition(device_path):
             continue
-        try:
-            res = subprocess.run(['getfacl', '-p', device_path], capture_output=True, text=True, timeout=5)
-        except Exception:
+        if not _service_account_acl_present(device_path):
             continue
-        if res.returncode != 0:
-            continue
-        if any(line.startswith(f'user:{_SERVICE_ACCOUNT_NAME}:') for line in res.stdout.splitlines()):
-            log_chain_of_custody(
-                "device_preview_orphan_acl_detected",
-                {"device": device_path,
-                 "note": "Found a read-ACL grant for this app's own service account at process startup, not explained by this process's own state - likely leaked by a prior crash/restart. Not auto-revoked."},
-                source_ip=None, user="system-startup",
-            )
+        revoked, error = _revoke_device_preview_acl(device_path)
+        log_chain_of_custody(
+            "device_preview_orphan_acl_revoked" if revoked else "device_preview_orphan_acl_revoke_failed",
+            {"device": device_path, "error": error,
+             "note": ("Found a read-ACL grant for this app's own service account at process startup, not "
+                      "explained by this process's own state - likely leaked by a prior crash/restart. "
+                      + ("Revoked." if revoked else "The revoke FAILED - the grant is still in place."))},
+            source_ip=None, user="system-startup",
+        )
 
 if not IMPORT_CHECK_ONLY:  # see core/config.py
     threading.Thread(target=_device_preview_startup_reconciliation, daemon=True).start()
@@ -294,15 +328,21 @@ def image_preview_enter():
     # recognizable filesystem before handing it back as "ready to browse" -
     # a bad/garbage/unsupported device should revoke the ACL immediately
     # rather than leaving a dangling grant the examiner then discovers is
-    # useless only once they try to browse it. _tsk_resolve_filesystems()
-    # never raises (it swallows every exception internally and returns []),
-    # so an empty result is the only failure signal available here.
-    partitions = _tsk_resolve_filesystems(device_path)
+    # useless only once they try to browse it.
+    try:
+        partitions = _tsk_resolve_filesystems(device_path)
+        problem = None if partitions else "Could not read a recognized filesystem on this device"
+    except ImageUnreadable as e:
+        partitions, problem = [], f"Could not read this device ({e})"
     if not partitions:
         with device_previews_lock:
             active_device_previews.pop(device_path, None)
-        _revoke_device_preview_acl(device_path)
-        return jsonify({"success": False, "error": "Could not read a recognized filesystem on this device - the ACL grant was reverted."}), 400
+        revoked, error = _revoke_device_preview_acl(device_path)
+        if not revoked:
+            log_chain_of_custody("device_preview_revoke_failed", {"device": device_path, "error": error})
+            return jsonify({"success": False, "error": f"{problem} - and the read grant could NOT be removed: "
+                                                       f"{error}. It will be removed when the app next restarts."}), 500
+        return jsonify({"success": False, "error": f"{problem} - the ACL grant was reverted."}), 400
 
     log_chain_of_custody("device_preview_entered", {"device": device_path})
     return jsonify({"success": True, "device_path": device_path, "filesystem_count": len(partitions)})
@@ -315,13 +355,90 @@ def image_preview_exit():
     device_path = req.get('device_path', '')
     with device_previews_lock:
         was_active = active_device_previews.pop(device_path, None) is not None
-    if was_active:
-        _revoke_device_preview_acl(device_path)
-        log_chain_of_custody("device_preview_exited", {"device": device_path})
-    # Idempotent on an unknown/already-exited device, matching
-    # _dislocker_lock()'s existing convention - a second exit call (or one
-    # racing the idle-sweep) is a harmless no-op, not an error.
+    if not was_active:
+        # Idempotent on an unknown/already-exited device, matching
+        # _dislocker_lock()'s existing convention - a second exit call (or one
+        # racing the idle-sweep) is a harmless no-op, not an error. But a grant
+        # this process never made can still be on the node - the app restarted
+        # while the page was previewing, and the page's Exit is the examiner's
+        # only handle on it - so one that is there is removed (2026-10-02).
+        if not (is_valid_block_device_or_partition(device_path) and _service_account_acl_present(device_path)):
+            return jsonify({"success": True})
+    revoked, error = _revoke_device_preview_acl(device_path)
+    if not revoked:
+        log_chain_of_custody("device_preview_revoke_failed", {"device": device_path, "error": error})
+        return jsonify({"success": False, "error": f"The preview's read grant on {device_path} could not be "
+                                                   f"removed: {error}. It will be removed when the app next "
+                                                   f"restarts."}), 500
+    log_chain_of_custody("device_preview_exited", {"device": device_path, "tracked": was_active})
     return jsonify({"success": True})
+
+class _SearchCoverage:
+    """What an in-image search did NOT cover, collected while it runs so the
+    answer can say so (2026-10-02). "None found" is only true of the parts
+    that were searched - and a walk cap that bit, a directory that could not
+    be read, or a filesystem that would not open used to vanish from every
+    result, which then read as a clean "none found".
+
+    gaps               - real incompleteness, as readable sentences.
+    partitions_skipped - allocated partitions holding no filesystem this tool
+                         can read. Often expected (reserved/swap space), but
+                         an encrypted volume is evidence too, so they are
+                         listed for the examiner - not counted as gaps."""
+
+    PARTITION_ERROR_MAX_CHARS = 200
+
+    def __init__(self):
+        self.gaps = []
+        self.partitions_skipped = []
+
+    def resolve(self, image_path):
+        """_tsk_resolve_filesystems(), remembering the partitions it skips.
+        ImageUnreadable propagates - an image never opened is an error, not a
+        gap."""
+        return _tsk_resolve_filesystems(image_path, skipped=self.partitions_skipped)
+
+    @staticmethod
+    def _where(fsinfo):
+        if not fsinfo:
+            return None
+        return f"{fsinfo.get('label') or 'filesystem'} (sector {fsinfo.get('offset', 0)})"
+
+    def note(self, text):
+        if text not in self.gaps:
+            self.gaps.append(text)
+
+    def note_open_failure(self, fsinfo, error):
+        self.note(f"{self._where(fsinfo)}: the filesystem could not be opened, so it was not searched ({error}).")
+
+    def note_walk(self, walk_stats, fsinfo=None):
+        for text in walk_incomplete_notes(walk_stats, where=self._where(fsinfo)):
+            self.note(text)
+
+    @property
+    def incomplete(self):
+        return bool(self.gaps)
+
+    def as_dict(self):
+        return {
+            "search_gaps": list(self.gaps),
+            "partitions_skipped": [{"label": p["label"], "offset": p["offset"],
+                                    "error": str(p["error"])[:self.PARTITION_ERROR_MAX_CHARS]}
+                                   for p in self.partitions_skipped],
+        }
+
+
+def _merge_search_coverage(into, more):
+    """Folds one coverage dict (as_dict()) into another, for a route that runs
+    several scans over the same image and reports once."""
+    for gap in more.get("search_gaps", []):
+        if gap not in into["search_gaps"]:
+            into["search_gaps"].append(gap)
+    for part in more.get("partitions_skipped", []):
+        if part not in into["partitions_skipped"]:
+            into["partitions_skipped"].append(part)
+    return into
+
 
 # --- Sleuth Kit (pytsk3): Browse/Search/Timeline Filesystems Inside Acquired Images ---
 # Everything here only ever reads the image file - nothing writes to evidence.
@@ -437,6 +554,34 @@ def image_fls():
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not list directory: {e}"}), 500
 
+EXTRACT_NAME_MAX_BYTES = 255  # NAME_MAX on every filesystem the evidence root can sit on
+
+
+def _safe_extract_name(raw_name, fallback):
+    """A bare, writable filename for a file copied out of evidence. The name
+    comes from an untrusted evidence filesystem (or a crafted request), so:
+    only its last path component is kept; control characters (NUL included)
+    are dropped; '', '.' and '..' fall back to `fallback`; a name longer than
+    EXTRACT_NAME_MAX_BYTES is cut to fit, keeping its extension. Each of
+    those used to fail the extraction outright - or, for '..', aim it at the
+    parent folder (2026-10-02)."""
+    name = raw_name if isinstance(raw_name, str) else ''
+    name = os.path.basename(name)
+    # Lone surrogates (only a crafted request can carry them) cannot be encoded.
+    name = name.encode('utf-8', 'replace').decode('utf-8')
+    name = ''.join(ch for ch in name if ch >= ' ' and ch != '\x7f').strip()
+    if name in ('', '.', '..'):
+        return fallback
+    if len(name.encode('utf-8')) > EXTRACT_NAME_MAX_BYTES:
+        stem, ext = os.path.splitext(name)
+        if len(ext.encode('utf-8')) > 32:
+            stem, ext = name, ''
+        budget = EXTRACT_NAME_MAX_BYTES - len(ext.encode('utf-8'))
+        stem = stem.encode('utf-8')[:budget].decode('utf-8', 'ignore')
+        name = (stem + ext) if stem else fallback
+    return name
+
+
 @image_browser_bp.route('/api/image/extract', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -473,7 +618,7 @@ def image_extract():
 
     # Sanitize the requested filename (from an untrusted evidence filesystem)
     # to a bare basename before using it to build a destination path.
-    safe_name = os.path.basename(out_name).strip() or f"extracted_{inode_num}"
+    safe_name = _safe_extract_name(out_name, f"extracted_{inode_num}")
     dest_file = os.path.join(dest_dir, safe_name)
     if not safe_path(dest_file):
         return jsonify({"success": False, "error": "Resulting destination path is outside the permitted evidence directory."}), 400
@@ -548,27 +693,31 @@ def image_preview():
     size = tsk_file.info.meta.size if tsk_file.info.meta else 0
     ext = os.path.splitext(name_hint)[1].lower()
 
+    # A preview may show what could be read of a damaged file - but says so
+    # (incomplete_read), rather than presenting a partial read as the file.
     try:
         if ext in TSK_PREVIEW_IMAGE_EXT:
             if size > TSK_PREVIEW_IMAGE_MAX_BYTES:
                 return jsonify({"success": True, "kind": "too_large", "size": size})
             buf = io.BytesIO()
-            _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_IMAGE_MAX_BYTES)
+            got = _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_IMAGE_MAX_BYTES, allow_short=True)
             mime = TSK_PREVIEW_MIME.get(ext, 'application/octet-stream')
             return jsonify({"success": True, "kind": "image", "size": size, "mime": mime,
+                             "incomplete_read": got < size,
                              "data": base64.b64encode(buf.getvalue()).decode('ascii')})
         elif ext == '.pdf':
             if size > TSK_PREVIEW_PDF_MAX_BYTES:
                 return jsonify({"success": True, "kind": "too_large", "size": size})
             buf = io.BytesIO()
-            _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_PDF_MAX_BYTES)
-            return jsonify({"success": True, "kind": "pdf", "size": size,
+            got = _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_PDF_MAX_BYTES, allow_short=True)
+            return jsonify({"success": True, "kind": "pdf", "size": size, "incomplete_read": got < size,
                              "data": base64.b64encode(buf.getvalue()).decode('ascii')})
         else:
             buf = io.BytesIO()
             truncated = size > TSK_PREVIEW_TEXT_MAX_BYTES
-            _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_TEXT_MAX_BYTES)
+            got = _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_TEXT_MAX_BYTES, allow_short=True)
             return jsonify({"success": True, "kind": "text", "size": size, "truncated": truncated,
+                             "incomplete_read": got < min(size, TSK_PREVIEW_TEXT_MAX_BYTES),
                              "text": buf.getvalue().decode('utf-8', errors='replace')})
     except Exception as e:
         return jsonify({"success": False, "error": f"Preview failed: {e}"}), 500
@@ -603,11 +752,12 @@ def image_hex():
     size = tsk_file.info.meta.size if tsk_file.info.meta else 0
     try:
         buf = io.BytesIO()
-        _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_HEX_PREVIEW_MAX_BYTES)
+        _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_HEX_PREVIEW_MAX_BYTES, allow_short=True)
         raw = buf.getvalue()
         return jsonify({
             "success": True, "data": base64.b64encode(raw).decode('ascii'),
             "bytes_read": len(raw), "total_size": size, "truncated": size > len(raw),
+            "incomplete_read": len(raw) < min(size, TSK_HEX_PREVIEW_MAX_BYTES),
         })
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not read file: {e}"}), 500
@@ -645,14 +795,18 @@ def image_search():
 
     results = []
     truncated = False
-    for entry, path in _tsk_walk(fs, start_inode_num):
+    coverage = _SearchCoverage()
+    walk_stats = {}
+    for entry, path in _tsk_walk(fs, start_inode_num, stats=walk_stats):
         if query in entry['name'].lower():
             results.append({**entry, "path": path})
             if len(results) >= TSK_MAX_SEARCH_RESULTS:
                 truncated = True
                 break
+    coverage.note_walk(walk_stats)
 
-    return jsonify({"success": True, "results": results, "truncated": truncated})
+    return jsonify({"success": True, "results": results, "truncated": truncated or coverage.incomplete,
+                    **coverage.as_dict()})
 
 @image_browser_bp.route('/api/image/timeline', methods=['POST'])
 @requires_auth
@@ -686,7 +840,9 @@ def image_timeline():
 
     events = []
     truncated = False
-    for entry, path in _tsk_walk(fs, start_inode_num):
+    coverage = _SearchCoverage()
+    walk_stats = {}
+    for entry, path in _tsk_walk(fs, start_inode_num, stats=walk_stats):
         if entry['is_virtual']:
             continue  # TSK's own $MBR/$FAT1/$FAT2/$OrphanFiles pseudo-entries, not real evidence
         for ts_field, label in (('mtime', 'M'), ('atime', 'A'), ('ctime', 'C'), ('crtime', 'B')):
@@ -697,9 +853,11 @@ def image_timeline():
         if len(events) >= TSK_MAX_TIMELINE_ENTRIES:
             truncated = True
             break
+    coverage.note_walk(walk_stats)
 
     events.sort(key=lambda e: e['timestamp'], reverse=True)
-    return jsonify({"success": True, "events": events[:TSK_MAX_TIMELINE_ENTRIES], "truncated": truncated})
+    return jsonify({"success": True, "events": events[:TSK_MAX_TIMELINE_ENTRIES],
+                    "truncated": truncated or coverage.incomplete, **coverage.as_dict()})
 
 # --- Geolocation KML export, scanned directly inside an acquired image ---
 # Same GEO_IMAGE_EXTENSIONS/_geo_points_from_exiftool_entries()/_build_geo_kml()
@@ -734,7 +892,8 @@ def execution_worker_image_geolocation_kml(image_path, dest_dir, source_ip=None,
             update_job(log="\n".join(log_history[-100:]))
 
     try:
-        filesystems = _tsk_resolve_filesystems(image_path)
+        coverage = _SearchCoverage()
+        filesystems = coverage.resolve(image_path)
         if not filesystems:
             append_log("[-] No recognized filesystem found in this image.")
             update_job(status="Failed")
@@ -754,9 +913,11 @@ def execution_worker_image_geolocation_kml(image_path, dest_dir, source_ip=None,
                 break
             try:
                 fs = _tsk_open_fs(image_path, fsinfo['offset'])
-            except Exception:
+            except Exception as e:
+                coverage.note_open_failure(fsinfo, e)
                 continue
-            for entry, path in _tsk_walk(fs):
+            walk_stats = {}
+            for entry, path in _tsk_walk(fs, stats=walk_stats):
                 if entry['is_dir'] or entry['deleted']:
                     continue
                 ext = os.path.splitext(entry['name'])[1].lower().lstrip('.')
@@ -765,15 +926,19 @@ def execution_worker_image_geolocation_kml(image_path, dest_dir, source_ip=None,
                 candidates.append((fs, entry, path))
                 if len(candidates) >= IMAGE_GEO_MAX_FILES:
                     break
+            coverage.note_walk(walk_stats, fsinfo)
             if len(candidates) >= IMAGE_GEO_MAX_FILES:
+                coverage.note(f"the search stopped at its limit of {IMAGE_GEO_MAX_FILES} candidate photos, so "
+                              f"later ones were not checked.")
                 break
-        truncated = len(candidates) >= IMAGE_GEO_MAX_FILES
+        truncated = coverage.incomplete
 
         update_job(status="Reading EXIF from candidate photos...", total_bytes=len(candidates))
         append_log(f"[*] Found {len(candidates)} candidate photo(s) to check (capped at {IMAGE_GEO_MAX_FILES}).")
 
         exif_entries = []
         skipped_too_large = 0
+        files_unreadable = 0
         files_checked = 0
         last_update_time = time.time()
         for fs, entry, path in candidates:
@@ -802,8 +967,10 @@ def execution_worker_image_geolocation_kml(image_path, dest_dir, source_ip=None,
                         exif_entry['FileName'] = entry['name']
                         exif_entry['Directory'] = path  # in-image path, for the KML description text
                         exif_entries.append(exif_entry)
+            except TskShortRead:
+                files_unreadable += 1  # counted and reported below - not a photo with no GPS
             except Exception:
-                pass  # one unreadable/corrupt candidate shouldn't fail the whole scan
+                pass  # one corrupt candidate shouldn't fail the whole scan
             finally:
                 try:
                     os.remove(tmp_path)
@@ -833,15 +1000,26 @@ def execution_worker_image_geolocation_kml(image_path, dest_dir, source_ip=None,
             append_log(f"[+] {len(points)} GPS-tagged point(s) found -> {kml_path}")
         else:
             append_log("[*] No GPS-tagged photos found - no KML file was written.")
+        if files_unreadable:
+            append_log(f"[!] {files_unreadable} candidate photo(s) could not be read in full from the image and "
+                       f"were not checked.")
+        for gap in coverage.gaps:
+            append_log(f"[!] Not searched: {gap}")
+        for part in coverage.partitions_skipped:
+            append_log(f"[*] Partition '{part['label']}' (sector {part['offset']}) has no filesystem this tool can "
+                       f"read - not searched.")
 
         if snapshot_job()["status"] == "Stopped":
             pass  # already logged above
+        elif coverage.incomplete or files_unreadable:
+            update_job(status="Completed - not everything was checked (see the log)", progress_percent=100.0)
         else:
             update_job(status="Completed Successfully", progress_percent=100.0)
 
         log_chain_of_custody("geolocation_kml_export_image", {
             "image_path": image_path, "files_scanned": len(candidates), "points_found": len(points),
-            "files_skipped_too_large": skipped_too_large, "truncated": truncated
+            "files_skipped_too_large": skipped_too_large, "files_unreadable": files_unreadable,
+            "truncated": truncated, **coverage.as_dict(),
         }, source_ip=source_ip, user=user)
     except Exception as e:
         update_job(status="Failed")
@@ -852,6 +1030,7 @@ def execution_worker_image_geolocation_kml(image_path, dest_dir, source_ip=None,
 @image_browser_bp.route('/api/image/start_geolocation_kml', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir')
 def start_image_geolocation_kml():
     global current_job
     with job_lock:
@@ -918,7 +1097,8 @@ def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
     route below, unchanged - only the core loop and manifest-writing moved
     here. Returns a plain dict; the route builds its jsonify() response
     from it, Auto Analyze reads the same dict directly."""
-    filesystems = _tsk_resolve_filesystems(image_path)
+    coverage = _SearchCoverage()
+    filesystems = coverage.resolve(image_path)
     if not filesystems:
         return {"success": False, "error": "No recognized filesystem found in this image."}
 
@@ -931,12 +1111,16 @@ def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
     for fsinfo in filesystems:
         try:
             fs = _tsk_open_fs(image_path, fsinfo['offset'])
-        except Exception:
+        except Exception as e:
+            coverage.note_open_failure(fsinfo, e)
             continue
-        for entry, path in _tsk_walk(fs):
+        walk_stats = {}
+        for entry, path in _tsk_walk(fs, stats=walk_stats):
             if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
                 continue
             if files_hashed >= IMAGE_HASH_MAX_FILES or (time.time() - start_time) > IMAGE_HASH_MAX_SECONDS:
+                coverage.note(f"hashing stopped at its limit ({IMAGE_HASH_MAX_FILES} files or "
+                              f"{IMAGE_HASH_MAX_SECONDS} seconds), so later files are not in the manifest.")
                 truncated = True
                 break
             try:
@@ -951,10 +1135,15 @@ def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
                     if hit_lists:
                         matches.append((digest, path, hit_lists))
             except Exception:
+                # A short read lands here too (TskShortRead): a hash of part
+                # of a file is not that file's hash, so it is skipped and
+                # counted, never written into the manifest.
                 files_errored += 1
                 continue  # one unreadable/corrupt file shouldn't fail the whole manifest
+        coverage.note_walk(walk_stats, fsinfo)
         if truncated:
             break
+    truncated = truncated or coverage.incomplete
 
     image_base = os.path.splitext(os.path.basename(image_path))[0]
     manifest_path = os.path.join(dest_dir, f"{image_base}_hash_manifest_{algo}.txt")
@@ -963,10 +1152,15 @@ def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
         f"# Image: {image_path}",
         f"# Algorithm: {algo.upper()}",
         f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"# Files hashed: {files_hashed}" + (f" (capped - more files remained unscanned)" if truncated else ""),
+        f"# Files hashed: {files_hashed}" + (f" (INCOMPLETE - see 'Not covered' below)" if truncated else ""),
         f"# Files skipped (unreadable): {files_errored}",
         "# Deleted files are excluded - see route documentation for why.",
     ]
+    for gap in coverage.gaps:
+        lines.append(f"# Not covered: {gap}")
+    for part in coverage.partitions_skipped:
+        lines.append(f"# Not covered: partition '{part['label']}' (sector {part['offset']}) has no filesystem "
+                     f"this tool can read.")
     if hash_sets:
         checked_names = ', '.join(s["name"] for s in hash_sets.values())
         lines.append(f"# Checked against hash set(s): {checked_names} ({len(matches)} match(es))")
@@ -990,7 +1184,7 @@ def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
 
     return {
         "success": True, "manifest_path": manifest_path, "files_hashed": files_hashed,
-        "files_errored": files_errored, "truncated": truncated,
+        "files_errored": files_errored, "truncated": truncated, **coverage.as_dict(),
         "hash_list_match_count": len(matches),
         "hash_list_matches": [{"hash": d, "path": p, "lists": ls} for d, p, ls in matches[:50]],
     }
@@ -998,6 +1192,7 @@ def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
 @image_browser_bp.route('/api/image/hash_manifest', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir')
 def image_hash_manifest():
     """Recursively hashes every real, non-deleted file inside an acquired
     image without extracting anything to disk first. Deleted files are
@@ -1040,6 +1235,7 @@ def image_hash_manifest():
     log_chain_of_custody("hash_manifest_export_image", {
         "image_path": image_path, "algorithm": algo, "files_hashed": result["files_hashed"],
         "files_errored": result["files_errored"], "truncated": result["truncated"],
+        "search_gaps": result["search_gaps"], "partitions_skipped": result["partitions_skipped"],
         "hash_list_matches": result["hash_list_match_count"],
     })
     return jsonify(result)
@@ -1075,7 +1271,8 @@ def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
     except yara.Error as e:
         return {"success": False, "error": f"Failed to compile the selected YARA ruleset(s): {e}"}
 
-    filesystems = _tsk_resolve_filesystems(image_path)
+    coverage = _SearchCoverage()
+    filesystems = coverage.resolve(image_path)
     if not filesystems:
         return {"success": False, "error": "No recognized filesystem found in this image."}
 
@@ -1088,12 +1285,16 @@ def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
     for fsinfo in filesystems:
         try:
             fs = _tsk_open_fs(image_path, fsinfo['offset'])
-        except Exception:
+        except Exception as e:
+            coverage.note_open_failure(fsinfo, e)
             continue
-        for entry, path in _tsk_walk(fs):
+        walk_stats = {}
+        for entry, path in _tsk_walk(fs, stats=walk_stats):
             if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
                 continue
             if files_scanned >= IMAGE_YARA_MAX_FILES or (time.time() - start_time) > IMAGE_YARA_MAX_SECONDS:
+                coverage.note(f"the sweep stopped at its limit ({IMAGE_YARA_MAX_FILES} files or "
+                              f"{IMAGE_YARA_MAX_SECONDS} seconds), so later files were not scanned.")
                 truncated = True
                 break
             if entry['size'] and entry['size'] > IMAGE_YARA_MAX_FILE_BYTES:
@@ -1113,15 +1314,17 @@ def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
                                                            "inode": entry['inode'], "path": path, "name": entry['name']},
                                              "YARA", summary, output)
             except Exception:
-                files_errored += 1
+                files_errored += 1  # incl. a file that could not be read in full (TskShortRead) - never scanned partially
             finally:
                 if tmp_path:
                     try:
                         os.remove(tmp_path)
                     except OSError:
                         pass
+        coverage.note_walk(walk_stats, fsinfo)
         if truncated:
             break
+    truncated = truncated or coverage.incomplete
 
     image_base = os.path.splitext(os.path.basename(image_path))[0]
     report_path = os.path.join(dest_dir, f"{image_base}_yara_sweep.txt")
@@ -1131,19 +1334,24 @@ def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
         f"# Image: {image_path}",
         f"# Ruleset(s) checked: {ruleset_names}",
         f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"# Files scanned: {files_scanned}" + (" (capped - more files remained unscanned)" if truncated else ""),
+        f"# Files scanned: {files_scanned}" + (" (INCOMPLETE - see 'Not covered' below)" if truncated else ""),
         f"# Files skipped (too large, over {IMAGE_YARA_MAX_FILE_BYTES // (1024*1024)}MB): {files_skipped_too_large}",
         f"# Files skipped (unreadable/errored): {files_errored}",
         f"# Total matches: {len(match_rows)} file(s)",
         "# Deleted files are excluded - their data may already be partially overwritten on a live evidence filesystem.",
-        "#",
     ]
+    for gap in coverage.gaps:
+        lines.append(f"# Not covered: {gap}")
+    for part in coverage.partitions_skipped:
+        lines.append(f"# Not covered: partition '{part['label']}' (sector {part['offset']}) has no filesystem "
+                     f"this tool can read.")
+    lines.append("#")
     for path, matches in match_rows:
         for m in matches:
             tag_text = f" (tags: {', '.join(m['tags'])})" if m['tags'] else ""
             lines.append(f"MATCH  {path}  <- [{m['ruleset_name']}] {m['rule']}{tag_text}")
     if not match_rows:
-        lines.append("# No matches found.")
+        lines.append("# No matches found" + (" in the part of the image that was scanned." if truncated else "."))
     try:
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines) + "\n")
@@ -1154,13 +1362,14 @@ def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
     return {
         "success": True, "report_path": report_path, "files_scanned": files_scanned,
         "files_skipped_too_large": files_skipped_too_large, "files_errored": files_errored,
-        "truncated": truncated, "matched_file_count": len(match_rows),
+        "truncated": truncated, **coverage.as_dict(), "matched_file_count": len(match_rows),
         "matches": [{"path": p, "rules": m} for p, m in match_rows[:50]],
     }
 
 @image_browser_bp.route('/api/image/yara_sweep', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'case_folder')
 def image_yara_sweep():
     """Recursively scans every real, non-deleted file inside an acquired
     image against the selected YARA ruleset(s), without extracting
@@ -1189,6 +1398,7 @@ def image_yara_sweep():
     log_chain_of_custody("yara_sweep_image", {
         "image_path": image_path, "files_scanned": result["files_scanned"],
         "files_errored": result["files_errored"], "truncated": result["truncated"],
+        "search_gaps": result["search_gaps"], "partitions_skipped": result["partitions_skipped"],
         "matched_file_count": result["matched_file_count"],
     })
     return jsonify(result)
@@ -1237,7 +1447,8 @@ def _run_keyword_scan_body(image_path, dest_dir, case_folder=None):
     are always safe to run against anything, which is exactly why they're
     the ones with no selection step at all anywhere else in this app."""
     patterns = build_scan_patterns(None)
-    filesystems = _tsk_resolve_filesystems(image_path)
+    coverage = _SearchCoverage()
+    filesystems = coverage.resolve(image_path)
     if not filesystems:
         return {"success": False, "error": "No recognized filesystem found in this image."}
 
@@ -1268,12 +1479,16 @@ def _run_keyword_scan_body(image_path, dest_dir, case_folder=None):
         for fsinfo in filesystems:
             try:
                 fs = _tsk_open_fs(image_path, fsinfo['offset'])
-            except Exception:
+            except Exception as e:
+                coverage.note_open_failure(fsinfo, e)
                 continue
-            for entry, path in _tsk_walk(fs):
+            walk_stats = {}
+            for entry, path in _tsk_walk(fs, stats=walk_stats):
                 if entry['is_dir'] or entry['is_virtual']:
                     continue
                 if files_scanned >= IMAGE_AUTOANALYZE_KEYWORD_MAX_FILES or (time.time() - start_time) > IMAGE_AUTOANALYZE_KEYWORD_MAX_SECONDS:
+                    coverage.note(f"the scan stopped at its limit ({IMAGE_AUTOANALYZE_KEYWORD_MAX_FILES} files or "
+                                  f"{IMAGE_AUTOANALYZE_KEYWORD_MAX_SECONDS} seconds), so later files were not scanned.")
                     walk_truncated = True
                     break
                 if index_conn is not None:
@@ -1327,8 +1542,10 @@ def _run_keyword_scan_body(image_path, dest_dir, case_folder=None):
                             hit_rows_buf)
                         hit_rows_buf = []
                     index_conn.commit()
+            coverage.note_walk(walk_stats, fsinfo)
             if walk_truncated:
                 break
+        walk_truncated = walk_truncated or coverage.incomplete
 
         if index_conn is not None:
             if index_rows_buf:
@@ -1351,13 +1568,18 @@ def _run_keyword_scan_body(image_path, dest_dir, case_folder=None):
         "# Pi Forensics Suite - Auto Analyze Keyword/Structured-Data Scan",
         f"# Image: {image_path}",
         f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"# Files scanned: {files_scanned}" + (" (capped - more files remained unscanned)" if walk_truncated else ""),
+        f"# Files scanned: {files_scanned}" + (" (INCOMPLETE - see 'Not covered' below)" if walk_truncated else ""),
         f"# Files skipped (unreadable): {files_errored}",
         f"# Total hits: {total_hits}",
         "# Built-in categories only (emails/URLs/IPs/card-like numbers/phone numbers) - custom",
         "# keyword lists are never auto-included here; run Triage Scan manually to include one.",
-        "#",
     ]
+    for gap in coverage.gaps:
+        lines.append(f"# Not covered: {gap}")
+    for part in coverage.partitions_skipped:
+        lines.append(f"# Not covered: partition '{part['label']}' (sector {part['offset']}) has no filesystem "
+                     f"this tool can read.")
+    lines.append("#")
     for name, rows in results.items():
         if not rows:
             continue
@@ -1366,7 +1588,7 @@ def _run_keyword_scan_body(image_path, dest_dir, case_folder=None):
         for path, val in rows:
             lines.append(f"{path}\t{val.decode('utf-8', errors='replace')}")
     if total_hits == 0:
-        lines.append("# No matches found.")
+        lines.append("# No matches found" + (" in the part of the image that was scanned." if walk_truncated else "."))
     try:
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines) + "\n")
@@ -1376,7 +1598,8 @@ def _run_keyword_scan_body(image_path, dest_dir, case_folder=None):
 
     return {
         "success": True, "report_path": report_path, "files_scanned": files_scanned,
-        "files_errored": files_errored, "truncated": walk_truncated, "total_hits": total_hits,
+        "files_errored": files_errored, "truncated": walk_truncated, **coverage.as_dict(),
+        "total_hits": total_hits,
     }
 
 @image_browser_bp.route('/api/image/check_hash_lists', methods=['POST'])
@@ -1481,6 +1704,7 @@ IMAGE_BROWSER_ARTIFACT_MAX_WALKED_SECONDS = 300  # the walk itself is cheap (a n
 @image_browser_bp.route('/api/image/parse_browser_artifacts', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_browser_artifacts():
     req = request.get_json() or {}
     image_path = _resolve_browsable_source(req.get('image_path'))
@@ -1495,7 +1719,8 @@ def image_parse_browser_artifacts():
     # own parse_browser_artifacts() for the identical reasoning.
     url_list_sets = load_url_list_sets([r['id'] for r in get_url_lists()])
 
-    filesystems = _tsk_resolve_filesystems(image_path)
+    coverage = _SearchCoverage()
+    filesystems = coverage.resolve(image_path)
     if not filesystems:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
 
@@ -1505,21 +1730,30 @@ def image_parse_browser_artifacts():
     for fsinfo in filesystems:
         try:
             fs = _tsk_open_fs(image_path, fsinfo['offset'])
-        except Exception:
+        except Exception as e:
+            coverage.note_open_failure(fsinfo, e)
             continue
-        for entry, path in _tsk_walk(fs):
+        walk_stats = {}
+        for entry, path in _tsk_walk(fs, stats=walk_stats):
             if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
                 continue  # deleted-file data may already be partially overwritten - same exclusion every other in-image analysis tool in this app already applies
             if time.time() - start_time > IMAGE_BROWSER_ARTIFACT_MAX_WALKED_SECONDS:
+                coverage.note(f"the search stopped at its {IMAGE_BROWSER_ARTIFACT_MAX_WALKED_SECONDS}-second time "
+                              f"limit, so later files were not checked.")
                 truncated = True
                 break
             if entry['name'] in BROWSER_ARTIFACT_FILENAMES:
                 candidates.append((fs, fsinfo, entry, path))
                 if len(candidates) >= BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES:
+                    coverage.note(f"the search stopped at its limit of {BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES} "
+                                  f"candidate files, so later ones were not checked.")
                     truncated = True
                     break
+        coverage.note_walk(walk_stats, fsinfo)
         if truncated:
             break
+    truncated = truncated or coverage.incomplete
+    coverage = coverage.as_dict()
 
     counts = {}
     files_parsed = 0
@@ -1549,11 +1783,11 @@ def image_parse_browser_artifacts():
 
     log_chain_of_custody("browser_artifacts_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 IMAGE_REGISTRY_EVTX_MAX_WALKED_SECONDS = 300  # same backstop image_parse_browser_artifacts() above already uses
@@ -1565,37 +1799,52 @@ def _image_scan_candidate_files(image_path, matcher, max_candidates):
     extension match for EVTX/Prefetch, basename+parent-directory-name
     match for Recycle Bin - the second argument exists specifically for
     that last case, unused by every other matcher). Returns
-    (candidates, truncated) where each candidate is
-    (fs, fsinfo, entry, in-image path)."""
-    filesystems = _tsk_resolve_filesystems(image_path)
+    (candidates, truncated, coverage) where each candidate is
+    (fs, fsinfo, entry, in-image path) and coverage is
+    _SearchCoverage.as_dict() - what the walk did not reach, which every
+    caller passes through to its response so "none found" is never claimed
+    for a part of the image that was not searched (2026-10-02). truncated is
+    True whenever coverage has a gap. candidates is None when the image holds
+    no filesystem at all; an image that cannot be opened raises
+    ImageUnreadable."""
+    coverage = _SearchCoverage()
+    filesystems = coverage.resolve(image_path)
     if not filesystems:
-        return None, False
+        return None, False, coverage.as_dict()
     start_time = time.time()
     candidates = []
-    truncated = False
+    stopped = False
     for fsinfo in filesystems:
         try:
             fs = _tsk_open_fs(image_path, fsinfo['offset'])
-        except Exception:
+        except Exception as e:
+            coverage.note_open_failure(fsinfo, e)
             continue
-        for entry, path in _tsk_walk(fs):
+        walk_stats = {}
+        for entry, path in _tsk_walk(fs, stats=walk_stats):
             if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
                 continue
             if time.time() - start_time > IMAGE_REGISTRY_EVTX_MAX_WALKED_SECONDS:
-                truncated = True
+                coverage.note(f"the search stopped at its {IMAGE_REGISTRY_EVTX_MAX_WALKED_SECONDS}-second time "
+                              f"limit, so later files were not checked.")
+                stopped = True
                 break
             if matcher(entry['name'], path):
                 candidates.append((fs, fsinfo, entry, path))
                 if len(candidates) >= max_candidates:
-                    truncated = True
+                    coverage.note(f"the search stopped at its limit of {max_candidates} candidate files, so "
+                                  f"later ones were not checked.")
+                    stopped = True
                     break
-        if truncated:
+        coverage.note_walk(walk_stats, fsinfo)
+        if stopped:
             break
-    return candidates, truncated
+    return candidates, coverage.incomplete, coverage.as_dict()
 
 @image_browser_bp.route('/api/image/parse_registry', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_registry():
     """In-image counterpart to parse_registry() (routes/file_explorer.py) -
     same extract-to-temp-then-parse pattern image_parse_browser_artifacts()
@@ -1610,7 +1859,7 @@ def image_parse_registry():
         case_folder = None
 
     upper_names = {n.upper() for n in REGISTRY_HIVE_FILENAMES}
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.upper() in upper_names, REGISTRY_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -1643,16 +1892,17 @@ def image_parse_registry():
 
     log_chain_of_custody("registry_hives_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_android_artifacts', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_android_artifacts():
     """In-image only, by design - see core/android_artifacts.py's own
     module docstring for why (mmssms.db/contacts2.db live under
@@ -1670,7 +1920,7 @@ def image_parse_android_artifacts():
         case_folder = None
 
     lower_names = {n.lower() for n in ANDROID_ARTIFACT_DB_FILENAMES}
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.lower() in lower_names, ANDROID_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -1703,16 +1953,17 @@ def image_parse_android_artifacts():
 
     log_chain_of_custody("android_artifacts_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_crypto_wallets', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_crypto_wallets():
     """In-image counterpart to parse_crypto_wallets() (routes/
     file_explorer.py) - same extract-to-temp-then-parse pattern
@@ -1734,7 +1985,7 @@ def image_parse_crypto_wallets():
         containing_dir = path.rsplit('/', 1)[0] if '/' in path else ''
         return is_crypto_wallet_candidate(name, containing_dir)
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, _is_wallet_candidate, CRYPTO_WALLET_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -1767,17 +2018,17 @@ def image_parse_crypto_wallets():
 
     log_chain_of_custody("crypto_wallets_scanned_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 MOBILE_BACKUP_IMAGE_MAX_FILES = 5  # Manifest.db/Info.plist/Manifest.plist + the (at most 3) resolved content files below
 MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES = 500 * 1024 * 1024  # generous per-content-file cap - sms.db/AddressBook/CallHistory are never remotely this large in practice
 
-def _find_ios_backup_dir_in_image(fs, root_inode=None):
+def _find_ios_backup_dir_in_image(fs, root_inode=None, walk_stats=None):
     """Walks a filesystem looking for a directory whose NAME is UDID-shaped
     and whose immediate children include both Manifest.db and Info.plist -
     the in-image counterpart to core/mobile_artifacts.py's
@@ -1788,7 +2039,7 @@ def _find_ios_backup_dir_in_image(fs, root_inode=None):
     already what _tsk_walk provides, this just filters its output down to
     directory entries and probes each UDID-shaped one."""
     from core.mobile_artifacts import _udid_like
-    for entry, path in _tsk_walk(fs, root_inode):
+    for entry, path in _tsk_walk(fs, root_inode, stats=walk_stats):
         if not entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
             continue
         if not _udid_like(entry['name']):
@@ -1814,9 +2065,20 @@ def _extract_ios_backup_essentials_to_temp(fs, backup_dir_inode):
     <fileID[0:2]>/<fileID> relative layout - so
     parse_mobile_backup_manifest() can run against this temp copy exactly
     as it would against a real-fs backup, zero parsing-logic duplication.
-    Returns the temp dir path (caller must shutil.rmtree() it) or None if
-    Manifest.db itself couldn't be extracted."""
+
+    Returns (temp_dir, problems). temp_dir is None if Manifest.db itself
+    couldn't be extracted (the caller must shutil.rmtree() it otherwise);
+    problems maps an artifact type to why its database could not be copied
+    out (2026-10-02 - each used to be skipped silently, and the parse then
+    reported that app as "not in this backup"). Every fileID is validated
+    (core/mobile_artifacts.py) before it is used as a path, and every write
+    is checked to land inside temp_dir: a fileID straight from the evidence's
+    Manifest.db once decided where this function wrote."""
+    from core.mobile_artifacts import (_resolve_manifest_files_query_only, MOBILE_ARTIFACT_TARGET_PATHS,
+                                       MobileArtifactUnreadable)
+    problems = {}
     temp_dir = tempfile.mkdtemp(prefix="pif_ios_backup_")
+    real_temp = os.path.realpath(temp_dir)
     try:
         children = {c['name']: c for c in _tsk_list_dir(fs, backup_dir_inode)}
         for fname in ('Manifest.db', 'Info.plist', 'Manifest.plist'):
@@ -1828,20 +2090,31 @@ def _extract_ios_backup_essentials_to_temp(fs, backup_dir_inode):
                 with open(os.path.join(temp_dir, fname), 'wb') as out:
                     _tsk_stream_file(tsk_file, out.write, max_bytes=MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES)
             except Exception:
+                try:
+                    os.remove(os.path.join(temp_dir, fname))  # never leave a partial copy to be parsed
+                except OSError:
+                    pass
                 continue
         if not os.path.isfile(os.path.join(temp_dir, 'Manifest.db')):
             shutil.rmtree(temp_dir, ignore_errors=True)
-            return None
+            return None, problems
 
-        from core.mobile_artifacts import _resolve_manifest_files_query_only, MOBILE_ARTIFACT_TARGET_PATHS
-        for domain, relative_path in MOBILE_ARTIFACT_TARGET_PATHS.values():
-            file_id = _resolve_manifest_files_query_only(temp_dir, domain, relative_path)
+        for artifact_type, (domain, relative_path) in MOBILE_ARTIFACT_TARGET_PATHS.items():
+            try:
+                file_id = _resolve_manifest_files_query_only(temp_dir, domain, relative_path)
+            except MobileArtifactUnreadable:
+                continue  # the parse below hits the same refusal and reports it
             if not file_id:
+                continue
+            out_subdir = os.path.join(temp_dir, file_id[0:2])
+            out_path = os.path.join(out_subdir, file_id)
+            if not path_is_within(os.path.realpath(out_path), real_temp):
+                problems[artifact_type] = "its fileID does not resolve inside the extraction folder - not copied."
                 continue
             try:
                 subdir_entry = children.get(file_id[0:2])
                 if not subdir_entry or not subdir_entry['is_dir']:
-                    continue
+                    continue  # named in Manifest.db but not in the backup: the parse reports it as not found
                 target_entry = None
                 for c in _tsk_list_dir(fs, int(subdir_entry['inode'])):
                     if c['name'] == file_id and not c['is_dir']:
@@ -1849,22 +2122,32 @@ def _extract_ios_backup_essentials_to_temp(fs, backup_dir_inode):
                         break
                 if not target_entry:
                     continue
-                out_subdir = os.path.join(temp_dir, file_id[0:2])
-                os.makedirs(out_subdir, exist_ok=True)
                 tsk_file = fs.open_meta(inode=int(target_entry['inode']))
-                with open(os.path.join(out_subdir, file_id), 'wb') as out:
+                declared_size = tsk_file.info.meta.size if tsk_file.info.meta else 0
+                if declared_size > MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES:
+                    problems[artifact_type] = (f"its database is larger than the "
+                                               f"{MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES // (1024 * 1024)} MB copy "
+                                               f"limit - not parsed.")
+                    continue
+                os.makedirs(out_subdir, exist_ok=True)
+                with open(out_path, 'wb') as out:
                     _tsk_stream_file(tsk_file, out.write, max_bytes=MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES)
-            except Exception:
-                continue
-        return temp_dir
+            except Exception as e:
+                try:
+                    os.remove(out_path)
+                except OSError:
+                    pass
+                problems[artifact_type] = f"its database could not be copied out of the image ({e})."
+        return temp_dir, problems
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        return None
+        return None, problems
 
 
 @image_browser_bp.route('/api/image/parse_mobile_artifacts', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_mobile_artifacts():
     """In-image counterpart to parse_mobile_artifacts() (routes/
     file_explorer.py) - genuinely low relative value (an examiner virtually
@@ -1886,7 +2169,8 @@ def image_parse_mobile_artifacts():
         case_folder = None
     requested_types = req.get('types') or None
 
-    filesystems = _tsk_resolve_filesystems(image_path)
+    coverage = _SearchCoverage()
+    filesystems = coverage.resolve(image_path)
     if not filesystems:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
 
@@ -1894,49 +2178,63 @@ def image_parse_mobile_artifacts():
     files_parsed = 0
     candidates_found = 0
     any_encrypted = False
-    temp_dir = None
-    try:
-        for fsinfo in filesystems:
-            try:
-                fs = _tsk_open_fs(image_path, fsinfo['offset'])
-            except Exception:
-                continue
-            backup_inode, backup_path = _find_ios_backup_dir_in_image(fs)
-            if backup_inode is None:
-                continue
-            candidates_found += 1
-            temp_dir = _extract_ios_backup_essentials_to_temp(fs, backup_inode)
-            if not temp_dir:
-                continue
+    unreadable = []
+    for fsinfo in filesystems:
+        try:
+            fs = _tsk_open_fs(image_path, fsinfo['offset'])
+        except Exception as e:
+            coverage.note_open_failure(fsinfo, e)
+            continue
+        walk_stats = {}
+        backup_inode, backup_path = _find_ios_backup_dir_in_image(fs, walk_stats=walk_stats)
+        if backup_inode is None:
+            # Only a walk that found nothing can have missed a backup.
+            coverage.note_walk(walk_stats, fsinfo)
+            continue
+        candidates_found += 1
+        # One temp copy per filesystem, removed before the next - the single
+        # variable this used to share leaked every copy but the last.
+        temp_dir, problems = _extract_ios_backup_essentials_to_temp(fs, backup_inode)
+        if not temp_dir:
+            unreadable.append({"backup": backup_path, "artifact_type": "",
+                               "reason": "Manifest.db could not be copied out of the image."})
+            continue
+        try:
             records, summary = parse_mobile_backup_manifest(temp_dir, requested_types)
-            if summary.get("encrypted"):
-                any_encrypted = True
-            if not records:
-                continue
-            files_parsed += 1
-            for r in records:
-                counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
-            if case_folder:
-                _record_parsed_artifacts(case_folder, {
-                    "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
-                    "inode": str(backup_inode), "path": backup_path,
-                }, records)
-    finally:
-        if temp_dir:
+        finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+        if summary.get("encrypted"):
+            any_encrypted = True
+        # An extraction failure explains the parse's "not found" for that type.
+        for artifact_type, reason in {**summary.get("unreadable", {}), **problems}.items():
+            unreadable.append({"backup": backup_path, "artifact_type": artifact_type, "reason": reason})
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": str(backup_inode), "path": backup_path,
+            }, records)
+    coverage = coverage.as_dict()
 
     log_chain_of_custody("mobile_artifacts_parsed_image", {
         "image_path": image_path, "candidates_found": candidates_found,
         "files_parsed": files_parsed, "counts": counts, "any_encrypted": any_encrypted,
+        "unreadable": unreadable, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": candidates_found, "files_parsed": files_parsed,
-        "counts": counts, "truncated": False, "indexed": bool(case_folder), "any_encrypted": any_encrypted,
+        "counts": counts, "truncated": bool(coverage["search_gaps"]), **coverage, "unreadable": unreadable,
+        "indexed": bool(case_folder), "any_encrypted": any_encrypted,
     })
 
 @image_browser_bp.route('/api/image/parse_evtx', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_evtx():
     """In-image counterpart to parse_evtx() (routes/file_explorer.py)."""
     req = request.get_json() or {}
@@ -1948,7 +2246,7 @@ def image_parse_evtx():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.lower().endswith(EVTX_EXTENSION), EVTX_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -1981,16 +2279,17 @@ def image_parse_evtx():
 
     log_chain_of_custody("evtx_files_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_prefetch', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_prefetch():
     """In-image counterpart to parse_prefetch() (routes/file_explorer.py)."""
     req = request.get_json() or {}
@@ -2002,7 +2301,7 @@ def image_parse_prefetch():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.lower().endswith(PREFETCH_EXTENSION), PREFETCH_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2035,16 +2334,17 @@ def image_parse_prefetch():
 
     log_chain_of_custody("prefetch_files_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_jumplists', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_jumplists():
     """In-image counterpart to parse_jumplists() (routes/file_explorer.py)."""
     req = request.get_json() or {}
@@ -2060,7 +2360,7 @@ def image_parse_jumplists():
         lower = name.lower()
         return lower.endswith(JUMPLIST_AUTOMATIC_EXTENSION) or lower.endswith(JUMPLIST_CUSTOM_EXTENSION)
 
-    candidates, truncated = _image_scan_candidate_files(image_path, _is_jumplist_candidate, JUMPLIST_SCAN_MAX_CANDIDATES)
+    candidates, truncated, coverage = _image_scan_candidate_files(image_path, _is_jumplist_candidate, JUMPLIST_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
 
@@ -2099,11 +2399,11 @@ def image_parse_jumplists():
 
     log_chain_of_custody("jumplists_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 def _run_thumbcache_extract_body(image_path, dest_dir, case_folder):
@@ -2119,7 +2419,7 @@ def _run_thumbcache_extract_body(image_path, dest_dir, case_folder):
     pattern verbatim - the whole point here is a PERSISTENT output, so
     each candidate's temp extraction is only the intermediate step before
     core.thumbcache_utils writes the real files into dest_dir itself."""
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: bool(THUMBCACHE_FILENAME_RE.match(name)) and name.lower() != THUMBCACHE_IDX_FILENAME,
         THUMBCACHE_SCAN_MAX_CANDIDATES)
     if candidates is None:
@@ -2161,12 +2461,13 @@ def _run_thumbcache_extract_body(image_path, dest_dir, case_folder):
     return {
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
         "thumbnails_extracted": thumbnails_extracted, "counts": counts,
-        "unsupported_versions": unsupported_versions, "truncated": truncated,
+        "unsupported_versions": unsupported_versions, "truncated": truncated, **coverage,
     }
 
 @image_browser_bp.route('/api/image/parse_thumbcache', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'case_folder')
 def image_parse_thumbcache():
     """In-image counterpart to parse_thumbcache() (routes/file_explorer.py) -
     needs an explicit destination_dir the same way image_hash_manifest()
@@ -2192,12 +2493,14 @@ def image_parse_thumbcache():
         "image_path": image_path, "destination_dir": dest_dir, "candidates_found": result["candidates_found"],
         "files_parsed": result["files_parsed"], "thumbnails_extracted": result["thumbnails_extracted"],
         "unsupported_versions": result["unsupported_versions"], "truncated": result["truncated"],
+        "search_gaps": result["search_gaps"], "partitions_skipped": result["partitions_skipped"],
     })
     return jsonify(dict(result, destination_dir=dest_dir, indexed=bool(case_folder)))
 
 @image_browser_bp.route('/api/image/parse_sticky_notes', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_sticky_notes():
     """In-image counterpart to parse_sticky_notes() (routes/file_explorer.py) -
     a genuinely different extraction shape from every metadata-only in-
@@ -2225,7 +2528,7 @@ def image_parse_sticky_notes():
     def _is_sticky_notes_candidate(name, path):
         return sticky_notes_canonical_filename(name) is not None
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, _is_sticky_notes_candidate, STICKY_NOTES_SCAN_MAX_CANDIDATES * 3)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2253,6 +2556,10 @@ def image_parse_sticky_notes():
                     with open(out_path, 'wb') as out_f:
                         _tsk_stream_file(tsk_file, out_f.write)
                 except Exception:
+                    try:
+                        os.remove(out_path)  # never parse a partial copy as the file
+                    except OSError:
+                        pass
                     continue
             records = parse_sticky_notes_directory(tmp_dir)
         finally:
@@ -2271,16 +2578,17 @@ def image_parse_sticky_notes():
 
     log_chain_of_custody("sticky_notes_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "families_parsed": families_parsed, "counts": counts, "truncated": truncated,
+        "families_parsed": families_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": families_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_windows_activity', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_windows_activity():
     """In-image counterpart to parse_windows_activity()
     (routes/file_explorer.py) - same grouping-by-in-image-parent-directory
@@ -2303,7 +2611,7 @@ def image_parse_windows_activity():
     def _is_windows_activity_candidate(name, path):
         return windows_activity_canonical_filename(name) is not None
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, _is_windows_activity_candidate, WINDOWS_ACTIVITY_SCAN_MAX_CANDIDATES * 3)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2335,6 +2643,10 @@ def image_parse_windows_activity():
                     with open(out_path, 'wb') as out_f:
                         _tsk_stream_file(tsk_file, out_f.write)
                 except Exception:
+                    try:
+                        os.remove(out_path)  # never parse a partial copy as the file
+                    except OSError:
+                        pass
                     continue
             records = parse_windows_activity_file(os.path.join(tmp_dir, base_name), base_name)
         finally:
@@ -2353,16 +2665,17 @@ def image_parse_windows_activity():
 
     log_chain_of_custody("windows_activity_files_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "families_parsed": families_parsed, "counts": counts, "truncated": truncated,
+        "families_parsed": families_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": families_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_srum', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_srum():
     """In-image counterpart to parse_srum() (routes/file_explorer.py) -
     same single-file extract-to-temp-then-parse shape image_parse_
@@ -2378,7 +2691,7 @@ def image_parse_srum():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.lower() == SRUM_FILENAME.lower(), SRUM_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2411,16 +2724,17 @@ def image_parse_srum():
 
     log_chain_of_custody("srum_files_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_winsearch', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_winsearch():
     """In-image counterpart to parse_winsearch() (routes/file_explorer.py)
     - same single-file extract-to-temp-then-parse shape image_parse_srum()
@@ -2434,7 +2748,7 @@ def image_parse_winsearch():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.lower() == WINSEARCH_FILENAME.lower(), WINSEARCH_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2467,16 +2781,17 @@ def image_parse_winsearch():
 
     log_chain_of_custody("winsearch_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_webcache', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_webcache():
     """In-image counterpart to parse_webcache() (routes/file_explorer.py)
     - same single-file extract-to-temp-then-parse shape image_parse_srum()
@@ -2492,7 +2807,7 @@ def image_parse_webcache():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.lower() in WEBCACHE_FILENAMES, WEBCACHE_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2525,16 +2840,17 @@ def image_parse_webcache():
 
     log_chain_of_custody("webcache_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_bits', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_bits():
     """In-image counterpart to parse_bits() (routes/file_explorer.py) -
     same single-file extract-to-temp-then-parse shape image_parse_srum()
@@ -2548,7 +2864,7 @@ def image_parse_bits():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.lower() == BITS_FILENAME.lower(), BITS_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2581,11 +2897,11 @@ def image_parse_bits():
 
     log_chain_of_custody("bits_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 def _is_rdp_bitmap_cache_candidate(name, path):
@@ -2594,6 +2910,7 @@ def _is_rdp_bitmap_cache_candidate(name, path):
 @image_browser_bp.route('/api/image/parse_rdp_bitmap_cache', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_rdp_bitmap_cache():
     """In-image counterpart to parse_rdp_bitmap_cache() (routes/
     file_explorer.py) - same single-file extract-to-temp-then-parse shape
@@ -2607,7 +2924,7 @@ def image_parse_rdp_bitmap_cache():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, _is_rdp_bitmap_cache_candidate, RDP_BITMAP_CACHE_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2640,16 +2957,17 @@ def image_parse_rdp_bitmap_cache():
 
     log_chain_of_custody("rdp_bitmap_cache_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_powershell_history', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_powershell_history():
     """In-image counterpart to parse_powershell_history()
     (routes/file_explorer.py) - the matcher checks both the filename
@@ -2672,7 +2990,7 @@ def image_parse_powershell_history():
         parts = path.split('/')
         return len(parts) >= 2 and parts[-2].lower() == POWERSHELL_HISTORY_PARENT_DIR_NAME.lower()
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, _is_powershell_history_candidate, POWERSHELL_HISTORY_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2705,16 +3023,17 @@ def image_parse_powershell_history():
 
     log_chain_of_custody("powershell_history_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_firewall_log', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_firewall_log():
     """In-image counterpart to parse_firewall_log() (routes/file_explorer.py)."""
     req = request.get_json() or {}
@@ -2727,7 +3046,7 @@ def image_parse_firewall_log():
         case_folder = None
 
     lower_names = {n.lower() for n in FIREWALL_LOG_FILENAMES}
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.lower() in lower_names, FIREWALL_LOG_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2760,16 +3079,17 @@ def image_parse_firewall_log():
 
     log_chain_of_custody("firewall_log_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_macos_launchd', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_macos_launchd():
     """In-image counterpart to parse_macos_launchd() (routes/file_explorer.py).
     Only ever finds anything against an HFS+-formatted image - this app's
@@ -2795,7 +3115,7 @@ def image_parse_macos_launchd():
         parts = path.split('/')
         return len(parts) >= 2 and parts[-2].lower() in LAUNCHD_PARENT_DIR_NAMES
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, _is_launchd_candidate, LAUNCHD_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2828,16 +3148,17 @@ def image_parse_macos_launchd():
 
     log_chain_of_custody("macos_launchd_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_recyclebin', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_recyclebin():
     """In-image counterpart to parse_recyclebin() (routes/file_explorer.py) -
     the matcher checks both the entry's own name (starts with '$I') and
@@ -2862,7 +3183,7 @@ def image_parse_recyclebin():
             return False
         return any(p.lower() == '$recycle.bin' for p in path.split('/'))
 
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, _is_recyclebin_candidate, RECYCLEBIN_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -2895,16 +3216,30 @@ def image_parse_recyclebin():
 
     log_chain_of_custody("recyclebin_files_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
+
+def _in_image_source_path(req, inode):
+    """The in-image path a single selected file's parsed records are filed
+    under. The page sends it; a request that does not (an older page) gets
+    the entry named by inode rather than left null - parsed_artifacts.
+    source_path is NOT NULL, and a null here made every INSERT fail while the
+    route still reported "indexed" (2026-10-02)."""
+    path = req.get('path')
+    if isinstance(path, str) and path.strip():
+        return path
+    name = req.get('name') if isinstance(req.get('name'), str) else ''
+    return f"<inode {inode}>/{name}" if name else f"<inode {inode}>"
+
 
 @image_browser_bp.route('/api/image/analyze_mft', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'case_folder')
 def image_analyze_mft():
     """In-image counterpart to analyze_mft() (routes/file_explorer.py) - one
     selected in-image '$MFT' file, same specific-inode extract-to-temp-then-
@@ -2921,12 +3256,6 @@ def image_analyze_mft():
     destination_dir = safe_path(req.get('destination_dir')) or case_folder
     if not destination_dir or not os.path.isdir(destination_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
-    # Closed/Archived cases take no new work (2026-09-23 review - these
-    # analysis/extraction routes write into the case but were never gated).
-    _closed = closed_case_refusal(destination_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
-    if _closed:
-        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
-                                                   f"Case Manager before adding new work to it."}), 409
     compute_hashes = bool(req.get('compute_hashes'))
 
     if not image_path:
@@ -2961,9 +3290,11 @@ def image_analyze_mft():
     except OSError as e:
         return jsonify({"success": False, "error": f"Analyzed successfully but could not write output: {e}"}), 500
 
-    identity = {"source_type": "image", "image_path": image_path, "fs_offset": offset, "inode": str(inode), "path": req.get('path')}
+    identity = {"source_type": "image", "image_path": image_path, "fs_offset": offset, "inode": str(inode),
+                "path": _in_image_source_path(req, inode)}
+    indexed = False
     if case_folder:
-        _record_parsed_artifacts(case_folder, identity, result["records"])
+        indexed = _record_parsed_artifacts(case_folder, identity, result["records"]) > 0 or not result["records"]
         _auto_tag_case_artifact(case_folder, output_path)
     else:
         _auto_tag_case_artifact(destination_dir, output_path)
@@ -2977,12 +3308,13 @@ def image_analyze_mft():
     })
     return jsonify({
         "success": True, "output_path": output_path, "total_records": result["total_records"],
-        "timestomp_count": result["timestomp_count"], "summary": summary, "indexed": bool(case_folder),
+        "timestomp_count": result["timestomp_count"], "summary": summary, "indexed": indexed,
     })
 
 @image_browser_bp.route('/api/image/parse_usnjrnl', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'case_folder')
 def image_parse_usnjrnl():
     """In-image counterpart to parse_usnjrnl() (routes/file_explorer.py) -
     one selected in-image '$Extend/$UsnJrnl:$J' entry, same specific-inode
@@ -3009,12 +3341,6 @@ def image_parse_usnjrnl():
     destination_dir = safe_path(req.get('destination_dir')) or case_folder
     if not destination_dir or not os.path.isdir(destination_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
-    # Closed/Archived cases take no new work (2026-09-23 review - these
-    # analysis/extraction routes write into the case but were never gated).
-    _closed = closed_case_refusal(destination_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
-    if _closed:
-        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
-                                                   f"Case Manager before adding new work to it."}), 409
 
     if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
@@ -3048,19 +3374,22 @@ def image_parse_usnjrnl():
     except OSError as e:
         return jsonify({"success": False, "error": f"Parsed successfully but could not write output: {e}"}), 500
 
-    identity = {"source_type": "image", "image_path": image_path, "fs_offset": offset, "inode": str(inode), "path": req.get('path')}
+    identity = {"source_type": "image", "image_path": image_path, "fs_offset": offset, "inode": str(inode),
+                "path": _in_image_source_path(req, inode)}
+    indexed = False
     if case_folder:
-        _record_parsed_artifacts(case_folder, identity, records)
+        indexed = _record_parsed_artifacts(case_folder, identity, records) > 0 or not records
         _auto_tag_case_artifact(case_folder, output_path)
     else:
         _auto_tag_case_artifact(destination_dir, output_path)
 
     log_chain_of_custody("usnjrnl_file_parsed_image", {"image_path": image_path, "inode": str(inode), "output_path": output_path, "record_count": len(records)})
-    return jsonify({"success": True, "output_path": output_path, "record_count": len(records), "indexed": bool(case_folder)})
+    return jsonify({"success": True, "output_path": output_path, "record_count": len(records), "indexed": indexed})
 
 @image_browser_bp.route('/api/image/parse_email', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_email():
     """In-image counterpart to parse_email() (routes/file_explorer.py) -
     same whole-image extract-to-temp-then-parse pattern image_parse_
@@ -3078,7 +3407,7 @@ def image_parse_email():
         case_folder = None
 
     email_exts = ('.eml', '.mbox', '.pst', '.ost')
-    candidates, truncated = _image_scan_candidate_files(
+    candidates, truncated, coverage = _image_scan_candidate_files(
         image_path, lambda name, path: name.lower().endswith(email_exts), 200)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -3112,16 +3441,17 @@ def image_parse_email():
 
     log_chain_of_custody("email_files_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_linux_artifacts', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_linux_artifacts():
     """In-image counterpart to parse_linux_artifacts() (routes/
     file_explorer.py). Loops once per requested artifact type (mirroring
@@ -3145,15 +3475,17 @@ def image_parse_linux_artifacts():
     files_parsed = 0
     candidates_found_total = 0
     truncated = False
+    coverage = {"search_gaps": [], "partitions_skipped": []}
     filesystem_found = False
     for artifact_key in requested_types:
         matcher_fn, parse_fn = LINUX_ARTIFACT_IMAGE_MATCHERS[artifact_key]
-        candidates, this_truncated = _image_scan_candidate_files(
+        candidates, this_truncated, this_coverage = _image_scan_candidate_files(
             image_path, matcher_fn, LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES)
         if candidates is None:
             continue  # no recognized filesystem - handled once, below, after the loop
         filesystem_found = True
         truncated = truncated or this_truncated
+        _merge_search_coverage(coverage, this_coverage)
         candidates_found_total += len(candidates)
         for fs, fsinfo, entry, path in candidates:
             tmp_path = None
@@ -3184,16 +3516,17 @@ def image_parse_linux_artifacts():
 
     log_chain_of_custody("linux_artifacts_parsed_image", {
         "image_path": image_path, "types": requested_types, "candidates_found": candidates_found_total,
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     })
     return jsonify({
         "success": True, "candidates_found": candidates_found_total, "files_parsed": files_parsed,
-        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+        "counts": counts, "truncated": truncated, **coverage, "indexed": bool(case_folder),
     })
 
 @image_browser_bp.route('/api/image/parse_lnk', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_lnk():
     """In-image counterpart to parse_lnk() (routes/file_explorer.py) - one
     selected in-image .lnk file, same extract-to-temp-then-parse pattern
@@ -3229,16 +3562,17 @@ def image_parse_lnk():
             except OSError:
                 pass
 
+    indexed = False
     if case_folder and records:
-        _record_parsed_artifacts(case_folder, {
+        indexed = _record_parsed_artifacts(case_folder, {
             "source_type": "image", "image_path": image_path, "fs_offset": offset,
-            "inode": str(inode), "path": req.get('path'),
-        }, records)
+            "inode": str(inode), "path": _in_image_source_path(req, inode),
+        }, records) > 0
 
     log_chain_of_custody("lnk_file_parsed_image", {"image_path": image_path, "inode": str(inode), "name": name_hint, "parsed": bool(records)})
     return jsonify({
         "success": bool(records), "record": records[0] if records else None,
-        "indexed": bool(case_folder and records),
+        "indexed": indexed,
         "error": None if records else "Could not parse this file as a valid .lnk shortcut.",
     })
 
@@ -3417,7 +3751,8 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                 index_conn.execute("DELETE FROM indexed_files WHERE image_path=?", (image_path,))
                 index_conn.execute("DELETE FROM triage_hits WHERE image_path=?", (image_path,))
                 index_conn.commit()
-        filesystems = _tsk_resolve_filesystems(image_path)
+        coverage = _SearchCoverage()
+        filesystems = coverage.resolve(image_path)
         if not filesystems:
             append_log("[-] No recognized filesystem found in this image.")
             update_job(status="Failed")
@@ -3456,15 +3791,19 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                 break
             try:
                 fs = _tsk_open_fs(image_path, fsinfo['offset'])
-            except Exception:
+            except Exception as e:
+                coverage.note_open_failure(fsinfo, e)
                 continue
-            for entry, path in _tsk_walk(fs):
+            walk_stats = {}
+            for entry, path in _tsk_walk(fs, stats=walk_stats):
                 if snapshot_job()["status"] == "Stopped":
                     append_log("[!] Scan stopped by user.")
                     break
                 if entry['is_dir'] or entry['is_virtual']:
                     continue
                 if files_scanned >= IMAGE_TRIAGE_MAX_FILES:
+                    coverage.note(f"the scan stopped at its limit of {IMAGE_TRIAGE_MAX_FILES} files, so later "
+                                  f"files were not scanned.")
                     walk_truncated = True
                     break
 
@@ -3534,8 +3873,10 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                         updates["progress_percent"] = round((files_scanned / total_files_estimate) * 100, 1)
                     update_job(**updates)
                     last_update_time = time.time()
+            coverage.note_walk(walk_stats, fsinfo)
             if walk_truncated or snapshot_job()["status"] == "Stopped":
                 break
+        walk_truncated = walk_truncated or coverage.incomplete
 
         if index_conn is not None:
             if index_rows_buf:
@@ -3556,11 +3897,16 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
             "# Pi Forensics Suite - Filesystem-Aware Triage Scan Report",
             f"# Image: {image_path}",
             f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"# Files scanned: {files_scanned}" + (" (capped - more files remained unscanned)" if walk_truncated else ""),
+            f"# Files scanned: {files_scanned}" + (" (INCOMPLETE - see 'Not covered' below)" if walk_truncated else ""),
             f"# Files skipped (unreadable): {files_errored}",
             "# Deleted files are excluded - their data blocks may already be partially overwritten.",
-            "",
         ]
+        for gap in coverage.gaps:
+            lines.append(f"# Not covered: {gap}")
+        for part in coverage.partitions_skipped:
+            lines.append(f"# Not covered: partition '{part['label']}' (sector {part['offset']}) has no "
+                         f"filesystem this tool can read.")
+        lines.append("")
         total_hits = 0
         for name in patterns:
             label = resolve_scan_category_label(name)
@@ -3575,16 +3921,19 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines).strip() + "\n")
 
+        for gap in coverage.gaps:
+            append_log(f"[!] Not scanned: {gap}")
         if snapshot_job()["status"] == "Stopped":
             pass  # already logged above
         else:
-            update_job(status="Completed Successfully", progress_percent=100.0)
+            update_job(status=("Completed - not everything was scanned (see the log)" if walk_truncated
+                               else "Completed Successfully"), progress_percent=100.0)
             append_log(f"[+] Triage scan completed. {total_hits} total match(es) across {files_scanned} file(s) -> {report_path}")
 
         log_chain_of_custody("image_triage_scan_complete", {
             "image_path": image_path, "files_scanned": files_scanned,
             "files_errored": files_errored, "total_hits": total_hits, "report_path": report_path,
-            "indexed_files_count": indexed_files_count,
+            "indexed_files_count": indexed_files_count, "truncated": walk_truncated, **coverage.as_dict(),
         }, source_ip=source_ip, user=user)
     except Exception as e:
         update_job(status="Failed")
@@ -3600,6 +3949,7 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
 @image_browser_bp.route('/api/image/start_triage_scan', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir')
 def start_image_triage_scan():
     global current_job
     with job_lock:
@@ -3696,6 +4046,7 @@ def execution_worker_materialize_shadow_copy(image_path, offset, store_index, ou
 @image_browser_bp.route('/api/image/start_materialize_shadow_copy', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir')
 def start_materialize_shadow_copy():
     global current_job
     with job_lock:
@@ -3754,12 +4105,21 @@ def start_materialize_shadow_copy():
 def _tsk_extract_to_temp(fs, inode_num, suffix=''):
     """Reads a file out of an image into a short-lived temp file - binwalk/
     strings (like exiftool for geolocation) need a real file path on disk,
-    not raw bytes. Caller must remove the returned path when done."""
+    not raw bytes. Caller must remove the returned path when done. A read
+    that fails - including a short one (TskShortRead) - removes the temp
+    file before raising: no caller ever saw its path to remove it."""
     tsk_file = fs.open_meta(inode=inode_num)
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     os.close(tmp_fd)
-    with open(tmp_path, 'wb') as out:
-        _tsk_stream_file(tsk_file, out.write)
+    try:
+        with open(tmp_path, 'wb') as out:
+            _tsk_stream_file(tsk_file, out.write)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
     return tmp_path
 
 @image_browser_bp.route('/api/image/binwalk', methods=['POST'])
@@ -3810,6 +4170,7 @@ def image_binwalk():
 @image_browser_bp.route('/api/image/parse_android_backup', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def image_parse_android_backup():
     """In-image counterpart of routes/file_explorer.py's parse_android_backup()
     - for the rare case a real .ab Android Backup file is sitting inside an
@@ -3824,7 +4185,7 @@ def image_parse_android_backup():
     inode = req.get('inode', '')
     name_hint = req.get('name', '') or 'selected_file'
     password = req.get('password') or None
-    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None  # optional, best-effort
 
     if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
@@ -3852,11 +4213,12 @@ def image_parse_android_backup():
             except OSError:
                 pass
 
+    indexed = False
     if case_folder and case_consolidated_path(case_folder) and result["records"]:
-        _record_parsed_artifacts(case_folder, {
+        indexed = _record_parsed_artifacts(case_folder, {
             "source_type": "image", "image_path": image_path, "fs_offset": offset,
-            "inode": str(inode), "path": req.get('path'), "name": name_hint,
-        }, result["records"])
+            "inode": str(inode), "path": _in_image_source_path(req, inode), "name": name_hint,
+        }, result["records"]) > 0
 
     counts = {}
     for r in result["records"]:
@@ -3869,7 +4231,7 @@ def image_parse_android_backup():
     return jsonify({
         "success": True, "file_name": name_hint, "header": result["header"],
         "total_files_in_backup": len(result["files"]), "sms_files_found": len(result["sms_files"]),
-        "mms_files_found": len(result["mms_files"]), "counts": counts,
+        "mms_files_found": len(result["mms_files"]), "counts": counts, "indexed": indexed,
     })
 
 @image_browser_bp.route('/api/image/strings', methods=['POST'])
@@ -3968,6 +4330,7 @@ def image_ocr():
 @image_browser_bp.route('/api/image/video_contact_sheet', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'case_folder')
 def image_video_contact_sheet():
     """In-image counterpart to run_video_contact_sheet() (routes/
     file_explorer.py) - needs an explicit destination_dir the same way
@@ -4165,6 +4528,50 @@ IMAGE_RECOVER_MAX_FILE_BYTES = 500 * 1024 * 1024
 IMAGE_RECOVER_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 IMAGE_RECOVER_MAX_SECONDS = 600
 
+def _recovered_file_destination(output_root, fs_subdir, in_image_path, inode):
+    """Where a recovered file goes: under output_root, mirroring its in-image
+    path - with every component of that path passed through
+    _safe_extract_name(), since each one comes from the evidence. '..' and
+    '.' components are dropped rather than followed, so nothing an image's
+    directory entries say can place a file outside output_root (it used to be
+    checked against the evidence root only, which a crafted '..' name passed
+    - landing the write in another case's folder). Returns None if the
+    result would still fall outside output_root."""
+    parts = [p for p in in_image_path.split('/') if p not in ('', '.', '..')]
+    if not parts:
+        return None
+    safe_parts = [_safe_extract_name(p, f"unnamed_{inode}") for p in parts]
+    base = os.path.join(output_root, fs_subdir) if fs_subdir else output_root
+    dest = os.path.join(base, *safe_parts)
+    if not path_is_within(os.path.normpath(dest), os.path.normpath(output_root)):
+        return None
+    return dest
+
+
+def _create_new_file(dest_file, inode):
+    """Opens dest_file for writing only if nothing exists there. Two deleted
+    entries routinely share a path (each old version of the same temp file),
+    and the second used to overwrite the first: on a collision this tries
+    "<name>__inode<N><ext>", then numbered variants. Returns (fd, path)."""
+    folder, name = os.path.split(dest_file)
+    stem, ext = os.path.splitext(name)
+
+    def _fit(tag):
+        # A name already cut to EXTRACT_NAME_MAX_BYTES has no room for a tag;
+        # shorten its stem rather than fail with "File name too long".
+        budget = EXTRACT_NAME_MAX_BYTES - len(f"{tag}{ext}".encode('utf-8'))
+        return os.path.join(folder, stem.encode('utf-8')[:budget].decode('utf-8', 'ignore') + tag + ext)
+
+    candidates = [dest_file, _fit(f"__inode{inode}")] + [_fit(f"__inode{inode}_{n}") for n in range(2, 10)]
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
+    for candidate in candidates:
+        try:
+            return os.open(candidate, flags, 0o666), candidate
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"no free name for {dest_file}")
+
+
 def _run_recover_deleted_body(image_path, dest_dir):
     """The actual walk-and-recover work, extracted verbatim out of
     image_recover_deleted() (Phase 2 of Linux Artifacts + Auto Analyze,
@@ -4173,13 +4580,25 @@ def _run_recover_deleted_body(image_path, dest_dir):
     function never touched current_job/job_lock either, so no
     suppress-flag wrapping is needed). Request-parsing and
     log_chain_of_custody() stay in the route below, unchanged. Returns a
-    plain dict; the route builds its jsonify() response from it."""
-    filesystems = _tsk_resolve_filesystems(image_path)
+    plain dict; the route builds its jsonify() response from it.
+
+    Never overwrites (2026-10-02): a re-run gets its own timestamped output
+    folder instead of writing over the last one, and same-path deleted
+    entries get distinct names (_create_new_file()). A file that could not be
+    read in full is removed and counted in files_incomplete - a partial file
+    under its original name reads as the recovered file."""
+    coverage = _SearchCoverage()
+    filesystems = coverage.resolve(image_path)
     if not filesystems:
         return {"success": False, "error": "No recognized filesystem found in this image."}
 
     image_base = os.path.splitext(os.path.basename(image_path))[0]
     output_root = os.path.join(dest_dir, f"{image_base}_recovered_deleted")
+    if os.path.lexists(output_root):
+        output_root = f"{output_root}_{time.strftime('%Y%m%d_%H%M%S')}"
+        if os.path.lexists(output_root):
+            return {"success": False, "error": f"{output_root} already exists - nothing was recovered, nothing "
+                                               f"was overwritten. Try again in a moment."}
     multi_fs = len(filesystems) > 1
 
     start_time = time.time()
@@ -4187,13 +4606,15 @@ def _run_recover_deleted_body(image_path, dest_dir):
     files_skipped_too_large = 0
     files_skipped_empty = 0
     files_errored = 0
+    files_incomplete = 0
     total_bytes = 0
     truncated = False
 
     for fsinfo in filesystems:
         try:
             fs = _tsk_open_fs(image_path, fsinfo['offset'])
-        except Exception:
+        except Exception as e:
+            coverage.note_open_failure(fsinfo, e)
             continue
         # Only used to keep multiple filesystems' recovered output from colliding -
         # sanitized the same conservative way sanitize_case_slug() treats untrusted
@@ -4201,10 +4622,13 @@ def _run_recover_deleted_body(image_path, dest_dir):
         # table, not something this app generated itself.
         fs_subdir = re.sub(r'[^A-Za-z0-9 ._-]+', '_', fsinfo['label']).strip() or 'filesystem' if multi_fs else None
 
-        for entry, path in _tsk_walk(fs):
+        walk_stats = {}
+        for entry, path in _tsk_walk(fs, stats=walk_stats):
             if entry['is_dir'] or not entry['deleted'] or entry['is_virtual']:
                 continue
             if files_recovered >= IMAGE_RECOVER_MAX_FILES or (time.time() - start_time) > IMAGE_RECOVER_MAX_SECONDS:
+                coverage.note(f"recovery stopped at its limit ({IMAGE_RECOVER_MAX_FILES} files or "
+                              f"{IMAGE_RECOVER_MAX_SECONDS} seconds), so later deleted files were not recovered.")
                 truncated = True
                 break
             size = entry['size'] or 0
@@ -4215,44 +4639,58 @@ def _run_recover_deleted_body(image_path, dest_dir):
                 files_skipped_too_large += 1
                 continue
 
-            rel_path = path.lstrip('/')
-            dest_file = os.path.join(output_root, fs_subdir, rel_path) if fs_subdir else os.path.join(output_root, rel_path)
-            if not safe_path(dest_file):
+            dest_file = _recovered_file_destination(output_root, fs_subdir, path, entry['inode'])
+            if not dest_file or not safe_path(dest_file):
                 files_errored += 1
                 continue
 
+            created_path = None
             try:
                 os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+                # makedirs follows links, so the folder actually reached is
+                # checked too - a link planted in an existing output folder
+                # must not carry the write outside it.
+                if not path_is_within(os.path.realpath(os.path.dirname(dest_file)), os.path.realpath(output_root)):
+                    files_errored += 1
+                    continue
                 tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
-                with open(dest_file, 'wb') as out:
+                fd, created_path = _create_new_file(dest_file, entry['inode'])
+                with os.fdopen(fd, 'wb') as out:
                     written = _tsk_stream_file(tsk_file, out.write, max_bytes=IMAGE_RECOVER_MAX_FILE_BYTES)
                 if written == 0:
-                    os.remove(dest_file)
+                    os.remove(created_path)
                     files_skipped_empty += 1
                     continue
                 total_bytes += written
                 files_recovered += 1
-            except Exception:
-                files_errored += 1
-                try:
-                    if os.path.exists(dest_file):
-                        os.remove(dest_file)
-                except OSError:
-                    pass
+            except Exception as e:
+                if isinstance(e, TskShortRead):
+                    files_incomplete += 1
+                else:
+                    files_errored += 1
+                if created_path:
+                    try:
+                        os.remove(created_path)
+                    except OSError:
+                        pass
                 continue
+        coverage.note_walk(walk_stats, fsinfo)
         if truncated:
             break
+    truncated = truncated or coverage.incomplete
 
     return {
         "success": True, "output_dir": output_root if files_recovered else None,
         "files_recovered": files_recovered, "total_bytes": total_bytes,
         "files_skipped_too_large": files_skipped_too_large, "files_skipped_empty": files_skipped_empty,
-        "files_errored": files_errored, "truncated": truncated
+        "files_errored": files_errored, "files_incomplete": files_incomplete,
+        "truncated": truncated, **coverage.as_dict(),
     }
 
 @image_browser_bp.route('/api/image/recover_deleted', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir')
 def image_recover_deleted():
     """Request-parsing here, real work in _run_recover_deleted_body() above."""
     req = request.get_json() or {}
@@ -4272,7 +4710,8 @@ def image_recover_deleted():
         "image_path": image_path, "output_dir": result["output_dir"], "files_recovered": result["files_recovered"],
         "total_bytes": result["total_bytes"], "files_skipped_too_large": result["files_skipped_too_large"],
         "files_skipped_empty": result["files_skipped_empty"], "files_errored": result["files_errored"],
-        "truncated": result["truncated"],
+        "files_incomplete": result["files_incomplete"], "truncated": result["truncated"],
+        "search_gaps": result["search_gaps"], "partitions_skipped": result["partitions_skipped"],
     })
     return jsonify(result)
 
@@ -4380,7 +4819,7 @@ def _auto_analyze_run_generic_artifact_scan(image_path, case_folder, matcher_fn,
     thread, the image triage scan job) - caught live here via a real
     "Working outside of application context" exception on the very first
     end-to-end Auto Analyze run, not caught by design review."""
-    candidates, truncated = _image_scan_candidate_files(image_path, matcher_fn, max_candidates)
+    candidates, truncated, coverage = _image_scan_candidate_files(image_path, matcher_fn, max_candidates)
     if candidates is None:
         return {"success": False, "error": "No recognized filesystem found in this image."}
     counts = {}
@@ -4413,10 +4852,10 @@ def _auto_analyze_run_generic_artifact_scan(image_path, case_folder, matcher_fn,
             }, records)
     log_chain_of_custody(coc_action, {
         "image_path": image_path, "candidates_found": len(candidates),
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     }, source_ip=source_ip, user=user)
     return {"success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
-            "counts": counts, "truncated": truncated}
+            "counts": counts, "truncated": truncated, **coverage}
 
 
 def _auto_analyze_step_registry(image_path, case_folder, source_ip=None, user=None):
@@ -4535,14 +4974,16 @@ def _auto_analyze_step_linux_artifacts(image_path, case_folder, source_ip=None, 
     files_parsed = 0
     candidates_found_total = 0
     truncated = False
+    coverage = {"search_gaps": [], "partitions_skipped": []}
     filesystem_found = False
     for artifact_key in LINUX_ARTIFACT_DEFAULT_TYPES:
         matcher_fn, parse_fn = LINUX_ARTIFACT_IMAGE_MATCHERS[artifact_key]
-        candidates, this_truncated = _image_scan_candidate_files(image_path, matcher_fn, LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES)
+        candidates, this_truncated, this_coverage = _image_scan_candidate_files(image_path, matcher_fn, LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES)
         if candidates is None:
             continue
         filesystem_found = True
         truncated = truncated or this_truncated
+        _merge_search_coverage(coverage, this_coverage)
         candidates_found_total += len(candidates)
         for fs, fsinfo, entry, path in candidates:
             tmp_path = None
@@ -4571,10 +5012,10 @@ def _auto_analyze_step_linux_artifacts(image_path, case_folder, source_ip=None, 
         return {"success": False, "error": "No recognized filesystem found in this image."}
     log_chain_of_custody("linux_artifacts_parsed_image", {
         "image_path": image_path, "types": LINUX_ARTIFACT_DEFAULT_TYPES, "candidates_found": candidates_found_total,
-        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, **coverage,
     }, source_ip=source_ip, user=user)
     return {"success": True, "candidates_found": candidates_found_total, "files_parsed": files_parsed,
-            "counts": counts, "truncated": truncated}
+            "counts": counts, "truncated": truncated, **coverage}
 
 
 def _auto_analyze_step_hash_manifest(image_path, case_folder, source_ip=None, user=None):
@@ -4744,8 +5185,14 @@ def execution_worker_auto_analyze_image(image_path, case_folder, steps, source_i
                 fn = _AUTO_ANALYZE_STEP_FUNCTIONS[step_key]
                 result = fn(image_path, case_folder, source_ip=source_ip, user=user)
                 if result.get("success"):
-                    step_results.append({"step": step_key, "status": "ok", "detail": result})
-                    append_log(f"[+] Step {i + 1}/{total} complete.")
+                    # A step that ran but could not cover the whole image says
+                    # so - "complete" alone read as "searched everything".
+                    gaps = result.get("search_gaps") or []
+                    incomplete = bool(gaps or result.get("truncated"))
+                    step_results.append({"step": step_key, "status": "ok", "incomplete": incomplete, "detail": result})
+                    append_log(f"[+] Step {i + 1}/{total} complete" + (" - NOT everything was searched." if incomplete else "."))
+                    for gap in gaps:
+                        append_log(f"[!]   {gap}")
                 else:
                     step_results.append({"step": step_key, "status": "error", "detail": result.get("error")})
                     append_log(f"[-] Step {i + 1}/{total} reported an error: {result.get('error')}")
@@ -4757,16 +5204,20 @@ def execution_worker_auto_analyze_image(image_path, case_folder, steps, source_i
         steps_ok = sum(1 for r in step_results if r["status"] == "ok")
         steps_failed = sum(1 for r in step_results if r["status"] == "error")
         steps_skipped = sum(1 for r in step_results if r["status"] == "skipped")
+        steps_incomplete = sum(1 for r in step_results if r.get("incomplete"))
 
         if snapshot_job()["status"] == "Stopped":
             append_log(f"[!] Auto Analyze stopped by user - {steps_ok} of {total} step(s) completed before stopping.")
         else:
-            update_job(status="Completed Successfully", progress_percent=100.0)
-            append_log(f"[+] Auto Analyze complete - {steps_ok} ok, {steps_failed} failed, {steps_skipped} skipped, of {total} step(s).")
+            update_job(status=("Completed - not everything was searched (see the log)" if steps_incomplete
+                               else "Completed Successfully"), progress_percent=100.0)
+            append_log(f"[+] Auto Analyze complete - {steps_ok} ok ({steps_incomplete} of them incomplete), "
+                       f"{steps_failed} failed, {steps_skipped} skipped, of {total} step(s).")
 
         log_chain_of_custody("auto_analyze_complete", {
             "image_path": image_path, "steps_requested": steps, "steps_ok": steps_ok,
-            "steps_failed": steps_failed, "steps_skipped": steps_skipped, "results": step_results,
+            "steps_failed": steps_failed, "steps_skipped": steps_skipped, "steps_incomplete": steps_incomplete,
+            "results": step_results,
         }, source_ip=source_ip, user=user)
     except Exception as e:
         update_job(status="Failed")
@@ -4810,6 +5261,7 @@ def auto_analyze_steps():
 @image_browser_bp.route('/api/image/auto_analyze/start', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def start_auto_analyze_image():
     global current_job
     with job_lock:

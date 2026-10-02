@@ -95,7 +95,7 @@ from core.case_index_db import (
 # module (only mentions it in comments), so there is no cycle.
 from routes.case_index import PARSED_ARTIFACT_TYPE_LABELS
 from core.tsk_utils import (_tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs,
-                            TSK_MAX_TIMELINE_ENTRIES, TSK_MAX_WALK_DEPTH, TSK_MAX_WALK_DIRS)
+                            TSK_MAX_TIMELINE_ENTRIES, ImageUnreadable, walk_incomplete_notes)
 
 reporting_bp = Blueprint('reporting', __name__)
 
@@ -1271,11 +1271,20 @@ def _collect_case_timeline(events, case_folder=None):
 
     per_image_filesystems = {}
     for image_path in candidates:
-        filesystems = _tsk_resolve_filesystems(image_path)
-        per_image_filesystems[image_path] = filesystems
         evidence_id = candidates[image_path]["event"].get('case_metadata', {}).get('evidence_id', 'N/A')
-        if not filesystems:
-            notes.append(f"{evidence_id}: no recognized filesystem found in the acquired image - skipped.")
+        skipped_partitions = []
+        try:
+            filesystems = _tsk_resolve_filesystems(image_path, skipped=skipped_partitions)
+        except ImageUnreadable as e:
+            filesystems = []
+            notes.append(f"{evidence_id}: {e} - its timeline entries are absent, not empty.")
+        else:
+            if not filesystems:
+                notes.append(f"{evidence_id}: no recognized filesystem found in the acquired image - skipped.")
+        for part in skipped_partitions:
+            notes.append(f"{evidence_id}: partition '{part['label']}' (sector {part['offset']}) has no filesystem "
+                         f"this tool can read, so it contributed nothing ({part['error']}).")
+        per_image_filesystems[image_path] = filesystems
         superseded = candidates[image_path]["superseded_count"]
         if superseded:
             plural = "es" if superseded != 1 else ""
@@ -1367,15 +1376,11 @@ def _collect_case_timeline(events, case_folder=None):
                     truncated = True
                     notes.append(_budget_note(f"{evidence_id} ({fs_info['label']})"))
                     break
-            if walk_stats.get("depth_capped"):
-                notes.append(f"{evidence_id} ({fs_info['label']}): directories nested deeper than "
-                             f"{TSK_MAX_WALK_DEPTH} levels were not walked, so files below that depth "
-                             f"are absent from this timeline entirely.")
-                truncated = True
-            if walk_stats.get("dirs_capped"):
-                notes.append(f"{evidence_id} ({fs_info['label']}): the walk stopped after "
-                             f"{TSK_MAX_WALK_DIRS} directories (a guard against reused-inode loops), "
-                             f"so later directories were not reached.")
+            # Unreadable directories too (2026-10-02) - everything under one
+            # used to be missing from the timeline without a word.
+            walk_notes = walk_incomplete_notes(walk_stats, where=f"{evidence_id} ({fs_info['label']})")
+            if walk_notes:
+                notes.extend(walk_notes)
                 truncated = True
 
     for dest_path, info in folder_candidates.items():

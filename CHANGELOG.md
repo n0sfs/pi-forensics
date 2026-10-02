@@ -23,6 +23,33 @@ file after updating to see what changed.
 
 ## [Unreleased]
 
+**After updating, every remote browser has to log in once more** (see Security below). Stations whose
+TLS front end was set up by an earlier installer should also apply the matching nginx upload limit
+once, from a shell on the station:
+
+```bash
+sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header Referrer-Policy no-referrer always;/add_header Referrer-Policy same-origin always;/' /etc/nginx/sites-available/pi-forensics && sudo nginx -t && sudo systemctl reload nginx
+```
+
+### Security
+
+- **An unreadable settings file stops the app instead of opening it up.** It used to read as "no
+  accounts", which let anyone in with the old shared default login - and the next settings change
+  then erased every account. There is no built-in default password any more.
+- **Other websites can't act on the station through your browser.** A request that comes from a
+  different site is refused, on the touchscreen (which is signed in automatically) as well as remotely.
+- **Changing a password signs that account out everywhere else.** Sessions are now tied to the
+  password they logged in with - which is why every remote browser has to log in once after updating.
+- **Uploads have a size limit** - 32 MB for most actions, more for a configuration restore, case notes
+  and hash/URL lists - so one oversized upload can't take the station down.
+- **Update App is safer.** It refuses while a job is running or when the update needs the installer
+  re-run, only fast-forwards, and checks that the new code starts before switching to it - rolling back
+  if it doesn't.
+- **A network settings change is still undone if the app restarts or the station reboots** before
+  you confirm it, and a second change can't cancel the first one's safety net.
+- **The share browser needs Settings permission**, and no longer puts the SMB password on the command
+  line.
+
 ### Changed
 
 - **A Closed or Archived case is now read-only.** Its report narrative, case notes, exhibits and
@@ -47,7 +74,35 @@ file after updating to see what changed.
 - **A phone extraction you stop part-way is recorded as STOPPED.** The record lists which data types
   were never collected. It used to be marked COMPLETED once any one of them had been read.
 - **Extracting a file from inside a disk image never overwrites a file of the same name.** On a
-  failed extraction it no longer deletes one either.
+  failed extraction it no longer deletes one either. A file named "." or "..", or with a name too long
+  or unusable to write, is now extracted under a safe name instead of failing.
+- **In-image scans say when they could not search the whole image.** "None found" used to look the
+  same whether or not everything was searched. Scans now name what they skipped - folders nested more
+  than 25 levels deep, folders past the 5,000-folder limit, folders that could not be read, a
+  filesystem that would not open, partitions with no readable filesystem - and a "none found" for an
+  incomplete search is shown as a warning, not a green success. The 5,000-folder limit is reached by
+  a full Windows system disk, so expect to see it there.
+- **An image that can't be opened at all is reported as such**, instead of "no recognised filesystem
+  found".
+- **A file that can only be partly read from an image is no longer hashed, scanned, parsed or
+  extracted as if it were complete.** Previews still show what could be read, marked as incomplete.
+- **Recover Deleted never overwrites and never writes outside its own folder.** Two deleted files with
+  the same name are both kept, running it again makes a new folder, and a partly readable file is
+  counted and left out rather than saved under its original name.
+- **Closed and Archived cases take no new in-image work.** Hash manifests, YARA sweeps, triage scans,
+  geolocation, shadow-copy materialization, contact sheets, deleted-file recovery and every artifact
+  parser now refuse, as the other tools already did. Quick-look tools on a single file (strings,
+  binwalk, OCR, YARA) still show their results; they just aren't recorded in a finished case.
+- **iOS backups: a damaged backup is reported, not shown as empty.** A database that can't be read is
+  named in the result. A Manifest.db entry that isn't a real file ID is refused rather than followed -
+  a crafted backup inside a disk image could otherwise make the station write a file anywhere.
+- **Parsing a second disk image no longer erases the first image's parsed artifacts** when both hold a
+  file at the same path (two Windows images' registry hives, for example).
+- **Artifacts parsed from a single file picked in the image browser are really indexed now.** They
+  were silently dropped while the result said they had been saved.
+- **Live Device Preview cleans up after itself.** A read permission left on a device by a crash is
+  removed when the app starts (it used to be logged only), and leaving a preview says so if the
+  permission could not be removed.
 
 ## [1.92.0] - 2026-09-20
 

@@ -19,7 +19,8 @@ import email.utils
 from flask import g
 
 from core.paths import (safe_path, case_consolidated_path, classify_case_role, is_bulk_tool_output_dir,
-                        acquisition_output_location, path_is_within, CASE_STATUSES_READ_ONLY)
+                        acquisition_output_location, path_is_within, CASE_STATUSES_READ_ONLY,
+                        case_status_blocking_new_work)
 from core.config import get_keyword_lists
 from core.case_file import CASE_WRITE_LOCK, _read_case_file, _write_case_file
 import core.config as config
@@ -1152,6 +1153,13 @@ def _record_analysis_result(case_folder, identity, tool, summary, output, run_by
         return
     if not case_consolidated_path(case_folder):
         return
+    # A finished case takes no new work (2026-10-02). The routes that write a
+    # file into a case refuse up front; a viewer tool (strings, binwalk, OCR)
+    # still shows its result for a Closed case, it just is not recorded here.
+    closed = case_status_blocking_new_work(case_folder)
+    if closed:
+        print(f"Note: {tool} result not recorded - the case is {closed}.")
+        return
     db_path = case_index_db_path(case_folder)
     if not db_path:
         return
@@ -1179,7 +1187,8 @@ def _record_parsed_artifacts(case_folder, identity, records):
     shape _record_analysis_result() takes minus 'name' (not needed here -
     every stored row already carries its own title/url).
 
-    Re-scan safety: deletes this exact source_path's prior rows before
+    Re-scan safety: deletes this exact source's prior rows (same source
+    type, and for an image the same image and filesystem) before
     inserting fresh ones, same pattern execution_worker_image_triage_scan()
     already uses for indexed_files/triage_hits - re-parsing the same
     History file (an examiner re-running the scan after copying a newer
@@ -1190,14 +1199,37 @@ def _record_parsed_artifacts(case_folder, identity, records):
     failure or if case_folder isn't real/active)."""
     if not case_folder or not case_consolidated_path(case_folder):
         return 0
+    # Backstop for the routes' own up-front Closed/Archived refusal - a
+    # finished case's index takes no new rows (2026-10-02).
+    closed = case_status_blocking_new_work(case_folder)
+    if closed:
+        print(f"Note: parsed records not recorded - the case is {closed}.")
+        return 0
     db_path = case_index_db_path(case_folder)
     if not db_path:
         return 0
     source_path = identity.get("path")
+    if not source_path:
+        # source_path is NOT NULL. A caller that could not name the source used
+        # to have every INSERT fail inside the try below, quietly, while its
+        # route answered "indexed" (2026-10-02) - say so, and write nothing.
+        print(f"Warning: parsed records from {identity.get('image_path') or 'a source'} were not indexed - "
+              f"no source path was given.")
+        return 0
     found_at = time.strftime("%Y-%m-%d %H:%M:%S")
     try:
         conn = _case_index_connect(db_path)
-        conn.execute("DELETE FROM parsed_artifacts WHERE source_path=?", (source_path,))
+        # Re-scan scope is the source's whole identity, not its path alone: two
+        # images in one case share in-image paths (every Windows image has a
+        # /Windows/System32/config/SYSTEM), and deleting by path wiped one
+        # image's parsed records whenever another image's were parsed
+        # (2026-10-02).
+        if identity.get("source_type") == "image":
+            conn.execute("DELETE FROM parsed_artifacts WHERE source_type='image' AND image_path=? AND fs_offset=? "
+                         "AND source_path=?", (identity.get("image_path"), identity.get("fs_offset"), source_path))
+        else:
+            conn.execute("DELETE FROM parsed_artifacts WHERE source_type=? AND source_path=?",
+                         (identity.get("source_type"), source_path))
         rows = [
             (identity["source_type"], identity.get("image_path"), identity.get("fs_offset"), identity.get("inode"),
              source_path, r["artifact_type"], r.get("title") or "", r.get("url") or "", r.get("value") or "",

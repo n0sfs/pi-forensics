@@ -19,11 +19,20 @@ math_from_webkit_firefox_filetime, below) which cross-checks against
 core.registry_utils.filetime_to_unix() and carries its own local, per-test
 importorskip rather than gating this whole file.
 """
+import hashlib
 import os
 import sqlite3
 import plistlib
 
+import pytest
+
 import core.mobile_artifacts as ma
+
+
+def _file_id(domain, relative_path):
+    """A real fileID - SHA-1 of "domain-relativePath", what Apple's tooling
+    stores (and what the parser now insists on, 2026-10-02)."""
+    return hashlib.sha1(f"{domain}-{relative_path}".encode()).hexdigest()
 
 
 def _build_synthetic_backup(tmp_path, udid="a1b2c3d4e5f6789012345678901234567890abcd", encrypted=False):
@@ -47,15 +56,17 @@ def _build_synthetic_backup(tmp_path, udid="a1b2c3d4e5f6789012345678901234567890
 
     # --- sms.db (real message/handle schema) ---
     sms_bytes = _build_sms_db()
-    _add_file("HomeDomain", "Library/SMS/sms.db", "aaaa1111sms0000000000000000000000000000", sms_bytes)
+    _add_file("HomeDomain", "Library/SMS/sms.db", _file_id("HomeDomain", "Library/SMS/sms.db"), sms_bytes)
 
     # --- AddressBook.sqlitedb (real ABPerson/ABMultiValue schema) ---
     ab_bytes = _build_addressbook_db()
-    _add_file("HomeDomain", "Library/AddressBook/AddressBook.sqlitedb", "bbbb2222ab00000000000000000000000000000", ab_bytes)
+    _add_file("HomeDomain", "Library/AddressBook/AddressBook.sqlitedb",
+              _file_id("HomeDomain", "Library/AddressBook/AddressBook.sqlitedb"), ab_bytes)
 
     # --- CallHistory.storedata (real ZCALLRECORD schema) ---
     ch_bytes = _build_callhistory_db()
-    _add_file("HomeDomain", "Library/CallHistoryDB/CallHistory.storedata", "cccc3333ch00000000000000000000000000000", ch_bytes)
+    _add_file("HomeDomain", "Library/CallHistoryDB/CallHistory.storedata",
+              _file_id("HomeDomain", "Library/CallHistoryDB/CallHistory.storedata"), ch_bytes)
 
     conn.commit()
     conn.close()
@@ -288,3 +299,80 @@ def test_requested_types_filters_to_only_those_parsers(tmp_path):
     records, summary = ma.parse_mobile_backup_manifest(str(backup_dir), requested_types=["mobile_sms_message"])
     assert {r["artifact_type"] for r in records} == {"mobile_sms_message"}
     assert "mobile_contact" not in summary["found"]
+
+
+# --- An unusable backup is reported, never read as "nothing found" (2026-10-02) ---
+
+def _set_file_id(backup_dir, relative_path, file_id):
+    conn = sqlite3.connect(str(backup_dir / "Manifest.db"))
+    conn.execute("UPDATE Files SET fileID=? WHERE relativePath=?", (file_id, relative_path))
+    conn.commit()
+    conn.close()
+
+
+def test_the_known_sms_file_id_matches_the_published_value():
+    """Pins the fixture's fileIDs to the real, widely published one for sms.db."""
+    assert _file_id("HomeDomain", "Library/SMS/sms.db") == "3d0d7e5fb2ce288813306e4d4636395e047a3d28"
+
+
+@pytest.mark.parametrize("evil_id", [
+    "//tmp/pif_evil_target",                   # os.path.join() treats this as absolute
+    "../../../../../../tmp/pif_evil_target",
+    "3d0d7e5fb2ce288813306e4d4636395e047a3d2",  # 39 digits
+    "3d0d7e5fb2ce288813306e4d4636395e047a3d28/../../x",
+])
+def test_a_file_id_that_is_not_a_sha1_is_refused_not_followed(tmp_path, evil_id):
+    """The fileID IS the on-disk path, so Manifest.db - evidence - used to
+    decide which file the parser opened (and, in the in-image extractor,
+    where it WROTE)."""
+    backup_dir = _build_synthetic_backup(tmp_path)
+    _set_file_id(backup_dir, "Library/SMS/sms.db", evil_id)
+    records, summary = ma.parse_mobile_backup_manifest(str(backup_dir))
+    assert "mobile_sms_message" not in summary["found"]
+    assert "invalid fileID" in summary["unreadable"]["mobile_sms_message"]
+    assert not any(r["artifact_type"] == "mobile_sms_message" for r in records)
+    # The other apps are unaffected.
+    assert summary["found"]["mobile_contact"] is True
+
+
+def test_the_query_helper_raises_for_an_invalid_file_id(tmp_path):
+    backup_dir = _build_synthetic_backup(tmp_path)
+    _set_file_id(backup_dir, "Library/SMS/sms.db", "//etc/passwd")
+    with pytest.raises(ma.MobileArtifactUnreadable):
+        ma._resolve_manifest_files_query_only(str(backup_dir), "HomeDomain", "Library/SMS/sms.db")
+
+
+def test_an_unreadable_app_database_is_unreadable_not_empty(tmp_path):
+    backup_dir = _build_synthetic_backup(tmp_path)
+    file_id = _file_id("HomeDomain", "Library/SMS/sms.db")
+    (backup_dir / file_id[:2] / file_id).write_bytes(b"this is not a SQLite database at all" * 100)
+    records, summary = ma.parse_mobile_backup_manifest(str(backup_dir))
+    assert "mobile_sms_message" not in summary["found"]
+    assert "sms.db could not be read" in summary["unreadable"]["mobile_sms_message"]
+    assert summary["found"]["mobile_call_log"] is True
+
+
+def test_an_unreadable_manifest_marks_every_type_unreadable(tmp_path):
+    backup_dir = _build_synthetic_backup(tmp_path)
+    (backup_dir / "Manifest.db").write_bytes(b"garbage, not a database" * 100)
+    records, summary = ma.parse_mobile_backup_manifest(str(backup_dir))
+    assert records == []
+    assert summary["found"] == {}
+    assert set(summary["unreadable"]) == {"mobile_sms_message", "mobile_contact", "mobile_call_log"}
+    assert all("Manifest.db" in reason for reason in summary["unreadable"].values())
+
+
+def test_a_content_file_linking_outside_the_backup_is_not_followed(tmp_path):
+    backup_dir = _build_synthetic_backup(tmp_path)
+    outside = tmp_path / "outside.db"
+    outside.write_bytes(_build_sms_db())
+    file_id = _file_id("HomeDomain", "Library/SMS/sms.db")
+    content = backup_dir / file_id[:2] / file_id
+    content.unlink()
+    try:
+        os.symlink(str(outside), str(content))
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform cannot create a symlink here")
+    records, summary = ma.parse_mobile_backup_manifest(str(backup_dir))
+    assert "outside the backup folder" in summary["unreadable"]["mobile_sms_message"]
+    assert not any(r["artifact_type"] == "mobile_sms_message" for r in records)

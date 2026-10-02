@@ -1366,11 +1366,13 @@ def execution_worker_chained_auto_analyze(cmd, fmt, total_bytes, out_file, repor
             # "unknown" images (or a filesystem classify_image_profile()
             # couldn't open) are never guessed at, matching Auto Analyze's
             # own detect route's identical honesty principle.
+            why = (f"the new image could not be opened: {profile_result['error']}" if profile_result.get("error")
+                   else f"could not determine evidence type: {profile}")
             log_chain_of_custody("chained_auto_analyze_skipped", {
                 "image_path": out_file,
-                "reason": f"Could not determine evidence type (detected: {profile}) - automatic analysis was not started.",
+                "reason": f"Automatic analysis was not started - {why}.",
             }, source_ip=source_ip, user=user)
-            update_job(status=f"Acquisition completed - automatic analysis skipped (could not determine evidence type: {profile}).")
+            update_job(status=f"Acquisition completed - automatic analysis skipped ({why}).")
             return
 
         execution_worker_auto_analyze_image(out_file, case_folder, steps, source_ip=source_ip, user=user)

@@ -76,7 +76,7 @@ class TestExecutionWorkerImageTriageScan:
         def default_stream_file(tsk_file, write_fn, max_bytes=None):
             write_fn(b"contact test@example.com now")
 
-        def fresh_walk_iter(fs):
+        def fresh_walk_iter(fs, *args, **kwargs):
             # A NEW iterator every call - see this file's own docstring for
             # why a plain return_value would silently break the second
             # (scanning) pass after the first (counting) pass exhausts it.
@@ -192,18 +192,23 @@ class TestExecutionWorkerImageTriageScan:
         # even on a Stop - never silently skipped.
         mock_log.assert_called_once()
 
-    def test_a_filesystem_that_fails_to_open_is_swallowed_and_skipped_not_a_crash(self, tmp_path):
+    def test_a_filesystem_that_fails_to_open_is_skipped_not_a_crash_and_is_disclosed(self, tmp_path):
         # _tsk_open_fs is called inside its own per-filesystem
         # try/except continue in both the counting and scanning passes -
         # a failure there is deliberately non-fatal, matching this app's
         # own established "a single bad filesystem/partition shouldn't
-        # abort the whole scan" tolerance elsewhere.
+        # abort the whole scan" tolerance elsewhere. Non-fatal is not
+        # silent, though (2026-10-02): this used to read "Completed
+        # Successfully" with zero files scanned and nothing saying why.
         job, dest_dir, image_path, mock_log, mock_index_conn = self._run(
             tmp_path, open_fs_side_effect=RuntimeError("simulated failure - swallowed by the walk's own try/except continue"),
         )
-        assert job["status"] == "Completed Successfully"
+        assert job["status"] == "Completed - not everything was scanned (see the log)"
+        assert "could not be opened" in job["log"]
         args, kwargs = mock_log.call_args
         assert args[1]["files_scanned"] == 0
+        assert args[1]["truncated"] is True
+        assert any("simulated failure" in gap for gap in args[1]["search_gaps"])
 
     def test_a_genuinely_unguarded_exception_is_caught_and_reported_as_failed(self, tmp_path):
         # Unlike _tsk_open_fs above, the case-index SQLite connect step has

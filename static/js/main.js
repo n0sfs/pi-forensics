@@ -3121,7 +3121,7 @@ function getCurrentTagTargetItem() {
     if (imageActionsVisible && explorerImageSelected) {
         return {
             source_type: 'image', image_path: explorerImagePath, fs_offset: explorerImageOffset || 0,
-            inode: explorerImageSelected.inode, path: explorerImageSelected.path || null,
+            inode: explorerImageSelected.inode, path: explorerImageSelectedPath(),
             name: explorerImageSelected.name,
         };
     }
@@ -6781,7 +6781,9 @@ async function loadExplorerHexPane() {
         pre.className = 'log-window mb-0';
         pre.style.height = '100%';
         pre.textContent = formatHexDump(data.data) +
-            (data.truncated ? `\n\n[... truncated, showing first ${data.bytes_read.toLocaleString()} of ${data.total_size.toLocaleString()} bytes ...]` : '');
+            (data.incomplete_read
+                ? `\n\n[... only ${data.bytes_read.toLocaleString()} of ${data.total_size.toLocaleString()} bytes could be read from the image - the rest is missing, not zero ...]`
+                : (data.truncated ? `\n\n[... truncated, showing first ${data.bytes_read.toLocaleString()} of ${data.total_size.toLocaleString()} bytes ...]` : ''));
         container.appendChild(pre);
     } catch (err) {
         if (activeSelectedFile !== requestedPath) return;
@@ -7242,7 +7244,7 @@ async function runImageVideoContactSheet() {
             body: JSON.stringify({
                 image_path: explorerImagePath, offset: explorerImageOffset,
                 inode: explorerImageSelected.inode, name: explorerImageSelected.name,
-                path: explorerImageSelected.path || null, destination_dir: destinationDir,
+                path: explorerImageSelectedPath(), destination_dir: destinationDir,
                 case_folder: activeCase ? activeCase.case_folder : null
             })
         });
@@ -7283,7 +7285,7 @@ async function runImageOcr() {
             body: JSON.stringify({
                 image_path: explorerImagePath, offset: explorerImageOffset,
                 inode: explorerImageSelected.inode, name: explorerImageSelected.name,
-                path: explorerImageSelected.path || null,
+                path: explorerImageSelectedPath(),
                 case_folder: activeCase ? activeCase.case_folder : null
             })
         });
@@ -7855,6 +7857,56 @@ const BROWSER_ARTIFACT_TYPE_LABELS = {
     safari_bookmarks: 'Safari bookmarks', safari_cookies: 'Safari cookies',
 };
 
+// --- What a scan did NOT cover (2026-10-02) ---------------------------------
+// "None found" is only true of the part of the evidence a scan searched.
+// In-image scans return search_gaps (a walk limit that bit, a directory that
+// could not be read, a filesystem that would not open, a time or candidate
+// limit) and partitions_skipped (partitions with no filesystem this tool
+// reads); a real-folder scan sets truncated when its own cap bites. A clean,
+// green "none found" is reserved for a scan that covered everything.
+function scanCoverageGaps(data) {
+    const gaps = Array.isArray(data && data.search_gaps)
+        ? data.search_gaps.map(g => String(g).replace(/\.$/, '')) : [];
+    if (!gaps.length && data && data.truncated) {
+        gaps.push('the scan stopped at its limit, so not every candidate was reached');
+    }
+    const skipped = Array.isArray(data && data.partitions_skipped) ? data.partitions_skipped : [];
+    const notes = skipped.length
+        ? [`${skipped.length} partition(s) with no filesystem this tool can read were not searched (${skipped.map(p => p.label).join(', ')})`]
+        : [];
+    return { gaps, notes };
+}
+
+// For appending inside a "Found N ..." sentence; '' when the scan was complete.
+function scanCoverageNote(data) {
+    const { gaps, notes } = scanCoverageGaps(data);
+    const parts = gaps.length ? [`not everything was searched: ${gaps.join('; ')}`] : [];
+    parts.push(...notes);
+    return parts.length ? ` (${parts.join('; ')})` : '';
+}
+
+// The "nothing found" toast: green only when the scan covered everything,
+// otherwise a warning that names what it did not cover.
+function showScanNoneFoundToast(data, message) {
+    const { gaps, notes } = scanCoverageGaps(data);
+    if (!gaps.length && !notes.length) { showToast(message, 'success'); return; }
+    let text = message;
+    if (gaps.length) text += ` Not everything was searched: ${gaps.join('; ')}.`;
+    if (notes.length) text += ` ${notes.join('. ')}.`;
+    showToast(text, gaps.length ? 'warning' : 'info');
+}
+
+// Same, for a results pane rather than a toast (in-image search/timeline).
+function appendSearchGapNote(container, data) {
+    const { gaps, notes } = scanCoverageGaps({ search_gaps: data && data.search_gaps, partitions_skipped: data && data.partitions_skipped });
+    if (!gaps.length && !notes.length) return;
+    const note = document.createElement('div');
+    note.className = 'p-2 text-warning small';
+    note.textContent = (gaps.length ? `Not everything was searched: ${gaps.join('; ')}.` : '')
+        + (notes.length ? ` ${notes.join('. ')}.` : '');
+    container.appendChild(note);
+}
+
 function summarizeBrowserArtifactCounts(counts) {
     const parts = Object.keys(counts || {}).map(k => `${counts[k]} ${BROWSER_ARTIFACT_TYPE_LABELS[k] || k}`);
     return parts.length ? parts.join(', ') : 'no records';
@@ -7874,10 +7926,10 @@ async function runSelectedBrowserArtifactsParse() {
             return;
         }
         if (data.candidates_found === 0) {
-            showToast('No Chrome/Chromium or Firefox profile files (History/Cookies/Bookmarks, places.sqlite/cookies.sqlite) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Chrome/Chromium or Firefox profile files (History/Cookies/Bookmarks, places.sqlite/cookies.sqlite) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeBrowserArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -7911,10 +7963,10 @@ async function runSelectedRegistryParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Registry hive scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Registry hive files (NTUSER.DAT/SYSTEM/SOFTWARE) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Registry hive files (NTUSER.DAT/SYSTEM/SOFTWARE) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} hive file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -7937,7 +7989,7 @@ async function runSelectedWhatsappParse() {
         const data = await res.json();
         if (!data.success) { showToast(`WhatsApp database scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No msgstore.db or wa.db found under this folder - decrypt a WhatsApp backup first if needed.', 'success');
+            showScanNoneFoundToast(data, 'No msgstore.db or wa.db found under this folder - decrypt a WhatsApp backup first if needed.');
             return;
         }
         const summary = summarizeParsedArtifactCounts(data.counts);
@@ -7962,10 +8014,10 @@ async function runImageRegistryParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Registry hive scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Registry hive files found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Registry hive files found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} hive file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -7988,10 +8040,10 @@ async function runSelectedEvtxParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Event log scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Event Log (.evtx) files found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Event Log (.evtx) files found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} event log(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8014,10 +8066,10 @@ async function runImageEvtxParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Event log scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Event Log (.evtx) files found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Event Log (.evtx) files found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} event log(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8040,10 +8092,10 @@ async function runSelectedPrefetchParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Prefetch scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Prefetch (.pf) files found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Prefetch (.pf) files found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} prefetch file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8066,10 +8118,10 @@ async function runImagePrefetchParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Prefetch scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Prefetch (.pf) files found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Prefetch (.pf) files found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} prefetch file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8092,10 +8144,10 @@ async function runSelectedJumplistsParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Jump List scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Jump List files (.automaticDestinations-ms / .customDestinations-ms) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Jump List files (.automaticDestinations-ms / .customDestinations-ms) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} Jump List file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8118,10 +8170,10 @@ async function runImageJumplistsParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Jump List scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Jump List files (.automaticDestinations-ms / .customDestinations-ms) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Jump List files (.automaticDestinations-ms / .customDestinations-ms) found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} Jump List file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8148,12 +8200,12 @@ async function runSelectedThumbcacheParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Thumbcache scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Thumbcache files (thumbcache_*.db) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Thumbcache files (thumbcache_*.db) found under this folder.');
             return;
         }
         const unsupportedNote = data.unsupported_versions && data.unsupported_versions.length
             ? ` (${data.unsupported_versions.length} file(s) used an unsupported pre-Windows-8 format and were skipped)` : '';
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         if (data.thumbnails_extracted === 0) {
             showToast(`Scanned ${data.candidates_found} Thumbcache file(s) - no extractable thumbnails found${unsupportedNote}${truncNote}.`, 'success');
         } else if (!data.indexed) {
@@ -8178,12 +8230,12 @@ async function runImageThumbcacheParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Thumbcache scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Thumbcache files (thumbcache_*.db) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Thumbcache files (thumbcache_*.db) found in this image.');
             return;
         }
         const unsupportedNote = data.unsupported_versions && data.unsupported_versions.length
             ? ` (${data.unsupported_versions.length} file(s) used an unsupported pre-Windows-8 format and were skipped)` : '';
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         if (data.thumbnails_extracted === 0) {
             showToast(`Scanned ${data.candidates_found} Thumbcache file(s) - no extractable thumbnails found${unsupportedNote}${truncNote}.`, 'success');
         } else if (!data.indexed) {
@@ -8207,10 +8259,10 @@ async function runSelectedStickyNotesParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Sticky Notes scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Sticky Notes database (plum.sqlite) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Sticky Notes database (plum.sqlite) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} Sticky Notes database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8233,10 +8285,10 @@ async function runImageStickyNotesParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Sticky Notes scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Sticky Notes database (plum.sqlite) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Sticky Notes database (plum.sqlite) found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} Sticky Notes database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8259,10 +8311,10 @@ async function runSelectedWindowsActivityParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Notifications/Timeline scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No wpndatabase.db / ActivitiesCache.db found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No wpndatabase.db / ActivitiesCache.db found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8285,10 +8337,10 @@ async function runImageWindowsActivityParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Notifications/Timeline scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No wpndatabase.db / ActivitiesCache.db found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No wpndatabase.db / ActivitiesCache.db found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8311,10 +8363,10 @@ async function runSelectedSrumParse() {
         const data = await res.json();
         if (!data.success) { showToast(`SRUM scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No SRUM database (SRUDB.dat) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No SRUM database (SRUDB.dat) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} SRUM database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8337,10 +8389,10 @@ async function runImageSrumParse() {
         const data = await res.json();
         if (!data.success) { showToast(`SRUM scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No SRUM database (SRUDB.dat) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No SRUM database (SRUDB.dat) found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} SRUM database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8363,10 +8415,10 @@ async function runSelectedWinsearchParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Windows Search Index scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Search Index database (Windows.edb) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Search Index database (Windows.edb) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} Windows Search Index database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8389,10 +8441,10 @@ async function runImageWinsearchParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Windows Search Index scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Search Index database (Windows.edb) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Search Index database (Windows.edb) found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} Windows Search Index database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8415,10 +8467,10 @@ async function runSelectedWebcacheParse() {
         const data = await res.json();
         if (!data.success) { showToast(`WebCache scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No legacy IE/Edge WebCache database (WebCacheV01/V24.dat) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No legacy IE/Edge WebCache database (WebCacheV01/V24.dat) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} WebCache database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8441,10 +8493,10 @@ async function runImageWebcacheParse() {
         const data = await res.json();
         if (!data.success) { showToast(`WebCache scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No legacy IE/Edge WebCache database (WebCacheV01/V24.dat) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No legacy IE/Edge WebCache database (WebCacheV01/V24.dat) found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} WebCache database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8467,10 +8519,10 @@ async function runSelectedBitsParse() {
         const data = await res.json();
         if (!data.success) { showToast(`BITS queue scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No BITS job queue database (qmgr.db) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No BITS job queue database (qmgr.db) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} BITS queue database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8493,10 +8545,10 @@ async function runImageBitsParse() {
         const data = await res.json();
         if (!data.success) { showToast(`BITS queue scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No BITS job queue database (qmgr.db) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No BITS job queue database (qmgr.db) found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} BITS queue database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8519,10 +8571,10 @@ async function runSelectedRdpBitmapCacheParse() {
         const data = await res.json();
         if (!data.success) { showToast(`RDP Bitmap Cache scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No RDP Bitmap Cache files (Cache####.bin/bcache##.bmc) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No RDP Bitmap Cache files (Cache####.bin/bcache##.bmc) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} RDP Bitmap Cache file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8545,10 +8597,10 @@ async function runImageRdpBitmapCacheParse() {
         const data = await res.json();
         if (!data.success) { showToast(`RDP Bitmap Cache scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No RDP Bitmap Cache files (Cache####.bin/bcache##.bmc) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No RDP Bitmap Cache files (Cache####.bin/bcache##.bmc) found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} RDP Bitmap Cache file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8571,10 +8623,10 @@ async function runSelectedPowerShellHistoryParse() {
         const data = await res.json();
         if (!data.success) { showToast(`PowerShell history scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No PowerShell console history (*_history.txt under a PSReadLine folder) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No PowerShell console history (*_history.txt under a PSReadLine folder) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} PowerShell history file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8597,10 +8649,10 @@ async function runImagePowerShellHistoryParse() {
         const data = await res.json();
         if (!data.success) { showToast(`PowerShell history scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No PowerShell console history found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No PowerShell console history found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} PowerShell history file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8623,10 +8675,10 @@ async function runSelectedFirewallLogParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Firewall log scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Firewall log (pfirewall.log) found under this folder - logging is off by default, so this is common.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Firewall log (pfirewall.log) found under this folder - logging is off by default, so this is common.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} firewall log(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8649,10 +8701,10 @@ async function runImageFirewallLogParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Firewall log scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Windows Firewall log found in this image - logging is off by default, so this is common.', 'success');
+            showScanNoneFoundToast(data, 'No Windows Firewall log found in this image - logging is off by default, so this is common.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} firewall log(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8675,10 +8727,10 @@ async function runSelectedMacosLaunchdParse() {
         const data = await res.json();
         if (!data.success) { showToast(`macOS LaunchAgents/Daemons scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No macOS LaunchAgents/LaunchDaemons plists found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No macOS LaunchAgents/LaunchDaemons plists found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} launchd item(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8701,10 +8753,10 @@ async function runImageMacosLaunchdParse() {
         const data = await res.json();
         if (!data.success) { showToast(`macOS LaunchAgents/Daemons scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No macOS LaunchAgents/LaunchDaemons plists found in this image (also expected if this is an APFS-formatted image - not yet browsable by this app).', 'success');
+            showScanNoneFoundToast(data, 'No macOS LaunchAgents/LaunchDaemons plists found in this image (also expected if this is an APFS-formatted image - not yet browsable by this app).');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} launchd item(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8793,10 +8845,10 @@ async function runSelectedEmailParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Email scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No email files (.eml/.mbox/.pst/.ost) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No email files (.eml/.mbox/.pst/.ost) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} email container(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8819,10 +8871,10 @@ async function runImageEmailParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Email scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No email files (.eml/.mbox/.pst/.ost) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No email files (.eml/.mbox/.pst/.ost) found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} email container(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8845,10 +8897,10 @@ async function runSelectedRecycleBinParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Recycle Bin scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Recycle Bin ($I) metadata files found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Recycle Bin ($I) metadata files found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} deleted-file record(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8871,10 +8923,10 @@ async function runImageRecycleBinParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Recycle Bin scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Recycle Bin ($I) metadata files found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Recycle Bin ($I) metadata files found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} deleted-file record(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8897,10 +8949,10 @@ async function runSelectedLinuxArtifactsParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Linux artifact scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Linux forensic artifacts (shell history, /etc/passwd, cron, auth.log) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No Linux forensic artifacts (shell history, /etc/passwd, cron, auth.log) found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} artifact file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8923,10 +8975,10 @@ async function runImageLinuxArtifactsParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Linux artifact scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Linux forensic artifacts found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Linux forensic artifacts found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} artifact file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8949,10 +9001,10 @@ async function runImageAndroidArtifactsParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Android artifact scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No Android SMS/Contacts/Call Log databases found in this image - normal for a non-rooted pull/backup, or an image that is not an Android userdata partition.', 'success');
+            showScanNoneFoundToast(data, 'No Android SMS/Contacts/Call Log databases found in this image - normal for a non-rooted pull/backup, or an image that is not an Android userdata partition.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} database file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -8975,10 +9027,10 @@ async function runSelectedCryptoWalletParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Crypto wallet scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No cryptocurrency wallet files found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No cryptocurrency wallet files found under this folder.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} wallet file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -9001,10 +9053,10 @@ async function runImageCryptoWalletParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Crypto wallet scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No cryptocurrency wallet files found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No cryptocurrency wallet files found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} wallet file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -9017,6 +9069,14 @@ async function runImageCryptoWalletParse() {
     }
 }
 
+// An iOS backup whose Manifest.db or an app database could not be read is
+// not "found nothing" - core/mobile_artifacts.py reports each one.
+function mobileUnreadableNote(data) {
+    const items = Array.isArray(data && data.unreadable) ? data.unreadable : [];
+    if (!items.length) return '';
+    return ` (could not be checked: ${items.map(u => `${(u.artifact_type || '').replace(/^mobile_/, '').replace(/_/g, ' ')} - ${u.reason}`).join('; ')})`;
+}
+
 async function runSelectedMobileArtifactsParse() {
     if (!activeSelectedFile) return;
     try {
@@ -9027,19 +9087,20 @@ async function runSelectedMobileArtifactsParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Mobile artifact scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No iOS backup (Manifest.db + Info.plist) found under this folder.', 'success');
+            showScanNoneFoundToast(data, 'No iOS backup (Manifest.db + Info.plist) found under this folder.');
             return;
         }
         if (data.any_encrypted) {
             showToast('Found a backup here, but it is password-encrypted - cannot extract app data without the backup password.', 'info');
             return;
         }
-        const truncNote = data.truncated ? ' (capped)' : '';
+        const truncNote = scanCoverageNote(data) + mobileUnreadableNote(data);
+        const partial = Array.isArray(data.unreadable) && data.unreadable.length > 0;
         const summary = summarizeParsedArtifactCounts(data.counts);
         if (!data.indexed) {
-            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, partial ? 'warning' : 'info');
         } else {
-            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, partial ? 'warning' : 'success');
             initFileViewsTree(true);
         }
     } catch (err) {
@@ -9057,7 +9118,7 @@ async function runImageMobileArtifactsParse() {
         const data = await res.json();
         if (!data.success) { showToast(`Mobile artifact scan failed: ${data.error}`, 'danger'); return; }
         if (data.candidates_found === 0) {
-            showToast('No iOS backup found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No iOS backup found in this image.');
             return;
         }
         if (data.any_encrypted) {
@@ -9065,10 +9126,14 @@ async function runImageMobileArtifactsParse() {
             return;
         }
         const summary = summarizeParsedArtifactCounts(data.counts);
+        const truncNote = scanCoverageNote(data) + mobileUnreadableNote(data);
+        // A backup with an app database that could not be read is a partial
+        // result, whatever else was found in it.
+        const partial = (Array.isArray(data.unreadable) && data.unreadable.length > 0) || !!data.truncated;
         if (!data.indexed) {
-            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}. Select an active case to save these into File Views.`, 'info');
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, partial ? 'warning' : 'info');
         } else {
-            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}. See File Views > Parsed Artifacts.`, 'success');
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, partial ? 'warning' : 'success');
             initFileViewsTree(true);
         }
     } catch (err) {
@@ -9102,7 +9167,7 @@ async function runImageLnkParse() {
             body: JSON.stringify({
                 image_path: explorerImagePath, offset: explorerImageOffset,
                 inode: explorerImageSelected.inode, name: explorerImageSelected.name,
-                path: explorerImageSelected.path || null,
+                path: explorerImageSelectedPath(),
                 case_folder: activeCase ? activeCase.case_folder : null,
             })
         });
@@ -9153,7 +9218,7 @@ async function runImageMftAnalyze() {
             body: JSON.stringify({
                 image_path: explorerImagePath, offset: explorerImageOffset,
                 inode: explorerImageSelected.inode, name: explorerImageSelected.name,
-                path: explorerImageSelected.path || null, destination_dir: destinationDir,
+                path: explorerImageSelectedPath(), destination_dir: destinationDir,
                 case_folder: activeCase ? activeCase.case_folder : null,
             })
         });
@@ -9201,7 +9266,7 @@ async function runImageUsnjrnlParse() {
             body: JSON.stringify({
                 image_path: explorerImagePath, offset: explorerImageOffset,
                 inode: explorerImageSelected.inode, name: explorerImageSelected.name,
-                path: explorerImageSelected.path || null, destination_dir: destinationDir,
+                path: explorerImageSelectedPath(), destination_dir: destinationDir,
                 case_folder: activeCase ? activeCase.case_folder : null,
             })
         });
@@ -9784,9 +9849,10 @@ function exitExplorerImage() {
     }
 
     // Live Device Preview: revoke the temporary read-ACL grant on exit -
-    // same fire-and-forget reasoning as the BitLocker lock above, plus the
-    // server-side idle-sweep as a backstop for an unclean exit (tab closed
-    // without ever reaching here).
+    // not awaited, like the BitLocker lock above, with the server-side
+    // idle-sweep as a backstop for an unclean exit (tab closed without ever
+    // reaching here). A revoke that FAILS is shown, though: the grant is
+    // then still in place, and the examiner is the one who needs to know.
     if (explorerDevicePreviewPath) {
         const devicePath = explorerDevicePreviewPath;
         explorerDevicePreviewPath = null;
@@ -9794,6 +9860,8 @@ function exitExplorerImage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ device_path: devicePath })
+        }).then(res => res.json()).then(data => {
+            if (!data.success) showToast(data.error || 'The preview read grant could not be removed.', 'danger');
         }).catch(() => {});
     }
 
@@ -9846,6 +9914,17 @@ function explorerImageChangePartition() {
     explorerImagePathStack = [];
     initExplorerImageTree(); // inode numbering is partition-specific, rebuild from scratch
     loadExplorerImageDir('');
+}
+
+// The in-image path of the selected entry. Search and timeline rows carry
+// one; a row clicked in the normal Browse listing does not, so it is rebuilt
+// from the breadcrumb - sending null left every record parsed from it
+// unindexable while the route still said "indexed" (2026-10-02).
+function explorerImageSelectedPath() {
+    if (!explorerImageSelected) return null;
+    if (explorerImageSelected.path) return explorerImageSelected.path;
+    const dir = explorerImagePathStack.map(p => p.name).join('/');
+    return `/${dir ? dir + '/' : ''}${explorerImageSelected.name}`;
 }
 
 function updateExplorerImagePathDisplay() {
@@ -10032,6 +10111,15 @@ async function previewExplorerImageEntry(entry) {
             return;
         }
 
+        // The server shows what it could read of a damaged file, and says so.
+        const incompleteReadNote = 'Only part of this file could be read from the image - what is shown is incomplete.';
+        const appendIncompleteReadNote = () => {
+            if (!data.incomplete_read) return;
+            const note = document.createElement('div');
+            note.className = 'text-warning small mt-1';
+            note.textContent = incompleteReadNote;
+            preview.appendChild(note);
+        };
         if (data.kind === 'image') {
             const img = document.createElement('img');
             img.src = `data:${data.mime};base64,${data.data}`;
@@ -10039,6 +10127,7 @@ async function previewExplorerImageEntry(entry) {
             img.style.maxHeight = '100%';
             img.style.objectFit = 'contain';
             preview.appendChild(img);
+            appendIncompleteReadNote();
         } else if (data.kind === 'pdf') {
             // Same browser-native-viewer-via-iframe approach as the real-
             // filesystem PDF preview (previewSelectedFile()) - just pointed
@@ -10052,6 +10141,7 @@ async function previewExplorerImageEntry(entry) {
             iframe.style.border = 'none';
             iframe.title = 'PDF preview';
             preview.appendChild(iframe);
+            appendIncompleteReadNote();
         } else if (data.kind === 'too_large') {
             preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
             preview.innerHTML = '<span class="text-subtle small">File too large to preview inline - use Extract instead.</span>';
@@ -10066,7 +10156,9 @@ async function previewExplorerImageEntry(entry) {
             const pre = document.createElement('pre');
             pre.className = 'log-window mb-0';
             pre.style.height = '100%';
-            pre.textContent = prettyPrintJsonPreview(data.text, entry.name) + (data.truncated ? '\n\n[... truncated, file is larger than the preview limit ...]' : ''); // untrusted evidence content, text node only
+            pre.textContent = prettyPrintJsonPreview(data.text, entry.name)
+                + (data.incomplete_read ? `\n\n[... ${incompleteReadNote} ...]` : '')
+                + (data.truncated ? '\n\n[... truncated, file is larger than the preview limit ...]' : ''); // untrusted evidence content, text node only
             preview.appendChild(pre);
         }
     } catch (err) {
@@ -10242,7 +10334,9 @@ async function loadExplorerImageHexPane() {
         pre.className = 'log-window mb-0';
         pre.style.height = '100%';
         pre.textContent = formatHexDump(data.data) +
-            (data.truncated ? `\n\n[... truncated, showing first ${data.bytes_read.toLocaleString()} of ${data.total_size.toLocaleString()} bytes ...]` : '');
+            (data.incomplete_read
+                ? `\n\n[... only ${data.bytes_read.toLocaleString()} of ${data.total_size.toLocaleString()} bytes could be read from the image - the rest is missing, not zero ...]`
+                : (data.truncated ? `\n\n[... truncated, showing first ${data.bytes_read.toLocaleString()} of ${data.total_size.toLocaleString()} bytes ...]` : ''));
         container.appendChild(pre);
     } catch (err) {
         if (explorerImageSelected !== entry) return;
@@ -10315,6 +10409,7 @@ async function runExplorerImageSearch() {
         }
         if (data.results.length === 0) {
             resultsEl.innerHTML = '<div class="p-2 text-subtle small">No matches found.</div>';
+            appendSearchGapNote(resultsEl, data);
             return;
         }
 
@@ -10337,12 +10432,13 @@ async function runExplorerImageSearch() {
         resultsEl.appendChild(table);
         data.results.forEach(entry => renderExplorerImageEntryRow(tbody, entry, entry.path));
 
-        if (data.truncated) {
+        if (data.results.length >= 500) {
             const note = document.createElement('div');
             note.className = 'p-2 text-subtle small';
             note.textContent = 'Showing the first 500 matches - narrow your search term for a complete result set.';
             resultsEl.appendChild(note);
         }
+        appendSearchGapNote(resultsEl, data);
     } catch (err) {
         resultsEl.innerHTML = '<div class="p-2 text-danger small">Request failed.</div>';
     }
@@ -10391,6 +10487,7 @@ async function runExplorerImageTimeline() {
         }
         if (data.events.length === 0) {
             resultsEl.innerHTML = '<div class="p-2 text-subtle small">No timestamped entries found.</div>';
+            appendSearchGapNote(resultsEl, data);
             return;
         }
 
@@ -10425,12 +10522,13 @@ async function runExplorerImageTimeline() {
             resultsEl.appendChild(row);
         });
 
-        if (data.truncated) {
+        if (data.events.length >= 5000) {
             const note = document.createElement('div');
             note.className = 'p-2 text-subtle small';
             note.textContent = 'Showing the first 5000 events - this filesystem has more activity than fits in one timeline.';
             resultsEl.appendChild(note);
         }
+        appendSearchGapNote(resultsEl, data);
     } catch (err) {
         resultsEl.innerHTML = '<div class="p-2 text-danger small">Request failed.</div>';
     }
@@ -10467,16 +10565,24 @@ async function extractExplorerImageSelected() {
 // real File Explorer and Attach to Case separately."
 async function extractAndAttachExplorerImageSelected() {
     if (!explorerImageSelected || !activeCase) return;
+    // Captured before the first await: a click elsewhere, or a case switch,
+    // while the extract runs must not change which file the caption
+    // describes or which case the exhibit is attached to.
+    const entry = explorerImageSelected;
+    const imagePath = explorerImagePath;
+    const caseFolder = activeCase.case_folder;
+    const caseNumber = activeCase.case_number;
+    const inImagePath = explorerImageSelectedPath() || entry.name;
     try {
         const extractRes = await fetch('/api/image/extract', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                image_path: explorerImagePath,
+                image_path: imagePath,
                 offset: explorerImageOffset,
-                inode: explorerImageSelected.inode,
-                output_name: explorerImageSelected.name,
-                destination_dir: activeCase.case_folder
+                inode: entry.inode,
+                output_name: entry.name,
+                destination_dir: caseFolder
             })
         });
         const extractData = await extractRes.json();
@@ -10491,18 +10597,17 @@ async function extractAndAttachExplorerImageSelected() {
         // saying. Applied server-side only if the attachment doesn't
         // already have a caption, so it never overwrites an examiner's own
         // edit made since a prior extract.
-        const imageName = (explorerImagePath || '').split('/').pop();
-        const inImagePath = explorerImageSelected.path || explorerImageSelected.name;
+        const imageName = (imagePath || '').split('/').pop();
         const provenanceCaption = `Extracted from ${imageName} (in-image path: ${inImagePath})`;
 
         const attachRes = await fetch('/api/cases/attach_file', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ case_folder: activeCase.case_folder, file_path: extractData.path, caption: provenanceCaption })
+            body: JSON.stringify({ case_folder: caseFolder, file_path: extractData.path, caption: provenanceCaption })
         });
         const attachData = await attachRes.json();
         if (attachData.success) {
-            showToast(`Extracted and attached to ${activeCase.case_number} as a case exhibit (${attachData.file_count} file(s) now attached). Edit captions in Reporting > Files & Artifacts.`, 'success');
+            showToast(`Extracted and attached to ${caseNumber} as a case exhibit (${attachData.file_count} file(s) now attached). Edit captions in Reporting > Files & Artifacts.`, 'success');
             if (currentReportPath) loadCaseForEditing();
         } else {
             showToast(`Extracted to ${extractData.path}, but attaching to the case failed: ${attachData.error}`, 'danger');
@@ -10520,7 +10625,7 @@ async function runImageBinwalk() {
             body: JSON.stringify({
                 image_path: explorerImagePath, offset: explorerImageOffset,
                 inode: explorerImageSelected.inode, name: explorerImageSelected.name,
-                path: explorerImageSelected.path || null,
+                path: explorerImageSelectedPath(),
                 case_folder: activeCase ? activeCase.case_folder : null
             })
         });
@@ -10543,7 +10648,7 @@ async function runImageStrings() {
             body: JSON.stringify({
                 image_path: explorerImagePath, offset: explorerImageOffset,
                 inode: explorerImageSelected.inode, name: explorerImageSelected.name,
-                path: explorerImageSelected.path || null,
+                path: explorerImageSelectedPath(),
                 case_folder: activeCase ? activeCase.case_folder : null
             })
         });
@@ -10668,10 +10773,10 @@ async function runImageBrowserArtifactsParse() {
             return;
         }
         if (data.candidates_found === 0) {
-            showToast('No Chrome/Chromium or Firefox profile files (History/Cookies/Bookmarks, places.sqlite/cookies.sqlite) found in this image.', 'success');
+            showScanNoneFoundToast(data, 'No Chrome/Chromium or Firefox profile files (History/Cookies/Bookmarks, places.sqlite/cookies.sqlite) found in this image.');
             return;
         }
-        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const truncNote = scanCoverageNote(data);
         const summary = summarizeBrowserArtifactCounts(data.counts);
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
@@ -10816,8 +10921,10 @@ async function runImageRecoverDeleted() {
             return;
         }
         let msg;
+        const recoverGaps = scanCoverageGaps(data);
         if (data.files_recovered === 0) {
-            msg = 'No recoverable deleted files were found (with an intact directory entry) in this image.';
+            msg = 'No recoverable deleted files were found (with an intact directory entry) in this image'
+                + (recoverGaps.gaps.length ? ' - in the part of it that was searched.' : '.');
         } else {
             const mb = (data.total_bytes / (1024 * 1024)).toFixed(1);
             msg = `Recovered ${data.files_recovered} file(s), ${mb} MB total.\nOriginal names/folder structure preserved under:\n${data.output_dir}`;
@@ -10831,10 +10938,16 @@ async function runImageRecoverDeleted() {
         if (data.files_errored > 0) {
             msg += `\n\n${data.files_errored} file(s) could not be read and were skipped.`;
         }
-        if (data.truncated) {
-            msg += `\n\nNote: this image has more deleted files than could be recovered in one pass - results are partial.`;
+        if (data.files_incomplete > 0) {
+            msg += `\n\n${data.files_incomplete} file(s) could only be read in part and were NOT kept - a partial file is not the recovered file.`;
         }
-        showToast(msg, 'success');
+        if (recoverGaps.gaps.length) {
+            msg += `\n\nNot everything was searched: ${recoverGaps.gaps.join('; ')}.`;
+        }
+        if (recoverGaps.notes.length) {
+            msg += `\n\n${recoverGaps.notes.join('. ')}.`;
+        }
+        showToast(msg, recoverGaps.gaps.length || data.files_incomplete > 0 ? 'warning' : 'success');
     } catch (err) {}
 }
 
