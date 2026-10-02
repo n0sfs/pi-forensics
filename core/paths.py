@@ -224,6 +224,11 @@ def log_chain_of_custody(action, details=None, source_ip=None, user=None):
     # station where the optional TLS/nginx setup was skipped.
     entry = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        # The station's local wall-clock time is ambiguous on its own (the
+        # station's zone can change, and DST repeats an hour) - the offset in
+        # force when the entry was written makes it an absolute instant
+        # (2026-10-02). Entries written before this have none.
+        "utc_offset": time.strftime("%z"),
         "action": action,
         "details": details or {},
         "source_ip": source_ip if source_ip is not None else (_effective_client_ip() if request else None),

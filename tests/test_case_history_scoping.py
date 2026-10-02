@@ -57,19 +57,50 @@ def test_numeric_case_number_does_not_match_a_date_stamp(monkeypatch):
 
 
 def test_case_number_still_matches_as_a_filename_prefix(monkeypatch):
-    """The legacy flat-file layout this heuristic exists to cover: the case
-    number as a filename prefix, delimited by _ or - rather than a path
-    separator. Anchoring the match must not break it."""
+    """The case number as a filename prefix delimited by '_' (or '.') still
+    matches. Delimited by '-' and more name it no longer does (2026-10-02):
+    "CASE-7-report" and "CASE-7-B" cannot be told apart as text, and the
+    second is a different case. Work done in a case folder is matched by the
+    folder instead - see test_entries_inside_the_case_folder_match."""
     _entries(monkeypatch,
              {"image_path": "/mnt/CASE-7_evidence.E01"},
-             {"report_path": "/mnt/reports/CASE-7-report.pdf"},
+             {"report_path": "/mnt/reports/CASE-7.pdf"},
              {"note": "unrelated"})
     assert [e["action"] for e in _case_history_entries("CASE-7")] == ["action_0", "action_1"]
 
 
-def test_case_history_respects_limit(monkeypatch):
+def test_a_hyphenated_longer_case_number_is_another_case(monkeypatch):
+    _entries(monkeypatch,
+             {"case_folder": "/mnt/2026-001"},
+             {"case_folder": "/mnt/2026-001-B"},
+             {"note": "for B-2026-001"})
+    assert [e["action"] for e in _case_history_entries("2026-001")] == ["action_0"]
+
+
+def test_an_explicit_case_number_decides(monkeypatch):
+    _entries(monkeypatch,
+             {"case_number": "CASE-3", "case_folder": "/mnt/CASE-3"},
+             {"case_number": "CASE-30", "note": "CASE-3 mentioned in passing"})
+    assert [e["action"] for e in _case_history_entries("CASE-3")] == ["action_0"]
+
+
+def test_entries_inside_the_case_folder_match(monkeypatch, tmp_path):
+    folder = tmp_path / "renamed-folder"
+    folder.mkdir()
+    monkeypatch.setattr(reporting, "case_consolidated_path", lambda p: str(folder / "x_case.json"))
+    _entries(monkeypatch,
+             {"image_path": str(folder / "disk.dd")},
+             {"image_path": str(tmp_path / "elsewhere" / "disk.dd")})
+    got = _case_history_entries("CASE-77", case_folder=str(folder))
+    assert [e["action"] for e in got] == ["action_0"]
+
+
+def test_case_history_respects_limit_and_counts_everything(monkeypatch):
+    """The cap is disclosed: the export says "the most recent N of M"."""
     _entries(monkeypatch, *[{"case_folder": "/mnt/CASE-9"} for _ in range(5)])
-    assert len(_case_history_entries("CASE-9", limit=3)) == 3
+    got = _case_history_entries("CASE-9", limit=3)
+    assert len(got) == 3
+    assert got.total_matched == 5
 
 
 def test_case_number_with_regex_metacharacters_is_matched_literally(monkeypatch):

@@ -100,6 +100,28 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
   file at the same path (two Windows images' registry hives, for example).
 - **Artifacts parsed from a single file picked in the image browser are really indexed now.** They
   were silently dropped while the result said they had been saved.
+- **Reports show every language.** Text the PDF's built-in fonts can't draw (Cyrillic, Greek, Arabic,
+  emoji and so on) is drawn in a Unicode font instead of coming out blank. A character no installed font
+  has is written as [U+XXXX] rather than dropped.
+- **Every PDF page footer names the case, when the report was generated, and "Page N of M".**
+- **Audit Trail and custody lines are wrapped, never cut off** part-way through a path or note. A
+  capped Audit Trail now says "most recent N of M". Matching is stricter, so case 2026-001 no longer
+  picks up case 2026-001-B's activity.
+- **The case bundle is verifiable.** It contains a MANIFEST.json with each file's size and SHA-256. A
+  .sha256 file beside the zip holds the bundle's own hash, which is also written to the custody log.
+  Links inside the case folder are listed, never followed. Files or folders that couldn't be read are
+  reported, and the job ends "Completed with N problem(s)" if there were any. A stopped or failed
+  bundle is named ..._INCOMPLETE.zip.
+- **Saving report edits** no longer writes an empty value for a field you deleted. If you and someone
+  else both edited the same list item, you now get a conflict instead of two copies of it.
+- **Case notes:** two attachments with the same name are both kept. Editing a note whose attachment
+  can't be read is refused, rather than re-hashing without that attachment.
+- **A report whose case file can't be read says so**, instead of printing "Not Checked" against
+  evidence that had been verified.
+- **One stuck case no longer holds up every other case's saves.** A change that can't get access to its
+  case within 30 seconds says the case is busy instead of hanging.
+- **Custody log entries record the station's UTC offset**, and the CSV export includes it, along with
+  the user who performed each action.
 - **Live Device Preview cleans up after itself.** A read permission left on a device by a crash is
   removed when the app starts (it used to be logged only), and leaving a preview says so if the
   permission could not be removed.

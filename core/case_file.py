@@ -110,15 +110,70 @@ def _write_case_file(case_file, case_record):
 # re-entrant lock is enough because the service runs a single gunicorn
 # worker (--workers 1, gthread - see install.py's ExecStart); if that ever
 # changes, this must become a cross-process (fcntl) lock. Case writes are
-# small JSON files, so one global lock costs nothing measurable.
-CASE_WRITE_LOCK = threading.RLock()
+# small JSON files.
+#
+# One lock PER CASE FOLDER since 2026-10-02 (it was one global lock): the
+# evidence root is network storage, and a write stalled on one case's folder
+# held every other case's notes, saves and job records behind it. A request
+# that cannot get its case's lock within CASE_WRITE_LOCK_TIMEOUT_SECONDS is
+# answered with CaseWriteBusy (503, core/web_hardening.py) instead of hanging;
+# job workers wait (timeout=None) - their record must land.
+CASE_WRITE_LOCK_TIMEOUT_SECONDS = 30
+_case_write_locks = {}
+_case_write_locks_guard = threading.Lock()
+
+
+class CaseWriteBusy(Exception):
+    """Another write to this case has held its lock past the timeout - most
+    likely its storage is stalled. Nothing was written."""
+
+
+def _case_lock_key(path):
+    """The case folder a path belongs to: the folder itself, or the folder a
+    case file / job report sits in."""
+    if not path:
+        return ''
+    real = os.path.realpath(path)
+    return real if os.path.isdir(real) else os.path.dirname(real)
+
+
+class case_write_lock:
+    """`with case_write_lock(path):` - holds the (re-entrant) write lock for the
+    case `path` belongs to. timeout=None waits indefinitely."""
+
+    def __init__(self, path, timeout=None):
+        key = _case_lock_key(path)
+        with _case_write_locks_guard:
+            self._lock = _case_write_locks.setdefault(key, threading.RLock())
+        self._key = key
+        self._timeout = timeout
+
+    def __enter__(self):
+        if self._timeout is None:
+            self._lock.acquire()
+        elif not self._lock.acquire(timeout=self._timeout):
+            raise CaseWriteBusy(f"Another change to this case ({self._key}) has not finished after "
+                                f"{self._timeout} seconds - its storage may be stalled. Nothing was changed; "
+                                f"try again shortly.")
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+        return False
 
 
 def serialize_case_writes(fn):
-    """Route decorator: hold CASE_WRITE_LOCK for the whole read-modify-write."""
+    """Route decorator: hold the request's case write lock for the whole
+    read-modify-write. The case comes from the request's report_path, else its
+    case_folder (JSON body or form)."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        with CASE_WRITE_LOCK:
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            body = request.form
+        raw = body.get('report_path') or body.get('case_folder')
+        path = safe_path(raw) if isinstance(raw, str) and raw else None
+        with case_write_lock(path, timeout=CASE_WRITE_LOCK_TIMEOUT_SECONDS):
             return fn(*args, **kwargs)
     return wrapper
 

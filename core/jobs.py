@@ -35,7 +35,7 @@ from core.paths import case_consolidated_path
 from core.priv import priv_argv, priv_available
 from core.case_file import (  # re-exported: many modules import these from core.jobs
     CaseFileUnreadable, _case_file_stub, _read_case_file, read_case_file_or_stub,
-    _write_case_file, CASE_WRITE_LOCK, serialize_case_writes, is_case_record_path,
+    _write_case_file, case_write_lock, CaseWriteBusy, serialize_case_writes, is_case_record_path,
 )
 
 # Guards access to the shared current_job / active_proc state, which is
@@ -565,7 +565,7 @@ def _case_upsert_event(case_file, event_id, event_data):
     """Replaces the event matching event_id if present, else appends it -
     this is what makes a job's start-write and later complete-write update
     the SAME array entry instead of appending a duplicate."""
-    with CASE_WRITE_LOCK:
+    with case_write_lock(case_file):
         case_record = _read_case_file(case_file)
         events = case_record.setdefault("events", [])
         events[:] = [e for e in events if e.get("event_id") != event_id]
@@ -629,7 +629,7 @@ def _write_flat_report(path, report_data):
     the same lock and atomic replace as a case file (2026-09-27 review).
     Keys the job produces win; everything else on disk is kept. A legacy
     case_metadata block keeps the examiner's edits over the job's copy."""
-    with CASE_WRITE_LOCK:
+    with case_write_lock(path):
         existing = _read_case_file(path) if os.path.exists(path) else {}
         if not isinstance(existing, dict):
             existing = {}

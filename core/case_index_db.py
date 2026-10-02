@@ -22,7 +22,7 @@ from core.paths import (safe_path, case_consolidated_path, classify_case_role, i
                         acquisition_output_location, path_is_within, CASE_STATUSES_READ_ONLY,
                         case_status_blocking_new_work)
 from core.config import get_keyword_lists
-from core.case_file import CASE_WRITE_LOCK, _read_case_file, _write_case_file
+from core.case_file import case_write_lock, _read_case_file, _write_case_file
 import core.config as config
 
 # --- Quick Triage Scan: pattern definitions ---
@@ -1709,7 +1709,7 @@ def ensure_examiner_recorded(case_folder, username):
         # Locked + atomic (2026-09-23): this used a truncating open() with no
         # lock, so it could both tear the case file and erase a concurrent
         # writer's change.
-        with CASE_WRITE_LOCK:
+        with case_write_lock(marker_path):
             data = _read_case_file(marker_path)
             # A Closed/Archived case's examiner list is part of the record that
             # was handed over (2026-10-02 review): a custody entry logged after
@@ -3445,24 +3445,24 @@ def _analysis_results_by_step(case_folder, target_path):
     return completed, failed
 
 
-def compute_case_analysis_coverage(case_folder):
+def compute_case_analysis_coverage(case_folder, case_data=None):
     """For every COMPLETED acquisition event in this case with a walkable
     output path, returns which Auto Analyze steps have actually succeeded
     against it at least once (from the real chain-of-custody log), plus a
     hash-verification status and a tag count scoped to that exact path -
     everything an examiner needs to see, case-wide, which evidence items
-    still need attention. Returns {"items": [...]}; never raises - a
-    missing/unreadable case file or log just means an empty item list, the
-    same graceful-degradation posture every other case-wide read in this
-    module already has."""
+    still need attention. Returns {"items": [...]}. A folder that is not a
+    case, or a missing chain-of-custody log, is an empty list. An unreadable
+    case file raises CaseFileUnreadable (2026-10-02): it used to be an empty
+    list too, which the exported report then printed as "Not Checked" against
+    evidence whose hashes had in fact been verified. `case_data`, if given, is
+    the caller's own already-parsed record (the report export), so one read
+    serves both."""
     case_file = case_consolidated_path(case_folder)
     if not case_file:
         return {"items": []}
-    try:
-        with open(case_file, 'r') as f:
-            case_data = json.load(f)
-    except Exception:
-        return {"items": []}
+    if case_data is None:
+        case_data = _read_case_file(case_file)
 
     events = case_data.get('events', [])
     last_verification = case_data.get('last_verification') or {}

@@ -41,6 +41,7 @@ import textwrap
 import subprocess
 import threading
 import shutil
+import stat
 import zipfile
 import fnmatch
 # defusedxml, not the bare stdlib xml.etree.ElementTree - _parse_kml_placemarks()
@@ -73,7 +74,7 @@ from core.config import (
     get_report_defaults, get_custom_case_fields,
 )
 from core.jobs import (mark_job_slot_claimed, _read_case_file, _write_case_file, current_job, job_lock, update_job,
-                       snapshot_job, CaseFileUnreadable, CASE_WRITE_LOCK, serialize_case_writes,
+                       snapshot_job, CaseFileUnreadable, case_write_lock, serialize_case_writes,
                        is_case_record_path)
 from core.case_file import refuses_read_only_case
 from core.case_index_db import (
@@ -727,36 +728,55 @@ _SERVER_OWNED_CASE_KEYS = ('events', 'case_notes', 'custody_log', 'last_verifica
                            'status_before_archive', 'created_at', 'case_folder', 'schema_version')
 
 
+# "This key is absent" - distinct from a key whose value is null, so a field
+# the examiner deleted is deleted by the merge rather than written back as
+# null (2026-10-02).
+_MISSING = object()
+
+
 def _three_way_merge(base, disk, mine, path):
-    """Merge one editable value. Returns (merged_value, [conflicting paths]).
+    """Merge one editable value. Returns (merged_value, [conflicting paths]);
+    merged_value is _MISSING when the key should not exist at all.
 
     Unchanged on one side -> take the other. Dicts merge per key. Lists merge
     as sets that keep order: an item either side removed is removed, an item
     either side added is added - so an examiner auto-recorded by a note, or a
     file attached from File Explorer, survives a save of an older snapshot
-    without being reported as a conflict. Only a scalar both sides changed to
-    different values is a conflict."""
-    if mine == disk or mine == base:
+    without being reported as a conflict. A scalar both sides changed to
+    different values is a conflict, and so is a list item BOTH sides edited
+    (each removed the same original and added its own replacement) - merging
+    those as sets used to keep both versions, duplicating the item."""
+    def same(a, b):
+        # An absent key and a null value are the same "nothing" when comparing
+        # versions - the page sends null for a field it never had.
+        return a == b or (a in (None, _MISSING) and b in (None, _MISSING))
+
+    if same(mine, disk) or same(mine, base):
         return disk, []
     # A container that did not exist yet when the page loaded merges as empty.
-    if base is None and isinstance(disk, dict) and isinstance(mine, dict):
+    if base in (None, _MISSING) and isinstance(disk, dict) and isinstance(mine, dict):
         base = {}
-    elif base is None and isinstance(disk, list) and isinstance(mine, list):
+    elif base in (None, _MISSING) and isinstance(disk, list) and isinstance(mine, list):
         base = []
-    if disk == base:
+    if same(disk, base):
         return mine, []
     if isinstance(base, dict) and isinstance(disk, dict) and isinstance(mine, dict):
         out, conflicts = {}, []
         for k in list(dict.fromkeys(list(disk) + list(mine) + list(base))):
-            v, c = _three_way_merge(base.get(k), disk.get(k), mine.get(k), f"{path}.{k}")
+            v, c = _three_way_merge(base.get(k, _MISSING), disk.get(k, _MISSING), mine.get(k, _MISSING),
+                                    f"{path}.{k}")
             conflicts.extend(c)
-            if v is not None or k in disk or k in mine:
+            if v is not _MISSING:
                 out[k] = v
         return out, conflicts
     if isinstance(base, list) and isinstance(disk, list) and isinstance(mine, list):
+        removed_by_both = [x for x in base if x not in mine and x not in disk]
+        added_mine = [x for x in mine if x not in base and x not in disk]
+        added_disk = [x for x in disk if x not in base and x not in mine]
+        if removed_by_both and added_mine and added_disk:
+            return disk, [path]
         kept = [x for x in mine if x in disk or x not in base]
-        added_elsewhere = [x for x in disk if x not in base and x not in mine]
-        return kept + added_elsewhere, []
+        return kept + added_disk, []
     return disk, [path]
 
 @reporting_bp.route('/api/report/save', methods=['POST'])
@@ -848,9 +868,11 @@ def save_report_json():
         for key, base_val in base_fields.items():
             if key in _SERVER_OWNED_CASE_KEYS or key == 'updated_at':
                 continue
-            merged, key_conflicts = _three_way_merge(base_val, on_disk.get(key), data.get(key), key)
+            merged, key_conflicts = _three_way_merge(base_val, on_disk.get(key, _MISSING),
+                                                     data.get(key, _MISSING), key)
             conflicts.extend(key_conflicts)
-            if merged is None and key not in on_disk and key not in data:
+            if merged is _MISSING:
+                data.pop(key, None)
                 continue
             data[key] = merged
         if conflicts:
@@ -933,7 +955,13 @@ def get_chain_of_custody_log():
 # number was always the filename prefix) and new case-folder evidence (case
 # number is the folder name) with one heuristic, no directory resolution
 # needed.
-def _case_history_entries(case_number, limit=200):
+class _CaseHistory(list):
+    """The entries shown, plus how many matched in all - so a capped Audit
+    Trail can say "the most recent N of M" instead of ending silently."""
+    total_matched = 0
+
+
+def _case_history_entries(case_number, limit=200, case_folder=None):
     """Same match filter used by /api/coc/case_history below, factored out so
     the report exporter's Audit Trail section can reuse it without an extra
     HTTP round-trip.
@@ -949,15 +977,37 @@ def _case_history_entries(case_number, limit=200):
     filenames, absorbing dated activity from every case on the station.
     Requiring a non-alphanumeric character (or a string boundary) on each side
     keeps the "case number appears as a path segment or filename prefix"
-    heuristic this was always built on, while rejecting mid-token hits."""
-    pattern = re.compile(r'(?<![A-Za-z0-9])' + re.escape(case_number) + r'(?![A-Za-z0-9])')
-    matched = []
+    heuristic this was always built on, while rejecting mid-token hits.
+
+    2026-10-02: a hyphen followed by more of a name no longer counts as a
+    boundary either ("2026-001" matched every entry of "2026-001-B"); an
+    entry whose details name a case_number is that case's or not, exactly;
+    and with `case_folder` (an actual case folder) any detail path inside it
+    matches - the folder, not the number, is what the work was done in.
+    Returns a _CaseHistory: the most recent `limit` matches, with
+    total_matched counting all of them."""
+    pattern = re.compile(r'(?<![A-Za-z0-9])(?<![A-Za-z0-9]-)' + re.escape(case_number)
+                         + r'(?![A-Za-z0-9]|-[A-Za-z0-9])')
+    folder = os.path.realpath(case_folder) if case_folder and case_consolidated_path(case_folder) else None
+
+    def belongs(details):
+        if folder:
+            for v in details.values():
+                if isinstance(v, str) and v.startswith('/') and path_is_within(os.path.normpath(v), folder):
+                    return True
+        if 'case_number' in details:
+            return str(details.get('case_number')) == case_number
+        return any(pattern.search(str(v)) for v in details.values())
+
+    matched = _CaseHistory()
+    total = 0
     for entry in _read_coc_entries(limit=None):
-        details = entry.get("details", {})
-        if any(pattern.search(str(v)) for v in details.values()):
-            matched.append(entry)
-        if len(matched) >= limit:
-            break
+        details = entry.get("details") or {}
+        if isinstance(details, dict) and belongs(details):
+            total += 1
+            if len(matched) < limit:
+                matched.append(entry)
+    matched.total_matched = total
     return matched
 
 @reporting_bp.route('/api/coc/case_history', methods=['GET'])
@@ -966,11 +1016,13 @@ def _case_history_entries(case_number, limit=200):
 def get_case_history():
     case_number = request.args.get('case_number', '').strip()
     limit = request.args.get('limit', 200, type=int)
+    case_folder = safe_path(request.args.get('case_folder')) if request.args.get('case_folder') else None
     if not case_number:
         return jsonify({"success": False, "error": "case_number is required."}), 400
 
     try:
-        return jsonify({"success": True, "entries": _case_history_entries(case_number, limit)})
+        entries = _case_history_entries(case_number, limit, case_folder=case_folder)
+        return jsonify({"success": True, "entries": entries, "total_matched": entries.total_matched})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -983,7 +1035,7 @@ def export_chain_of_custody_csv():
     # record - no limit here.
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["timestamp", "action", "source_ip", "details"])
+    writer.writerow(["timestamp", "utc_offset", "action", "user", "source_ip", "details"])
 
     try:
         if os.path.exists(COC_LOG_FILE):
@@ -998,7 +1050,9 @@ def export_chain_of_custody_csv():
                     # rather than guessing at a fixed set of sub-columns.
                     writer.writerow([
                         entry.get("timestamp", ""),
+                        entry.get("utc_offset", ""),  # absent on entries from before 2026-10-02
                         entry.get("action", ""),
+                        entry.get("user", ""),
                         entry.get("source_ip", ""),
                         json.dumps(entry.get("details", {})),
                     ])
@@ -1976,19 +2030,23 @@ def _draw_pdf_audit_trail(c, y, entries, title="Case Activity Log (Audit Trail)"
     if not entries:
         c.drawString(50, y, "No activity log entries found for this case.")
         y -= 12
+    total = getattr(entries, 'total_matched', len(entries))
+    if total > len(entries):
+        y = _draw_pdf_wrapped_text(c, y, f"Showing the most recent {len(entries)} of {total} entries for this "
+                                         f"case - the full log is in Settings > Security (Station Audit Log).",
+                                   x=50, width_chars=120, font="Helvetica-Oblique", size=8, leading=11)
+    # Wrapped, never cut (2026-10-02): these lines used to stop at 120/130
+    # characters with nothing marking the cut - a path or hash in an audit
+    # record that looks complete but isn't.
     for entry in entries:
-        if y < 60:
-            c.showPage()
-            y = 750
-            c.setFont("Helvetica", 8)
-        c.drawString(50, y, f"{entry.get('timestamp', '')}  {entry.get('action', '')}"[:120])
-        y -= 11
+        y = _draw_pdf_wrapped_text(c, y, f"{entry.get('timestamp', '')}  {entry.get('action', '')}",
+                                   x=50, width_chars=120, size=8, leading=11)
         details = entry.get('details') or {}
         if details:
             c.setFillColorRGB(0.4, 0.4, 0.4)
-            c.drawString(60, y, ', '.join(f'{k}={v}' for k, v in details.items())[:130])
+            y = _draw_pdf_wrapped_text(c, y, ', '.join(f'{k}={v}' for k, v in details.items()),
+                                       x=60, width_chars=125, size=8, leading=11)
             c.setFillColorRGB(0, 0, 0)
-            y -= 11
     return y
 
 def _draw_pdf_analysis_findings(c, y, findings, title="Analysis Results"):
@@ -2105,29 +2163,26 @@ def _draw_pdf_custody_log_block(c, y, custody_log, title="Physical Evidence Cust
         c.drawString(50, y, "No custody log entries recorded for this case.")
         y -= 12
         return y
+    # Wrapped, never cut (2026-10-02) - a custody record's notes used to stop
+    # at 130 characters with nothing marking the cut.
     for entry in custody_log:
         if y < 65:
             c.showPage()
             y = 750
-            c.setFont("Helvetica", 8)
-        c.setFont("Helvetica-Bold", 8)
-        c.drawString(50, y, f"{entry.get('timestamp', '')}  {entry.get('from_custodian', '')} -> {entry.get('to_custodian', '')}"[:120])
-        y -= 11
-        c.setFont("Helvetica", 8)
-        detail = f"Reason: {entry.get('reason', '')}   Method: {entry.get('method', '')}"[:130]
-        c.drawString(60, y, detail)
-        y -= 11
+        y = _draw_pdf_wrapped_text(
+            c, y, f"{entry.get('timestamp', '')}  {entry.get('from_custodian', '')} -> {entry.get('to_custodian', '')}",
+            x=50, width_chars=120, font="Helvetica-Bold", size=8, leading=11)
+        y = _draw_pdf_wrapped_text(c, y, f"Reason: {entry.get('reason', '')}   Method: {entry.get('method', '')}",
+                                   x=60, width_chars=125, size=8, leading=11)
         if entry.get('notes'):
             c.setFillColorRGB(0.4, 0.4, 0.4)
-            c.drawString(60, y, f"Notes: {entry.get('notes', '')}"[:130])
+            y = _draw_pdf_wrapped_text(c, y, f"Notes: {entry.get('notes', '')}", x=60, width_chars=125, size=8, leading=11)
             c.setFillColorRGB(0, 0, 0)
-            y -= 11
         logged_by = entry.get('logged_by')
         if logged_by:
             c.setFillColorRGB(0.4, 0.4, 0.4)
-            c.drawString(60, y, f"Logged by: {logged_by}"[:130])
+            y = _draw_pdf_wrapped_text(c, y, f"Logged by: {logged_by}", x=60, width_chars=125, size=8, leading=11)
             c.setFillColorRGB(0, 0, 0)
-            y -= 11
         linked = entry.get('linked_files') or []
         if linked:
             link_line = "Linked Exhibit(s): " + "; ".join(
@@ -2753,16 +2808,36 @@ def set_file_caption():
 # in edit_history. This is what the "Forensic Analysis / Steps Taken"
 # report section renders (see _draw_pdf_case_notes below).
 def _hash_note_content(text, attachment_paths):
+    """SHA-256 over a note's text and every attachment's bytes. Raises OSError
+    when an attachment cannot be read (2026-10-02): it used to be skipped,
+    producing a hash that looked valid but did not cover the attachment."""
     h = hashlib.sha256()
     h.update((text or '').encode('utf-8'))
     for path in attachment_paths:
-        try:
-            with open(path, 'rb') as f:
-                for chunk in iter(lambda: f.read(65536), b''):
-                    h.update(chunk)
-        except OSError:
-            pass
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
     return h.hexdigest()
+
+
+def _note_attachment_name(raw, taken, fallback):
+    """A bare, unique file name for an uploaded note attachment. Only the last
+    path component is kept, control characters are dropped, '', '.' and '..'
+    become `fallback`, and a name already used in this note gets " (2)",
+    " (3)"... - two uploads called "photo.jpg" used to overwrite each other,
+    leaving two attachment records pointing at one file (2026-10-02)."""
+    name = os.path.basename(str(raw or '').replace('\\', '/'))
+    name = ''.join(ch for ch in name if ch >= ' ' and ch != '\x7f').strip()
+    if name in ('', '.', '..'):
+        name = fallback
+    stem, ext = os.path.splitext(name)
+    stem, ext = stem[:150], ext[:20]
+    candidate, n = stem + ext, 2
+    while candidate.lower() in taken:
+        candidate = f"{stem} ({n}){ext}"
+        n += 1
+    taken.add(candidate.lower())
+    return candidate
 
 CASE_NOTE_ATTACHMENT_MAX_BYTES = 25_000_000
 
@@ -2834,14 +2909,16 @@ def add_case_note():
         if not note_dir:
             return jsonify({"success": False, "error": "Could not resolve a safe attachment directory for this note."}), 500
         os.makedirs(note_dir, exist_ok=True)
-        for uf in uploaded_files:
+        taken_names = set()
+        for index, uf in enumerate(uploaded_files, start=1):
             if not uf.filename:
                 continue
-            fname = os.path.basename(uf.filename)
-            if not fname:
-                continue
+            fname = _note_attachment_name(uf.filename, taken_names, f"attachment_{index}")
             fpath = os.path.join(note_dir, fname)
-            uf.save(fpath)
+            # note_dir is new (a fresh uuid) and names are unique, so O_EXCL
+            # never refuses a legitimate file - it guarantees no overwrite.
+            with os.fdopen(os.open(fpath, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), 'wb') as out:
+                uf.save(out)
             ext = os.path.splitext(fname)[1].lower()
             kind = 'image' if ext in ATTACHMENT_IMAGE_EXT else ('text' if ext in ATTACHMENT_TEXT_EXT else 'other')
             saved_attachments.append({
@@ -2933,8 +3010,13 @@ def edit_case_note():
         "content_hash": note["content_hash"],
         "edited_at": note.get("edited_at"),
     })
+    try:
+        new_hash = _hash_note_content(new_text, [a["path"] for a in note.get("attachments", [])])
+    except OSError as e:
+        return jsonify({"success": False, "error": f"One of this note's attachments could not be read ({e}), so its "
+                                                   f"content hash cannot be recomputed. The note was not changed."}), 409
     note["text"] = new_text
-    note["content_hash"] = _hash_note_content(new_text, [a["path"] for a in note.get("attachments", [])])
+    note["content_hash"] = new_hash
     note["edited_at"] = now
 
     if 'updated_at' in data:
@@ -3278,7 +3360,7 @@ def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=No
         # Merge-only final write - see rule 3 in the docstring above.
         # Held across read->merge->write so a concurrent note/status/job
         # write can't land in between and be erased (2026-09-23).
-        with CASE_WRITE_LOCK:
+        with case_write_lock(case_file):
             fresh = _read_case_file(case_file)
             run_at = time.strftime("%Y-%m-%d %H:%M:%S")
             was_stopped = snapshot_job()["status"] == "Stopped"
@@ -3387,7 +3469,48 @@ BUNDLE_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
 
 
 class _BundleStoppedMidFile(Exception):
-    """Raised inside the chunked large-file copy when the user presses Stop."""
+    """Raised inside the chunked copy when the user presses Stop."""
+
+    def __init__(self, bytes_written):
+        super().__init__("stopped")
+        self.bytes_written = bytes_written
+
+
+def _bundle_add_file(zf, fpath, arcname, compress_type, size, on_chunk):
+    """Copies one regular file into the bundle in BUNDLE_CHUNK_SIZE chunks,
+    hashing it on the way, and returns its SHA-256. on_chunk(n) is called after
+    each chunk (progress); for a file of at least BUNDLE_LARGE_FILE_PROGRESS_
+    THRESHOLD it also honours Stop mid-file by raising _BundleStoppedMidFile.
+    The file is opened with O_NOFOLLOW, so a link swapped in after the walk is
+    refused rather than followed."""
+    h = hashlib.sha256()
+    written = 0
+    fd = os.open(fpath, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    with os.fdopen(fd, 'rb') as src:
+        zinfo = zipfile.ZipInfo.from_file(fpath, arcname)
+        zinfo.compress_type = compress_type
+        with zf.open(zinfo, 'w', force_zip64=True) as dst:
+            while True:
+                if size >= BUNDLE_LARGE_FILE_PROGRESS_THRESHOLD and snapshot_job()["status"] == "Stopped":
+                    raise _BundleStoppedMidFile(written)
+                chunk = src.read(BUNDLE_CHUNK_SIZE)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                h.update(chunk)
+                written += len(chunk)
+                on_chunk(len(chunk))
+    if written != size:
+        raise OSError(f"read {written} of {size} bytes - the file changed or could not be read in full")
+    return h.hexdigest()
+
+
+def _sha256_of_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(BUNDLE_CHUNK_SIZE), b''):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def execution_worker_case_bundle_export(case_folder, include_images, requester_ip=None, requester_user=None):
@@ -3407,7 +3530,20 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
     doesn't apply to an archival export whose whole point is capturing
     everything the case folder actually contains. This worker does its own
     unbounded os.walk instead, excluding only raw acquisition image
-    extensions (unless include_images) and its own prior bundle output."""
+    extensions (unless include_images) and its own prior bundle output.
+
+    Made verifiable and honest 2026-10-02:
+    - Links are never followed: a symlink in the case folder (to the app's
+      own secrets, or /dev/zero) used to be zipped as its target. Links and
+      special files are listed in the manifest, not archived.
+    - Every file is hashed while it is copied, and the bundle carries
+      MANIFEST.json (path, size, SHA-256 of each file; what was left out and
+      why). The finished zip's own SHA-256 goes into a .sha256 file beside it
+      and into the custody log.
+    - Unreadable folders and files are reported, not skipped in silence, and
+      the job ends "Completed with N problem(s)" when there were any.
+    - The zip is written as .zip.partial and only gets its final name when
+      complete; a stopped or failed run is named ..._INCOMPLETE.zip."""
     global current_job
     log_history = []
 
@@ -3416,25 +3552,41 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
             log_history.append(msg)
             update_job(log="\n".join(log_history[-200:]))
 
+    partial_path = None
     try:
         slug = os.path.basename(case_folder.rstrip(os.sep))
         stamp = time.strftime("%Y%m%d-%H%M%S")
         zip_name = f"{slug}_case_bundle_{stamp}.zip"
         zip_path = os.path.join(case_folder, zip_name)
-        # os.walk() is a LIVE directory scan, not a pre-walk snapshot - once
-        # zip_path itself starts growing inside case_folder, an unguarded
-        # walk would see it and try to add it to itself. Matched by glob
-        # pattern (not an exact-name set like every other self-exclusion in
-        # this app) since the timestamp makes each run's filename unique.
-        self_pattern = f"{slug}_case_bundle_*.zip"
+        partial_path = zip_path + ".partial"
+        # os.walk() is a LIVE directory scan - once the bundle starts growing
+        # inside case_folder an unguarded walk would add it to itself. Every
+        # file this mechanism writes (.zip, .zip.partial, _INCOMPLETE.zip,
+        # .sha256) starts with this prefix.
+        self_pattern = f"{slug}_case_bundle_*"
 
         update_job(format="case_bundle_export", status="Enumerating case folder...", progress_percent=0.0,
                    transferred_bytes=0, total_bytes=0)
         append_log(f"[*] Enumerating {case_folder} for a case bundle export...")
 
         candidates = []  # (abs_path, arcname, size, is_raw_image)
+        not_archived = []  # {"arcname", "reason"} - links, special files, unreadable entries
+        problems = []
         total_size = 0
-        for root, dirs, files in os.walk(case_folder):
+
+        def walk_error(err):
+            problems.append(f"folder could not be read: {os.path.relpath(err.filename, case_folder)} ({err.strerror})")
+
+        for root, dirs, files in os.walk(case_folder, onerror=walk_error):
+            for dname in list(dirs):
+                dpath = os.path.join(root, dname)
+                if os.path.islink(dpath):
+                    try:
+                        target = os.readlink(dpath)
+                    except OSError:
+                        target = "?"
+                    not_archived.append({"arcname": os.path.relpath(dpath, case_folder),
+                                         "reason": f"link to {target} - not followed"})
             for fname in files:
                 if fnmatch.fnmatch(fname, self_pattern):
                     continue
@@ -3443,12 +3595,25 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
                 if not include_images and is_raw_image:
                     continue
                 fpath = os.path.join(root, fname)
+                arcname = os.path.relpath(fpath, case_folder)
                 try:
-                    size = os.path.getsize(fpath)
-                except OSError:
+                    st = os.lstat(fpath)
+                except OSError as e:
+                    problems.append(f"{arcname} could not be read ({e.strerror})")
+                    not_archived.append({"arcname": arcname, "reason": f"unreadable: {e.strerror}"})
                     continue
-                candidates.append((fpath, os.path.relpath(fpath, case_folder), size, is_raw_image))
-                total_size += size
+                if stat.S_ISLNK(st.st_mode):
+                    try:
+                        target = os.readlink(fpath)
+                    except OSError:
+                        target = "?"
+                    not_archived.append({"arcname": arcname, "reason": f"link to {target} - not followed"})
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    not_archived.append({"arcname": arcname, "reason": "not a regular file"})
+                    continue
+                candidates.append((fpath, arcname, st.st_size, is_raw_image))
+                total_size += st.st_size
 
         # Pre-flight storage check (found in a review pass, matching the one
         # start_imaging()/start_ddrescue() already do) - the zip is written
@@ -3471,140 +3636,114 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
         update_job(status="Building bundle...", total_bytes=total_size)
         append_log(f"[*] {len(candidates)} file(s), {total_size / (1024**2):.1f} MB total, will be included "
                    f"({'includes' if include_images else 'excludes'} raw acquisition images).")
+        for item in not_archived:
+            append_log(f"[!] Not archived: {item['arcname']} - {item['reason']}")
 
         written = 0
         errored = 0
         truncated = []
-        bytes_done = 0
-        last_update = time.time()
-        # Raw acquisition images are the one candidate type never worth
-        # running through DEFLATE (found in a review pass): they're either
-        # already high-entropy real data or, for E01, already compressed by
-        # the acquisition tool itself - so compressing them again spends a
-        # full CPU-bound pass over the whole image for close to zero size
-        # reduction, on top of this bundle's own "blocks new jobs for
-        # longer" cost. ZIP_STORED per-file for those, ZIP_DEFLATED (the
-        # ZipFile-level default) still applies normally to everything else
-        # (notes, exports, small text/images), which DOES compress
-        # meaningfully.
-        # zf.write() below the size threshold is left alone - it already
-        # copies in 8KB chunks internally (see CPython's zipfile.write(),
-        # which is exactly ZipInfo.from_file() + self.open(zinfo,'w') +
-        # shutil.copyfileobj()), just with no progress hook between chunks.
-        # For a raw acquisition image - by far the largest candidate, and
-        # the case this bundle export was built to include - that one
-        # zf.write() call can run for most of the job's total duration with
-        # this loop's own progress update only firing before and after it,
-        # so the bar sits frozen mid-export then jumps to ~100% the instant
-        # the file finishes. A user watching during this project's own
-        # documented real NFS stalls has no way to tell "almost done" from
-        # "hung". Above the threshold, replicate zf.write()'s own internal
-        # pattern by hand (same ZipInfo.from_file() + zf.open(zinfo,'w')
-        # shape CPython uses) so bytes_done - and therefore the progress
-        # bar - advances continuously within one large file, not just
-        # between files. Below the threshold, plain zf.write() is simpler
-        # and no less accurate, since a small file's whole write already
-        # completes within one 0.5s progress-update tick.
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        manifest_files = []
+        progress = {"bytes_done": 0, "last_update": time.time()}
+
+        def on_chunk(n):
+            progress["bytes_done"] += n
+            if time.time() - progress["last_update"] > 0.5:
+                update_job(transferred_bytes=progress["bytes_done"],
+                           progress_percent=round((progress["bytes_done"] / total_size) * 100, 1) if total_size else 100.0)
+                progress["last_update"] = time.time()
+
+        # Raw acquisition images are never run through DEFLATE (found in a
+        # review pass): already high-entropy or, for E01, already compressed,
+        # so compressing them again spends a full CPU-bound pass for close to
+        # zero size reduction. ZIP_STORED for those, ZIP_DEFLATED for the rest.
+        with zipfile.ZipFile(partial_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for fpath, arcname, size, is_raw_image in candidates:
                 if snapshot_job()["status"] == "Stopped":
                     append_log("[-] Stopped by user - bundle contains only what was added before the stop.")
                     break
                 compress_type = zipfile.ZIP_STORED if is_raw_image else zipfile.ZIP_DEFLATED
-                # Tracks how much of THIS file's size has already been added
-                # to bytes_done, so bytes_done still advances by exactly
-                # `size` per candidate whether it succeeds, fails outright,
-                # or fails partway through a chunked large-file copy -
-                # without this, an exception mid-copy would double-count the
-                # chunks already added when the except block below also
-                # added the full size on top.
-                file_bytes_counted = 0
+                before = progress["bytes_done"]
                 try:
-                    if size >= BUNDLE_LARGE_FILE_PROGRESS_THRESHOLD:
-                        zinfo = zipfile.ZipInfo.from_file(fpath, arcname)
-                        zinfo.compress_type = compress_type
-                        with open(fpath, 'rb') as src, zf.open(zinfo, 'w') as dst:
-                            while True:
-                                if snapshot_job()["status"] == "Stopped":
-                                    # A multi-GB image can take most of the job's
-                                    # runtime - honour Stop mid-file, not only
-                                    # between files. The partial entry is named
-                                    # in the log so nobody mistakes it for whole.
-                                    raise _BundleStoppedMidFile()
-                                chunk = src.read(BUNDLE_CHUNK_SIZE)
-                                if not chunk:
-                                    break
-                                dst.write(chunk)
-                                bytes_done += len(chunk)
-                                file_bytes_counted += len(chunk)
-                                if time.time() - last_update > 0.5:
-                                    update_job(transferred_bytes=bytes_done,
-                                               progress_percent=round((bytes_done / total_size) * 100, 1) if total_size else 100.0)
-                                    last_update = time.time()
-                    else:
-                        zf.write(fpath, arcname=arcname, compress_type=compress_type)
-                        bytes_done += size
-                        file_bytes_counted = size
+                    digest = _bundle_add_file(zf, fpath, arcname, compress_type, size, on_chunk)
+                    manifest_files.append({"path": arcname, "size": size, "sha256": digest})
                     written += 1
-                except _BundleStoppedMidFile:
-                    # A user Stop, not an error: not counted in `errored`, and
-                    # bytes_done keeps only what was really written so the
-                    # stopped progress figure stays honest. zf.open('w') still
-                    # closes the entry, so the partial copy remains in the zip
-                    # under its real name with a valid CRC - record it durably.
-                    truncated.append({"arcname": arcname, "bytes_written": file_bytes_counted, "size": size})
+                except _BundleStoppedMidFile as stop:
+                    # A user Stop, not an error. zf.open('w') still closes the
+                    # entry, so the partial copy remains in the zip under its
+                    # real name - recorded durably, and in the manifest.
+                    truncated.append({"arcname": arcname, "bytes_written": stop.bytes_written, "size": size})
                     append_log(f"[!] Stopped mid-file: {arcname} is in the bundle but TRUNCATED "
-                               f"({file_bytes_counted:,} of {size:,} bytes) - do not use that copy.")
+                               f"({stop.bytes_written:,} of {size:,} bytes) - do not use that copy.")
                     break
                 except Exception as e:
                     errored += 1
+                    copied = progress["bytes_done"] - before
+                    problems.append(f"{arcname} could not be added ({e})")
                     append_log(f"[!] Could not add {arcname}: {e}")
-                    if file_bytes_counted:
-                        truncated.append({"arcname": arcname, "bytes_written": file_bytes_counted, "size": size})
+                    if copied:
+                        truncated.append({"arcname": arcname, "bytes_written": copied, "size": size})
                         append_log(f"[!] {arcname} is present in the bundle but TRUNCATED "
-                                   f"({file_bytes_counted:,} of {size:,} bytes) - do not use that copy.")
-                    bytes_done += (size - file_bytes_counted)
-                if time.time() - last_update > 0.5:
-                    update_job(transferred_bytes=bytes_done,
-                               progress_percent=round((bytes_done / total_size) * 100, 1) if total_size else 100.0)
-                    last_update = time.time()
+                                   f"({copied:,} of {size:,} bytes) - do not use that copy.")
+                    progress["bytes_done"] = before + size  # count it as dealt with, for the progress bar
 
-        # A genuine, if minor, real inaccuracy found and fixed 2026-09-09:
-        # this used to unconditionally report progress_percent=100.0/
-        # transferred_bytes=total_size regardless of whether the loop above
-        # actually ran to completion or broke early on a Stop request - a
-        # stopped run's own progress bar would silently claim "100% done"
-        # even though the bundle only contains whatever was written before
-        # the stop. stopped is computed once here and reused below so both
-        # decisions agree with each other.
-        stopped = snapshot_job()["status"] == "Stopped"
+            stopped = snapshot_job()["status"] == "Stopped"
+            manifest = {
+                "case_folder": case_folder, "generated_at": time.strftime("%Y-%m-%d %H:%M:%S %z"),
+                "complete": not stopped and not problems and not truncated,
+                "include_raw_images": include_images,
+                "files": manifest_files,
+                "truncated_entries": truncated,
+                "not_archived": not_archived,
+                "problems": problems,
+            }
+            zf.writestr("MANIFEST.json", json.dumps(manifest, indent=2))
+
+        bytes_done = progress["bytes_done"]
+        # A stopped run's progress shows what was really written (2026-09-09).
         if stopped:
             update_job(transferred_bytes=bytes_done,
                        progress_percent=round((bytes_done / total_size) * 100, 1) if total_size else 100.0)
         else:
             update_job(transferred_bytes=total_size, progress_percent=100.0)
-        # No sudo/root involvement anywhere in this worker (unlike the
-        # acquisition tools' output), so there's no ownership to reclaim -
-        # the zip is already written by, and owned by, this app's own
-        # service account.
-        _auto_tag_case_artifact(case_folder, zip_path)
 
-        if not stopped:
-            update_job(status="Completed Successfully")
+        final_path = zip_path if not stopped else zip_path[:-len(".zip")] + "_INCOMPLETE.zip"
+        os.replace(partial_path, final_path)
+        partial_path = None
+        zip_sha256 = _sha256_of_file(final_path)
+        with open(final_path + ".sha256", "w", encoding="utf-8") as f:
+            f.write(f"{zip_sha256}  {os.path.basename(final_path)}\n")
+        # No sudo/root involvement anywhere in this worker, so there's no
+        # ownership to reclaim.
+        _auto_tag_case_artifact(case_folder, final_path)
+
+        problem_count = len(problems) + len(truncated)
         if stopped:
-            append_log(f"[-] Bundle export STOPPED by user: {written} file(s) added, {errored} error(s) -> {zip_path}")
+            append_log(f"[-] Bundle export STOPPED by user: {written} file(s) added, {errored} error(s) -> {final_path}")
         else:
-            append_log(f"[+] Bundle export complete: {written} file(s) added, {errored} error(s) -> {zip_path}")
+            update_job(status="Completed Successfully" if not problem_count
+                       else f"Completed with {problem_count} problem(s) - see the log")
+            append_log(f"[+] Bundle export complete: {written} file(s) added, {errored} error(s), "
+                       f"{len(not_archived)} not archived -> {final_path}")
+        append_log(f"[*] Bundle SHA-256: {zip_sha256} (also in {os.path.basename(final_path)}.sha256; per-file "
+                   f"hashes are in MANIFEST.json inside the bundle)")
         log_chain_of_custody("case_bundle_export_stopped" if stopped else "case_bundle_export_complete", {
-            "case_folder": case_folder, "zip_path": zip_path, "files_added": written,
-            "files_errored": errored, "include_images": include_images,
+            "case_folder": case_folder, "zip_path": final_path, "zip_sha256": zip_sha256,
+            "files_added": written, "files_errored": errored, "include_images": include_images,
             # Entries left in the zip under their real names but incomplete -
             # the job log is overwritten by the next job, this record is not.
             "files_truncated": truncated,
+            "not_archived": not_archived, "problems": problems,
         }, source_ip=requester_ip, user=requester_user)
     except Exception as e:
         update_job(status="Failed")
         append_log(f"[-] Execution Exception: {str(e)}")
+        if partial_path and os.path.exists(partial_path):
+            failed_path = partial_path[:-len(".zip.partial")] + "_INCOMPLETE.zip"
+            try:
+                os.replace(partial_path, failed_path)
+                append_log(f"[-] The unfinished bundle was kept as {failed_path} - it is incomplete.")
+            except OSError:
+                pass
     finally:
         update_job(active=False)
 
@@ -5040,27 +5179,120 @@ def _draw_pdf_contents_page(c, resolved_sections, event_count, has_exhibits=True
         c.drawString(60, y, f"{i}.  {display}")
         y -= 18
 
-def _numbered_canvas_class():
-    """Returns a reportlab Canvas subclass that stamps a 'Page N' footer on
-    every page as it's flushed, without needing to touch every individual
-    showPage() call site scattered across the drawing helpers above -
-    showPage() is the one choke point they all already go through. save()
-    doesn't need its own override: reportlab's own Canvas.save() calls
-    showPage() internally for whatever page is still pending when save()
-    runs, so the last page gets stamped through this same override
-    automatically. Shared by all three report-template PDF builders below;
-    reportlab is imported here rather than at module level, matching this
-    file's existing lazy-import convention for it (routes that never touch
-    PDF generation shouldn't need the dependency)."""
+# Unicode text in PDFs (2026-10-02). The built-in Helvetica/Courier fonts only
+# encode cp1252, so any other character - Cyrillic, Greek, Arabic, CJK, most
+# emoji - in a case note, file name or contact came out as a black box or a
+# blank. Text that cp1252 can carry is still drawn in the built-in font
+# (unchanged output for every existing report); anything else switches to the
+# DejaVu equivalent for that one string, and a character DejaVu lacks too is
+# written as [U+XXXX] - visibly marked, never silently dropped.
+PDF_UNICODE_FONT_DIR = '/usr/share/fonts/truetype/dejavu'
+_PDF_UNICODE_FONT_FILES = {
+    'Helvetica': 'DejaVuSans.ttf', 'Helvetica-Bold': 'DejaVuSans-Bold.ttf',
+    'Helvetica-Oblique': 'DejaVuSans-Oblique.ttf', 'Helvetica-BoldOblique': 'DejaVuSans-BoldOblique.ttf',
+    'Courier': 'DejaVuSansMono.ttf', 'Courier-Bold': 'DejaVuSansMono-Bold.ttf',
+    'Courier-Oblique': 'DejaVuSansMono-Oblique.ttf', 'Courier-BoldOblique': 'DejaVuSansMono-BoldOblique.ttf',
+}
+_pdf_unicode_fonts = None  # builtin name -> registered TTF name, filled on first use
+
+
+def _pdf_unicode_font_for(builtin_name):
+    global _pdf_unicode_fonts
+    if _pdf_unicode_fonts is None:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        registered = {}
+        for builtin, filename in _PDF_UNICODE_FONT_FILES.items():
+            path = os.path.join(PDF_UNICODE_FONT_DIR, filename)
+            ttf_name = 'PIF-' + os.path.splitext(filename)[0]
+            try:
+                pdfmetrics.registerFont(TTFont(ttf_name, path))
+                registered[builtin] = ttf_name
+            except Exception:
+                continue  # not installed - those strings fall back to [U+XXXX] markers
+        _pdf_unicode_fonts = registered
+    return _pdf_unicode_fonts.get(builtin_name) or _pdf_unicode_fonts.get('Helvetica')
+
+
+def _pdf_fits_builtin_font(text):
+    try:
+        text.encode('cp1252')
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _numbered_canvas_class(header=None):
+    """Returns a reportlab Canvas subclass shared by every report-template PDF
+    builder: it stamps each page's footer and draws non-cp1252 text in a
+    Unicode font (see PDF_UNICODE_FONT_DIR above).
+
+    The footer reads "Case <number> - generated <time>" and "Page N of M"
+    (2026-10-02; it was "Page N" alone, so a printed page that went astray
+    could not be tied to its case, its export, or a missing neighbour). M is
+    only known at the end, so showPage() records each page and save() stamps
+    them all - the standard reportlab two-pass pattern. reportlab is imported
+    here rather than at module level, matching this file's lazy-import
+    convention for it."""
     from reportlab.pdfgen import canvas
 
+    case_number = str((header or {}).get('case_number') or '').strip()
+    generated = time.strftime('%Y-%m-%d %H:%M:%S %z')
+    footer_left = (f"Case {case_number} - generated {generated}" if case_number and case_number != 'N/A'
+                   else f"Generated {generated}")
+
     class _NumberedCanvas(canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            canvas.Canvas.__init__(self, *args, **kwargs)
+            self._saved_page_states = []
+            if case_number and case_number != 'N/A':
+                self.setTitle(f"Case Report - {case_number}")
+            self.setCreator("Pi Forensics Suite")
+
+        def _draw_text(self, method, x, y, text, *args, **kwargs):
+            text = '' if text is None else str(text)
+            if _pdf_fits_builtin_font(text):
+                return method(self, x, y, text, *args, **kwargs)
+            builtin, size = self._fontname, self._fontsize
+            alt = _pdf_unicode_font_for(builtin)
+            if alt:
+                from reportlab.pdfbase import pdfmetrics
+                covered = pdfmetrics.getFont(alt).face.charToGlyph
+                text = ''.join(ch if ord(ch) in covered or ch.isspace() else f"[U+{ord(ch):04X}]" for ch in text)
+                self.setFont(alt, size)
+                try:
+                    return method(self, x, y, text, *args, **kwargs)
+                finally:
+                    self.setFont(builtin, size)
+            text = ''.join(ch if _pdf_fits_builtin_font(ch) else f"[U+{ord(ch):04X}]" for ch in text)
+            return method(self, x, y, text, *args, **kwargs)
+
+        def drawString(self, x, y, text, *args, **kwargs):
+            return self._draw_text(canvas.Canvas.drawString, x, y, text, *args, **kwargs)
+
+        def drawRightString(self, x, y, text, *args, **kwargs):
+            return self._draw_text(canvas.Canvas.drawRightString, x, y, text, *args, **kwargs)
+
+        def drawCentredString(self, x, y, text, *args, **kwargs):
+            return self._draw_text(canvas.Canvas.drawCentredString, x, y, text, *args, **kwargs)
+
         def showPage(self):
-            self.setFont("Helvetica", 8)
-            self.setFillColorRGB(0.45, 0.45, 0.45)
-            self.drawRightString(550, 30, f"Page {self.getPageNumber()}")
-            self.setFillColorRGB(0, 0, 0)
-            canvas.Canvas.showPage(self)
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            if self._code:  # a page drawn on but never shown
+                self.showPage()
+            total = len(self._saved_page_states)
+            for number, state in enumerate(self._saved_page_states, start=1):
+                self.__dict__.update(state)
+                self.setFont("Helvetica", 8)
+                self.setFillColorRGB(0.45, 0.45, 0.45)
+                self.drawString(50, 30, footer_left)
+                self.drawRightString(550, 30, f"Page {number} of {total}")
+                self.setFillColorRGB(0, 0, 0)
+                canvas.Canvas.showPage(self)
+            canvas.Canvas.save(self)
 
     return _NumberedCanvas
 
@@ -5414,7 +5646,7 @@ def _resolve_template_ref(value, cfg):
 def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None, hash_status_by_event=None, analysis_findings=None):
     from reportlab.lib.pagesizes import letter
 
-    c = _numbered_canvas_class()(pdf_path, pagesize=letter)
+    c = _numbered_canvas_class(header)(pdf_path, pagesize=letter)
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, 750, "PI FORENSICS SUITE ACQUISITION AUDIT REPORT")
 
@@ -5515,7 +5747,7 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
     Steps are genuinely new fields)."""
     from reportlab.lib.pagesizes import letter
 
-    c = _numbered_canvas_class()(pdf_path, pagesize=letter)
+    c = _numbered_canvas_class(header)(pdf_path, pagesize=letter)
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, 750, "DIGITAL FORENSICS AND INCIDENT RESPONSE REPORT")
 
@@ -5606,7 +5838,7 @@ def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entrie
     person handoff from an action taken in this software."""
     from reportlab.lib.pagesizes import letter
 
-    c = _numbered_canvas_class()(pdf_path, pagesize=letter)
+    c = _numbered_canvas_class(header)(pdf_path, pagesize=letter)
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, 750, "POLICE FORENSICS INVESTIGATION REPORT")
 
@@ -5717,7 +5949,7 @@ def _build_pdf_report_caseuco(pdf_path, header, events, urls, files, audit_entri
     pagination internally."""
     from reportlab.lib.pagesizes import letter
 
-    c = _numbered_canvas_class()(pdf_path, pagesize=letter)
+    c = _numbered_canvas_class(header)(pdf_path, pagesize=letter)
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, 750, "CASE/UCO CYBER-INVESTIGATION REPORT")
 
@@ -6330,6 +6562,10 @@ def _html_audit_trail_block(audit_entries, anchor_id=None, title="Case Activity 
     esc = html.escape
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     parts = [f'<h2{id_attr}>{esc(title)}</h2>']
+    total = getattr(audit_entries, 'total_matched', len(audit_entries or []))
+    if audit_entries and total > len(audit_entries):
+        parts.append(f'<p class="muted">Showing the most recent {len(audit_entries)} of {total} entries for this '
+                     f'case - the full log is in Settings &gt; Security (Station Audit Log).</p>')
     if audit_entries:
         parts.append('<table><tr><th>Timestamp</th><th>Action</th><th>Details</th></tr>')
         for entry in audit_entries:
@@ -7069,7 +7305,8 @@ def export_report():
 
     audit_entries = []
     if needs_audit_trail and header['case_number'] not in (None, '', 'N/A'):
-        audit_entries = _case_history_entries(header['case_number'], limit=500)
+        audit_entries = _case_history_entries(header['case_number'], limit=500,
+                                              case_folder=os.path.dirname(report_file))
 
     # Unified evidence-item enrichment - tags and persisted analysis results
     # for whichever files this particular export actually includes
@@ -7103,7 +7340,8 @@ def export_report():
     # compute_case_analysis_coverage().
     hash_status_by_event = {
         item["event_id"]: (item["hash_status"], item.get("hash_verified_at"))
-        for item in compute_case_analysis_coverage(case_folder)["items"]
+        for item in compute_case_analysis_coverage(
+            case_folder, case_data=data if case_consolidated_path(case_folder) == report_file else None)["items"]
     }
 
     # Geolocation section data (KML files + parsed placemarks) - walked/

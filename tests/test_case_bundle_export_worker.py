@@ -23,6 +23,8 @@ snapshot_job (to force the Stopped path deterministically).
 Skipped (not failed) on a non-POSIX dev machine: routes.reporting needs
 core.jobs, which imports POSIX-only pwd/fcntl.
 """
+import json
+import hashlib
 import os
 import zipfile
 from unittest import mock
@@ -108,25 +110,67 @@ class TestExecutionWorkerCaseBundleExport:
         with zipfile.ZipFile(zip_path) as zf:
             assert stale_zip.name not in zf.namelist()
 
-    def test_a_file_that_fails_to_write_is_counted_as_errored_not_written_and_does_not_crash_the_job(self, tmp_path):
+    def test_a_file_that_fails_to_write_is_counted_and_reported_not_a_crash(self, tmp_path):
         case_folder = self._seed_case(tmp_path)
-        real_write = zipfile.ZipFile.write
-        call_count = {"n": 0}
+        real_add = reporting._bundle_add_file
 
-        def flaky_write(self_zf, filename, arcname=None, *a, **kw):
-            call_count["n"] += 1
+        def flaky_add(zf, fpath, arcname, *a, **kw):
             if arcname == "notes.txt":
                 raise OSError("simulated write failure")
-            return real_write(self_zf, filename, arcname=arcname, *a, **kw)
+            return real_add(zf, fpath, arcname, *a, **kw)
 
-        with mock.patch.object(zipfile.ZipFile, "write", flaky_write):
+        with mock.patch.object(reporting, "_bundle_add_file", flaky_add):
             job, mock_tag = self._run(case_folder, include_images=False)
-        assert job["status"] == "Completed Successfully"
+        # It used to read "Completed Successfully" with the failure only in
+        # the scrolling log (2026-10-02).
+        assert job["status"] == "Completed with 1 problem(s) - see the log"
         zip_path = mock_tag.call_args[0][1]
         with zipfile.ZipFile(zip_path) as zf:
             # the other, non-failing file still made it in
             assert os.path.join("photos", "photo1.jpg") in zf.namelist() or "photos/photo1.jpg" in zf.namelist()
             assert "notes.txt" not in zf.namelist()
+            manifest = json.loads(zf.read("MANIFEST.json"))
+        assert manifest["complete"] is False
+        assert any("notes.txt" in problem for problem in manifest["problems"])
+
+    def test_the_bundle_carries_a_manifest_and_a_sha256_sidecar(self, tmp_path):
+        case_folder = self._seed_case(tmp_path)
+        with mock.patch.object(reporting, "log_chain_of_custody") as mock_coc:
+            job, mock_tag = self._run(case_folder, include_images=False)
+        assert job["status"] == "Completed Successfully"
+        zip_path = mock_tag.call_args[0][1]
+        assert zip_path.endswith(".zip") and not os.path.exists(zip_path + ".partial")
+        with zipfile.ZipFile(zip_path) as zf:
+            manifest = json.loads(zf.read("MANIFEST.json"))
+        assert manifest["complete"] is True
+        by_path = {f["path"]: f for f in manifest["files"]}
+        assert by_path["notes.txt"]["sha256"] == hashlib.sha256(b"real evidence notes").hexdigest()
+        digest = hashlib.sha256(open(zip_path, "rb").read()).hexdigest()
+        assert open(zip_path + ".sha256").read() == f"{digest}  {os.path.basename(zip_path)}\n"
+        assert mock_coc.call_args[0][1]["zip_sha256"] == digest
+
+    def test_links_are_listed_never_followed(self, tmp_path):
+        case_folder = self._seed_case(tmp_path)
+        secret = tmp_path / "station_secret.key"
+        secret.write_text("TOP SECRET KEY")
+        os.symlink(str(secret), str(case_folder / "innocent.txt"))
+        os.symlink(str(tmp_path), str(case_folder / "linked_dir"))
+        job, mock_tag = self._run(case_folder, include_images=False)
+        zip_path = mock_tag.call_args[0][1]
+        with zipfile.ZipFile(zip_path) as zf:
+            assert "innocent.txt" not in zf.namelist()
+            assert not any(n.startswith("linked_dir") for n in zf.namelist())
+            assert all(b"TOP SECRET KEY" not in zf.read(n) for n in zf.namelist() if n != "MANIFEST.json")
+            reasons = {i["arcname"]: i["reason"] for i in json.loads(zf.read("MANIFEST.json"))["not_archived"]}
+        assert "not followed" in reasons["innocent.txt"]
+        assert "not followed" in reasons["linked_dir"]
+
+    def test_a_stopped_bundle_is_named_incomplete(self, tmp_path):
+        case_folder = self._seed_case(tmp_path)
+        job, mock_tag = self._run(case_folder, include_images=False,
+                                  snapshot_side_effect=lambda *a, **k: {"status": "Stopped"})
+        assert mock_tag.call_args[0][1].endswith("_INCOMPLETE.zip")
+        assert not any(f.endswith(".partial") for f in os.listdir(case_folder))
 
     def test_a_stopped_run_reports_the_real_partial_progress_not_a_false_100_percent(self, tmp_path):
         # The actual regression test for the 2026-09-09 fix: a Stopped run
