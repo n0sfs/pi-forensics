@@ -853,10 +853,17 @@ def _case_index_open_write(case_folder):
     (tagging) and so must be able to create the index DB on first use rather
     than requiring an image to have been triage-scanned first - tagging is a
     manual, image-scan-independent action. Still requires a real,
-    consolidated case folder; returns None otherwise."""
-    case_folder = safe_path(case_folder) if case_folder else None
-    if not case_folder or not case_consolidated_path(case_folder):
+    consolidated case folder. None only when no case_folder was supplied; one
+    that was supplied but does not resolve raises CaseFolderUnavailable, as
+    the read-only opener does (2026-10-03) - with the share down, tagging
+    used to say "No active case selected" and send the examiner to re-pick
+    the case instead of fixing the mount."""
+    if not case_folder:
         return None
+    resolved = safe_path(case_folder)
+    if not resolved or not case_consolidated_path(resolved):
+        raise CaseFolderUnavailable(case_folder)
+    case_folder = resolved
     db_path = case_index_db_path(case_folder)
     if not db_path:
         return None

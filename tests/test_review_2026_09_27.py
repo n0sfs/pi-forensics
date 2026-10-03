@@ -75,6 +75,42 @@ def test_delete_still_works_for_an_ordinary_file_in_an_open_case(client, evidenc
     assert not os.path.exists(f)
 
 
+def test_deleting_a_symlink_removes_the_link_not_its_target(client, evidence_root):
+    # 2026-10-03: safe_path() resolved the link, so delete rmtree'd the
+    # folder it pointed at - another acquisition, or another case.
+    target = os.path.join(evidence_root, "other_acq")
+    os.makedirs(target)
+    open(os.path.join(target, "image.dd"), "wb").close()
+    folder = _case(evidence_root)
+    link = os.path.join(folder, "x")
+    os.symlink(target, link)
+    assert client.post("/api/files/delete", json={"path": link}).status_code == 200
+    assert not os.path.lexists(link)
+    assert os.path.exists(os.path.join(target, "image.dd"))
+
+
+def test_a_symlink_inside_a_closed_case_is_still_refused(client, evidence_root):
+    folder = _case(evidence_root, "2026-CLOSED", "Closed")
+    link = os.path.join(folder, "x")
+    os.symlink(folder, link)
+    assert client.post("/api/files/delete", json={"path": link}).status_code == 409
+    assert os.path.lexists(link)
+
+
+def test_copying_a_symlink_copies_the_link_itself(client, evidence_root):
+    target = os.path.join(evidence_root, "big_dir")
+    os.makedirs(target)
+    open(os.path.join(target, "f.bin"), "wb").close()
+    src_folder = _case(evidence_root)
+    link = os.path.join(src_folder, "x")
+    os.symlink(target, link)
+    dest = os.path.join(evidence_root, "dest")
+    os.makedirs(dest)
+    assert client.post("/api/files/copy", json={"source": link, "destination_dir": dest}).status_code == 200
+    assert os.path.islink(os.path.join(dest, "x"))
+    assert not os.path.exists(os.path.join(dest, "big_dir"))
+
+
 # --- File Explorer copy -----------------------------------------------------
 
 def test_copy_never_overwrites_or_merges(client, evidence_root):

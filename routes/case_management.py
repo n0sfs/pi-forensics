@@ -28,7 +28,7 @@ import time
 from flask import Blueprint, jsonify, request
 
 from core.auth import requires_auth, requires_permission
-from core.paths import safe_path, log_chain_of_custody, sanitize_case_slug
+from core.paths import safe_path, log_chain_of_custody, sanitize_case_slug, case_consolidated_path
 from core.config import EVIDENCE_ROOT, get_custom_case_fields
 from core.jobs import _write_case_file, _read_case_file, serialize_case_writes
 from core.case_index_db import list_case_folders
@@ -174,10 +174,15 @@ def log_case_select():
     # No state is stored here - this exists purely so selecting a case
     # leaves a chain-of-custody entry, same as every other significant
     # action in this app.
+    # Only a real case is logged (2026-10-03) - this used to write whatever
+    # text the request carried into the custody log.
     req = request.get_json() or {}
+    folder = safe_path(req.get('case_folder')) if isinstance(req.get('case_folder'), str) else None
+    if not folder or not case_consolidated_path(folder):
+        return jsonify({"success": False, "error": "Not a case folder."}), 400
     log_chain_of_custody("case_select", {
-        "case_number": req.get('case_number', ''),
-        "case_folder": req.get('case_folder', ''),
+        "case_number": str(req.get('case_number', ''))[:100],
+        "case_folder": folder,
     })
     return jsonify({"success": True})
 

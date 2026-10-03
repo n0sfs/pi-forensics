@@ -7290,6 +7290,11 @@ def export_report():
         sel_files = attachments.get('files', [])
         if not sel_files and attachments.get('image_path'):
             sel_files = [attachments.get('image_path')]
+    # Every attachment path is opened and inlined by the renderers, so each
+    # one is confined to the evidence root like any other client-supplied
+    # path (2026-10-03) - a crafted selection could otherwise embed e.g. the
+    # station's runtime_config.json into a preview.
+    sel_files = [p for p in sel_files if isinstance(p, str) and safe_path(p)]
 
     # DFIR/Police always include an Audit Trail section (part of their
     # fixed structure); for 'standard'/'custom', consult the same resolved

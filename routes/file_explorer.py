@@ -253,15 +253,33 @@ def browse_files():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def _safe_leaf_path(path_str):
+    """Like safe_path(), but a symlink resolves to the LINK, not its target.
+
+    safe_path() realpath()s the whole path, so delete/copy on a listed symlink
+    acted on whatever it pointed at - deleting a link "x -> ../other_case"
+    rmtree'd the other case (2026-10-03). Only the parent is resolved and
+    sandboxed; the last component is kept as-is."""
+    if not path_str or not isinstance(path_str, str):
+        return None
+    parent = safe_path(os.path.dirname(path_str.rstrip(os.sep)) or os.sep)
+    name = os.path.basename(path_str.rstrip(os.sep))
+    if parent and name and name not in ('.', '..'):
+        leaf = os.path.join(parent, name)
+        if os.path.islink(leaf):
+            return leaf
+    return safe_path(path_str)
+
+
 @file_explorer_bp.route('/api/files/copy', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
 def copy_file():
     req = request.get_json() or {}
-    src = safe_path(req.get('source'))
+    src = _safe_leaf_path(req.get('source'))
     dest_dir = safe_path(req.get('destination_dir'))
 
-    if not src or not os.path.exists(src) or not dest_dir or not os.path.exists(dest_dir):
+    if not src or not os.path.lexists(src) or not dest_dir or not os.path.exists(dest_dir):
         return jsonify({"success": False, "error": "Invalid source or destination path"}), 400
     # 2026-09-27 review: copy used to overwrite a same-named file (copy2) or
     # silently MERGE into an existing folder (dirs_exist_ok=True), into
@@ -275,11 +293,11 @@ def copy_file():
     if os.path.lexists(dest_path):
         return jsonify({"success": False, "error": f"{os.path.basename(src)} already exists in that folder - "
                                                    f"nothing was copied, nothing was overwritten."}), 409
-    if os.path.isdir(src) and (dest_path == src or dest_path.startswith(src.rstrip(os.sep) + os.sep)):
+    if os.path.isdir(src) and not os.path.islink(src) and (dest_path == src or dest_path.startswith(src.rstrip(os.sep) + os.sep)):
         return jsonify({"success": False, "error": "A folder can't be copied into itself."}), 400
 
     try:
-        if os.path.isdir(src):
+        if os.path.isdir(src) and not os.path.islink(src):
             shutil.copytree(src, dest_path, symlinks=True)   # links copied AS links, never followed
         else:
             shutil.copy2(src, dest_path, follow_symlinks=False)
@@ -321,16 +339,24 @@ def _delete_refusal(path):
 @requires_permission('file_explorer')
 def delete_file():
     req = request.get_json() or {}
-    path = safe_path(req.get('path'))
+    path = _safe_leaf_path(req.get('path'))
 
-    if not path or not os.path.exists(path):
+    if not path or not os.path.lexists(path):
         return jsonify({"success": False, "error": "Path does not exist or is outside the permitted evidence directory."}), 400
-    refusal = _delete_refusal(path)
+    if os.path.islink(path):
+        # Removing a link never touches its target, so only the closed-case
+        # rule applies to it.
+        _closed = closed_case_refusal(os.path.dirname(path))
+        refusal = f"This is inside a case marked {_closed}. Re-open it from the Case Manager first." if _closed else None
+    else:
+        refusal = _delete_refusal(path)
     if refusal:
         return jsonify({"success": False, "error": refusal}), 409
 
     try:
-        if os.path.isdir(path):
+        if os.path.islink(path):
+            os.unlink(path)   # the link only - never what it points at
+        elif os.path.isdir(path):
             shutil.rmtree(path)
         else:
             os.remove(path)
