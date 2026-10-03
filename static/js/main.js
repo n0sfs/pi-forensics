@@ -15534,6 +15534,10 @@ async function loadCaseReportingSettings() {
 
         const brandingText = document.getElementById("reportBrandingText");
         if (brandingText) brandingText.value = branding.header_text || '';
+        const qualsEl = document.getElementById("reportExaminerQualifications");
+        if (qualsEl) qualsEl.value = branding.examiner_qualifications || '';
+        const attestEl = document.getElementById("reportAttestationText");
+        if (attestEl) attestEl.value = branding.attestation_text || '';
 
         const logoStatus = document.getElementById("reportLogoStatus");
         if (logoStatus) logoStatus.textContent = branding.logo_path
@@ -15708,6 +15712,8 @@ async function saveCaseReportingSettings() {
     };
     const includeTimelinePreviews = document.getElementById("defIncludeTimelinePreviews")?.checked ?? false;
     const headerText = document.getElementById("reportBrandingText")?.value || '';
+    const examinerQualifications = document.getElementById("reportExaminerQualifications")?.value || '';
+    const attestationText = document.getElementById("reportAttestationText")?.value || '';
     // key is included (not just label/default_value) so the backend can
     // preserve an existing field's key across a label rename, rather than
     // regenerating it fresh every save - see settings_case_reporting()'s
@@ -15726,7 +15732,7 @@ async function saveCaseReportingSettings() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                report_defaults: { template, sections, job_fields: jobFields, branding: { header_text: headerText }, include_timeline_previews: includeTimelinePreviews },
+                report_defaults: { template, sections, job_fields: jobFields, branding: { header_text: headerText, examiner_qualifications: examinerQualifications, attestation_text: attestationText }, include_timeline_previews: includeTimelinePreviews },
                 custom_case_fields: customFields,
                 reporting_stats: { enabled: enabledStats },
             })
@@ -19196,6 +19202,71 @@ async function _fetchReportJsonFromDisk(reportPath, statusEl) {
     }
 }
 
+// Previous exports (2026-10-03) - every export is its own file with a
+// .sha256 sidecar; this lists them and re-checks one on request.
+async function loadPreviousExports() {
+    const list = document.getElementById('previousExportsList');
+    if (!list) return;
+    const reportPath = currentReportPath;
+    list.textContent = reportPath ? 'Loading...' : 'Select an active case first.';
+    if (!reportPath) return;
+    try {
+        const res = await fetch(`/api/report_exports?report_path=${encodeURIComponent(reportPath)}`);
+        const data = await res.json();
+        if (currentReportPath !== reportPath) return;
+        list.textContent = '';
+        if (!data.success) { list.textContent = data.error || 'Could not list exports.'; return; }
+        if (!data.exports.length) { list.textContent = 'No exports yet.'; return; }
+        const table = document.createElement('table');
+        table.className = 'table table-sm table-dark mb-0';
+        for (const exp of data.exports) {
+            const tr = table.insertRow();
+            const nameCell = tr.insertCell();
+            nameCell.textContent = exp.name;
+            const meta = document.createElement('div');
+            meta.className = 'text-subtle font-monospace';
+            meta.textContent = `${exp.modified} · ${(exp.size / 1024).toFixed(0)} KB · SHA-256 ${exp.sha256 || '(no .sha256 file)'}`;
+            meta.style.wordBreak = 'break-all';
+            nameCell.appendChild(meta);
+            const actCell = tr.insertCell();
+            actCell.className = 'text-end';
+            const result = document.createElement('div');
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-xs btn-outline-info';
+            btn.textContent = 'Verify';
+            btn.disabled = !exp.sha256;
+            if (!exp.sha256) btn.title = 'This export has no .sha256 file to check against.';
+            btn.onclick = () => verifyPreviousExport(reportPath, exp.path, btn, result);
+            actCell.append(btn, result);
+        }
+        list.appendChild(table);
+    } catch (err) {
+        list.textContent = `Could not list exports: ${err.message}`;
+    }
+}
+
+async function verifyPreviousExport(reportPath, path, btn, resultEl) {
+    btn.disabled = true;
+    resultEl.textContent = 'Hashing...';
+    resultEl.className = 'text-subtle';
+    try {
+        const res = await fetch('/api/report_exports/verify', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_path: reportPath, path })
+        });
+        const data = await res.json();
+        if (!data.success) { resultEl.textContent = data.error; resultEl.className = 'text-warning'; return; }
+        resultEl.textContent = data.match ? 'Unchanged - hash matches' : `CHANGED - now ${data.computed}`;
+        resultEl.className = data.match ? 'text-success fw-bold' : 'text-danger fw-bold';
+    } catch (err) {
+        resultEl.textContent = `Verify failed: ${err.message}`;
+        resultEl.className = 'text-warning';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 // Export runs once at a time, with its button showing it (2026-10-02): a PDF
 // of a big case takes a while on a Pi, and a second tap used to start a second
 // export of the same report.
@@ -19218,6 +19289,7 @@ async function runExportReport() {
             button.disabled = false;
             button.innerHTML = label;
         }
+        if (document.getElementById('previousExportsBox')?.open) loadPreviousExports();
     }
 }
 

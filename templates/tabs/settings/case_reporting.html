@@ -74,6 +74,14 @@
                                                 <label class="telemetry-grid-label d-block mb-1">Header Text (shown as a subtitle under the report title)</label>
                                                 <input type="text" id="reportBrandingText" class="form-control form-control-sm" placeholder="e.g. Acme Digital Forensics Lab" maxlength="200">
                                             </div>
+                                            <div class="mb-2">
+                                                <label class="telemetry-grid-label d-block mb-1">Examiner Qualifications (printed under the examiner's name in the sign-off)</label>
+                                                <input type="text" id="reportExaminerQualifications" class="form-control form-control-sm" placeholder="e.g. Digital forensics student, BSc Cyber Security (year 3)" maxlength="500">
+                                            </div>
+                                            <div class="mb-2">
+                                                <label class="telemetry-grid-label d-block mb-1">Attestation Text (the sign-off statement - blank uses the standard affirmation)</label>
+                                                <textarea id="reportAttestationText" class="form-control form-control-sm" rows="3" maxlength="2000" placeholder="I hereby affirm that the forensic examination detailed in this report was conducted in accordance with established procedures..."></textarea>
+                                            </div>
                                             <div class="row g-2 align-items-center mb-2">
                                                 <div class="col-md-6"><input type="file" id="reportLogoFile" class="form-control form-control-sm" accept=".jpg,.jpeg,.png,.gif,.bmp,.webp"></div>
                                                 <div class="col-md-3"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="uploadReportLogo()"><i class="bi bi-upload me-1"></i>Upload Logo</button></div>

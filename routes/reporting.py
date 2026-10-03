@@ -71,7 +71,7 @@ from core.paths import (
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, HISTORY_FILE, ALLOWED_HASH_ALGOS,
     load_runtime_config, save_runtime_config, serializes_config_writes,
-    get_report_defaults, get_custom_case_fields,
+    get_report_defaults, get_custom_case_fields, get_app_version,
 )
 from core.jobs import (mark_job_slot_claimed, _read_case_file, _write_case_file, current_job, job_lock, update_job,
                        snapshot_job, CaseFileUnreadable, case_write_lock, serialize_case_writes,
@@ -150,6 +150,10 @@ def settings_case_reporting():
             "branding": {
                 "header_text": (incoming.get('branding', {}).get('header_text') or '').strip()[:200],
                 "logo_path": existing_logo,
+                # Sign-off (2026-10-03): who the examiner is and what they
+                # attest, so the exported report can be signed as-is.
+                "examiner_qualifications": (incoming.get('branding', {}).get('examiner_qualifications') or '').strip()[:500],
+                "attestation_text": (incoming.get('branding', {}).get('attestation_text') or '').strip()[:2000],
             },
             # Station-wide only (2026-09-08) - see export_report()'s own
             # comment on why this couldn't live inside job_fields/sections.
@@ -4086,6 +4090,29 @@ _HASH_STATUS_UNKNOWN = {
     "html_label": "Not Checked", "html_class": "hash-muted",
 }
 
+def _hash_summary(events, hash_status_by_event):
+    """(line, has_problem) - one roll-up of every item's verification state,
+    printed above the inventory table (2026-10-03) so integrity is readable
+    at a glance instead of row by row. Counts use the same labels the rows
+    do, in _HASH_STATUS_META order; the latest check date is stated."""
+    if not events:
+        return "No evidence items recorded.", False
+    counts, latest = {}, None
+    for event in events:
+        status, verified_at = _hash_status_entry((hash_status_by_event or {}).get(event.get('event_id')))
+        label = _HASH_STATUS_META.get(status, _HASH_STATUS_UNKNOWN)["html_label"]
+        counts[label] = counts.get(label, 0) + 1
+        if verified_at and (latest is None or str(verified_at) > latest):
+            latest = str(verified_at)
+    order = [m["html_label"] for m in _HASH_STATUS_META.values()] + [_HASH_STATUS_UNKNOWN["html_label"]]
+    parts = [f"{counts[label]} {label}" for label in dict.fromkeys(order) if counts.get(label)]
+    line = f"{len(events)} item(s): " + ", ".join(parts)
+    if latest:
+        line += f". Most recent verification: {latest}."
+    problem = any(counts.get(_HASH_STATUS_META[k]["html_label"]) for k in ("mismatch", "missing_file"))
+    return line, problem
+
+
 def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_status_by_event=None):
     if not events:
         return y
@@ -4096,7 +4123,14 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_
     y -= 15
     c.setFont("Helvetica-Bold", 12)
     c.drawString(50, y, title)
-    y -= 20
+    y -= 16
+    summary, problem = _hash_summary(events, hash_status_by_event)
+    if problem:
+        c.setFillColorRGB(0.75, 0.0, 0.05)
+    y = _draw_pdf_wrapped_text(c, y, "Integrity summary: " + summary, x=50, width_chars=100,
+                               font="Helvetica-Bold" if problem else "Helvetica", size=8.5, leading=11)
+    c.setFillColorRGB(0, 0, 0)
+    y -= 6
     headers = ["Evidence ID", "Device", "Model", "Serial", "Capacity", "Acquisition Hash", "Verified"]
     xpos = [50, 125, 200, 265, 325, 370, 470]
     c.setFont("Helvetica-Bold", 8)
@@ -4208,9 +4242,10 @@ def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Ca
         if y < 100:
             c.showPage()
             y = 750
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(50, y, f"[{note.get('category', 'General')}] {note.get('timestamp', '')} — {note.get('author') or 'unknown'}"[:110])
-        y -= 13
+        # Wrapped, not cut at 110 characters with no marker (2026-10-03).
+        y = _draw_pdf_wrapped_text(
+            c, y, f"[{note.get('category', 'General')}] {note.get('timestamp', '')} — {note.get('author') or 'unknown'}",
+            x=50, width_chars=95, font="Helvetica-Bold", size=10, leading=13)
         if note.get('edited_at'):
             c.setFont("Helvetica-Oblique", 8)
             c.setFillColorRGB(0.4, 0.4, 0.4)
@@ -4218,6 +4253,11 @@ def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Ca
             c.setFillColorRGB(0, 0, 0)
             y -= 11
         y = _draw_pdf_wrapped_text(c, y, note.get('text') or '', x=60, width_chars=90)
+        # The heading promises each note carries a SHA-256 hash - print it, and
+        # every earlier version an edit replaced (2026-10-03). They were stored
+        # but never shown, so the claimed tamper-evidence could not be checked.
+        for line in _note_integrity_lines(note):
+            y = _draw_pdf_wrapped_text(c, y, line, x=60, width_chars=110, font="Courier", size=7, leading=9)
         y -= 4
         linked = note.get('linked_files') or []
         if linked:
@@ -4234,6 +4274,9 @@ def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Ca
             file_path = safe_path(att.get('path', ''))
             if file_path and os.path.exists(file_path):
                 y = _embed_file_into_pdf(c, y, file_path)
+            else:
+                y = _draw_pdf_wrapped_text(c, y, _missing_note_attachment_line(att), x=60, width_chars=90,
+                                           font="Helvetica-Oblique", size=8, leading=10)
         y -= 10
     return y
 
@@ -4281,10 +4324,21 @@ def _draw_pdf_attachments(c, y, urls, files, title="Exhibits", captions=None, ta
                 c.showPage()
                 y = 750
                 c.setFont("Helvetica", 10)
+            # Printed in full across as many lines as it needs - cut at 110
+            # characters with no marker, a printed link could point
+            # somewhere that does not exist (2026-10-03).
             c.setFillColorRGB(0, 0, 0.8)
-            c.drawString(60, y, f"• {url}"[:110])
+            text = f"• {url}"
+            for i in range(0, len(text), 100):
+                if y < 60:
+                    c.showPage()
+                    y = 750
+                    c.setFont("Helvetica", 10)
+                    c.setFillColorRGB(0, 0, 0.8)
+                c.drawString(60 if i == 0 else 70, y, text[i:i + 100])
+                y -= 12
             c.setFillColorRGB(0, 0, 0)
-            y -= 15
+            y -= 3
         y -= 5
 
     # Exhibit numbers are each file's 1-based position in the case's FULL,
@@ -4580,6 +4634,71 @@ def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)", c
     y -= 12
     return y
 
+# event.tool -> the Debian package that provides it, for the methodology
+# section's version table. A tool not listed here (built-in Python scanners,
+# pip-installed tools) is shown without a package version.
+_REPORT_TOOL_PACKAGES = {
+    "dc3dd": "dc3dd", "dcfldd": "dcfldd", "dd": "coreutils", "plain_dd": "coreutils",
+    "ddrescue": "gddrescue", "ewfacquire": "ewf-tools", "ewfexport": "ewf-tools",
+    "affconvert": "afflib-tools", "photorec": "testdisk", "testdisk": "testdisk",
+    "extundelete": "extundelete", "foremost": "foremost", "scalpel": "scalpel",
+    "exiftool": "libimage-exiftool-perl", "binwalk": "binwalk", "clamscan": "clamav",
+    "hashdeep": "hashdeep", "adb": "adb", "android_physical": "adb", "idevicebackup2": "libimobiledevice-utils",
+    "ios_backup": "libimobiledevice-utils", "smartctl": "smartmontools", "ffmpeg": "ffmpeg",
+    "tesseract": "tesseract-ocr", "image_conversion": "ewf-tools",
+}
+
+
+def _report_environment(events):
+    """App version, OS, kernel and the installed package version of each tool
+    this case used (2026-10-03) - "which version?" is the first question a
+    reviewer asks of a method. These are read at EXPORT time, and the report
+    says so: a package upgraded since an acquisition ran shows its new version.
+    One dpkg-query call for all packages; nothing here can fail the export."""
+    import platform
+    env = {"app_version": get_app_version(), "os": None, "kernel": platform.release(), "tools": []}
+    try:
+        with open("/etc/os-release", "r") as f:
+            for line in f:
+                if line.startswith("PRETTY_NAME="):
+                    env["os"] = line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    tools = sorted({str(e.get('tool')).lower() for e in events if e.get('tool')})
+    packages = sorted({_REPORT_TOOL_PACKAGES[t] for t in tools if t in _REPORT_TOOL_PACKAGES})
+    versions = {}
+    if packages:
+        try:
+            res = subprocess.run(["dpkg-query", "-W", "-f=${Package}\t${Version}\n", *packages],
+                                 capture_output=True, text=True, timeout=10)
+            for line in res.stdout.splitlines():
+                name, _, ver = line.partition("\t")
+                if ver:
+                    versions[name] = ver
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for t in tools:
+        pkg = _REPORT_TOOL_PACKAGES.get(t)
+        if pkg:
+            ver = versions.get(pkg) or "not installed / unknown"
+            env["tools"].append((t.upper(), f"{pkg} {ver}"))
+        else:
+            env["tools"].append((t.upper(), "built into this application" if t in _BUILT_IN_REPORT_TOOLS
+                                 else "version not recorded"))
+    return env
+
+
+_BUILT_IN_REPORT_TOOLS = {"triage_scan", "logical_acquisition", "live_collection_import", "mtp_pull",
+                          "android_companion_extraction", "sqlite_dissect"}
+
+
+def _environment_lines(env):
+    lines = [f"pi-forensics {env['app_version'] or 'version unknown'}"
+             + (f" on {env['os']}" if env['os'] else "") + (f", kernel {env['kernel']}" if env['kernel'] else "")]
+    lines += [f"{name}: {ver}" for name, ver in env["tools"]]
+    return lines
+
+
 def _draw_pdf_methodology_tools(c, y, events):
     """Static description of this app's standard acquisition workflow, plus
     a 'tools used in this case' list derived from the distinct event.tool
@@ -4602,14 +4721,38 @@ def _draw_pdf_methodology_tools(c, y, events):
     c.setFont("Helvetica-Bold", 10)
     c.drawString(50, y, "Tools Used in This Case:")
     y -= 14
-    c.setFont("Helvetica", 10)
-    c.drawString(60, y, ", ".join(tools) if tools else "No acquisition/recovery tool recorded.")
-    y -= 20
+    y = _draw_pdf_wrapped_text(c, y, ", ".join(tools) if tools else "No acquisition/recovery tool recorded.",
+                               x=60, width_chars=90, size=10, leading=13)
+    y -= 7
+    if y < 100:
+        c.showPage()
+        y = 750
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(50, y, "Software Environment (as installed on this station at export time):")
+    y -= 14
+    for line in _environment_lines(_report_environment(events)):
+        y = _draw_pdf_wrapped_text(c, y, line, x=60, width_chars=100, font="Courier", size=8, leading=10)
+    y -= 7
     return y
 
+def _signoff_details():
+    """(attestation, qualifications, export_date) for the sign-off block. The
+    attestation and qualifications are station settings (Settings > Case &
+    Reporting > Branding); blank falls back to the fixed affirmation. The
+    report's own SHA-256 can't be printed inside the file it hashes, so the
+    block says where it is recorded instead."""
+    branding = (get_report_defaults() or {}).get('branding', {}) or {}
+    attestation = (branding.get('attestation_text') or '').strip() or _SIGNOFF_STATIC_TEXT
+    return attestation, (branding.get('examiner_qualifications') or '').strip(), time.strftime("%Y-%m-%d")
+
+
+_SIGNOFF_HASH_NOTE = ("The SHA-256 of this exported file is recorded in the .sha256 file saved beside it and in "
+                      "the case's chain-of-custody log (report_exported).")
+
+
 def _draw_pdf_signoff(c, y, examiner):
-    """Static sign-off block - examiner name (already-collected data) plus
-    blank signature/date lines. No new data entry."""
+    """Sign-off block - the attestation, the examiner and their qualifications,
+    the export date, and blank signature/date lines."""
     if y < 150:
         c.showPage()
         y = 730
@@ -4617,12 +4760,20 @@ def _draw_pdf_signoff(c, y, examiner):
     c.setFont("Helvetica-Bold", 12)
     c.drawString(50, y, "Sign-off & Signatures")
     y -= 18
-    c.setFont("Helvetica", 9.5)
-    y = _draw_pdf_wrapped_text(c, y, _SIGNOFF_STATIC_TEXT, width_chars=95)
-    y -= 20
+    attestation, qualifications, export_date = _signoff_details()
+    for para in attestation.split("\n"):
+        y = _draw_pdf_wrapped_text(c, y, para, width_chars=95, size=9.5)
+    y -= 14
+    y = _draw_pdf_wrapped_text(c, y, f"Examiner: {examiner}", size=10, leading=13)
+    if qualifications:
+        y = _draw_pdf_wrapped_text(c, y, f"Qualifications: {qualifications}", size=9, leading=12)
+    y = _draw_pdf_wrapped_text(c, y, f"Report exported: {export_date}", size=9, leading=12)
+    y = _draw_pdf_wrapped_text(c, y, _SIGNOFF_HASH_NOTE, width_chars=130, font="Helvetica-Oblique", size=7.5, leading=10)
+    if y < 90:
+        c.showPage()
+        y = 730
     c.setFont("Helvetica", 10)
-    c.drawString(50, y, f"Examiner: {examiner}")
-    y -= 35
+    y -= 30
     c.line(50, y, 250, y)
     c.drawString(50, y - 12, "Signature")
     c.line(320, y, 520, y)
@@ -6421,15 +6572,22 @@ def _html_methodology_tools(events, anchor_id=None):
         f'<h2{id_attr}>Forensic Methodology &amp; Tools</h2>'
         + ''.join(f'<p>{esc(_p)}</p>' for _p in _build_methodology_text(events))
         + f'<p><strong>Tools Used in This Case:</strong> {esc(tools_str)}</p>'
+        + '<p><strong>Software Environment</strong> <span class="muted">(as installed on this station at export time)</span></p>'
+        + '<pre style="font-size:0.8em;white-space:pre-wrap;">'
+        + esc("\n".join(_environment_lines(_report_environment(events)))) + '</pre>'
     )
 
 def _html_signoff(examiner, anchor_id=None):
     esc = html.escape
+    attestation, qualifications, export_date = _signoff_details()
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     return (
         f'<h2{id_attr}>Sign-off &amp; Signatures</h2>'
-        f'<p>{esc(_SIGNOFF_STATIC_TEXT)}</p>'
+        f'<p style="white-space:pre-wrap;">{esc(attestation)}</p>'
         f'<p>Examiner: {esc(str(examiner))}</p>'
+        + (f'<p>Qualifications: {esc(qualifications)}</p>' if qualifications else '')
+        + f'<p>Report exported: {esc(export_date)}</p>'
+        f'<p class="muted" style="font-size:0.85em;">{esc(_SIGNOFF_HASH_NOTE)}</p>'
         '<div style="display:flex;gap:60px;margin-top:2em;max-width:600px;">'
         '<div style="flex:1;border-top:1px solid #333;padding-top:4px;">Signature</div>'
         '<div style="flex:1;border-top:1px solid #333;padding-top:4px;">Date</div>'
@@ -6476,7 +6634,10 @@ def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id
     esc = html.escape
     hash_status_by_event = hash_status_by_event or {}
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
-    parts = [f'<h2{id_attr}>{esc(title)}</h2><table>']
+    summary, problem = _hash_summary(events, hash_status_by_event)
+    parts = [f'<h2{id_attr}>{esc(title)}</h2>',
+             f'<p class="{"hash-mismatch" if problem else "muted"}"><strong>Integrity summary:</strong> {esc(summary)}</p>',
+             '<table>']
     parts.append('<tr><th>Evidence ID</th><th>Device</th><th>Model</th><th>Serial</th><th>Capacity</th><th>Acquisition Hash</th><th>Verification Status</th></tr>')
     for event in events:
         meta = event.get('case_metadata', {})
@@ -6832,6 +6993,26 @@ def _html_acquisition_method(events, job_fields, anchor_id=None):
         parts.append('</div>')
     return ''.join(parts)
 
+def _note_integrity_lines(note):
+    """The note's current SHA-256 and each version an edit replaced, oldest
+    first - shared by the PDF and HTML renderers so they can't disagree."""
+    lines = []
+    if note.get('content_hash'):
+        lines.append(f"SHA-256: {note['content_hash']}")
+    for i, prev in enumerate(note.get('edit_history') or [], 1):
+        when = prev.get('edited_at') or note.get('timestamp') or 'original'
+        lines.append(f"Version {i} ({when}) SHA-256: {prev.get('content_hash') or 'not recorded'}")
+        lines.append(f"  text: {prev.get('text') or ''}")
+    return lines
+
+
+def _missing_note_attachment_line(att):
+    """A note attachment that can't be found at export time is said so, not
+    dropped - otherwise the note reads as if it never had one (2026-10-03)."""
+    name = os.path.basename(str(att.get('path') or att.get('name') or '?'))
+    return f"(attachment not found at export time: {name})"
+
+
 def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis / Steps Taken (Case Notes)", exhibit_numbers=None):
     exhibit_numbers = exhibit_numbers or {}
     esc = html.escape
@@ -6847,6 +7028,10 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         if note.get('edited_at'):
             parts.append(f'<div class="muted">(edited {esc(str(note["edited_at"]))})</div>')
         parts.append(f'<p style="white-space:pre-wrap;">{esc(str(note.get("text", "")))}</p>')
+        integrity = _note_integrity_lines(note)
+        if integrity:
+            parts.append('<pre class="muted" style="font-size:0.75em;white-space:pre-wrap;">'
+                         + esc("\n".join(integrity)) + '</pre>')
         linked = note.get('linked_files') or []
         if linked:
             # See _draw_pdf_case_notes()'s identical comment - a linked path
@@ -6859,6 +7044,8 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
             file_path = safe_path(att.get('path', ''))
             if file_path and os.path.exists(file_path):
                 parts.append(_embed_file_into_html(file_path))
+            else:
+                parts.append(f'<p class="muted"><em>{esc(_missing_note_attachment_line(att))}</em></p>')
         parts.append('</div>')
     return ''.join(parts)
 
@@ -7109,6 +7296,82 @@ def _build_html_report_caseuco(header, events, urls, files, audit_entries, case_
     parts.append('</body></html>')
     return ''.join(parts)
 
+# --- Previous exports (2026-10-03) ---
+# Every export is already its own timestamped file with a .sha256 sidecar
+# (see export_report below); these list them and re-check one against its
+# sidecar, answering "which version did I send, and is it unchanged?".
+
+def _report_export_files(report_file):
+    """The exported PDF/HTML files of one case report, newest first."""
+    stem = os.path.basename(report_file.rsplit('.json', 1)[0]) + '_'
+    folder = os.path.dirname(report_file)
+    out = []
+    for name in os.listdir(folder):
+        if name.startswith(stem) and name.endswith(('.pdf', '.html')) and name[len(stem):len(stem) + 1].isdigit():
+            path = os.path.join(folder, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            out.append({"name": name, "path": path, "size": st.st_size,
+                        "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
+                        "has_sidecar": os.path.isfile(path + '.sha256')})
+    return sorted(out, key=lambda e: e["name"], reverse=True)
+
+
+def _read_sidecar_digest(path):
+    """The digest recorded in path's .sha256 sidecar, or None."""
+    try:
+        with open(path + '.sha256', 'r', encoding='utf-8') as f:
+            first = f.read(200).split()
+        return first[0].lower() if first and re.fullmatch(r'[0-9a-fA-F]{64}', first[0]) else None
+    except OSError:
+        return None
+
+
+@reporting_bp.route('/api/report_exports', methods=['GET'])
+@requires_auth
+@requires_permission('reporting')
+def list_report_exports():
+    report_file = safe_path(request.args.get('report_path'))
+    if not report_file or not os.path.isfile(report_file):
+        return jsonify({"success": False, "error": "Report file not found or outside the permitted evidence directory."}), 404
+    try:
+        files = _report_export_files(report_file)
+    except OSError as e:
+        # Unreadable is not "no exports" - say which.
+        return jsonify({"success": False, "error": f"Could not list this case's folder: {e}"}), 503
+    for entry in files:
+        entry["sha256"] = _read_sidecar_digest(entry["path"])
+    return jsonify({"success": True, "exports": files})
+
+
+@reporting_bp.route('/api/report_exports/verify', methods=['POST'])
+@requires_auth
+@requires_permission('reporting')
+def verify_report_export():
+    req = request.get_json() or {}
+    path = safe_path(req.get('path'))
+    report_file = safe_path(req.get('report_path'))
+    if not path or not report_file or not any(e["path"] == path for e in _report_export_files(report_file)):
+        return jsonify({"success": False, "error": "Not an export of this report."}), 400
+    recorded = _read_sidecar_digest(path)
+    if not recorded:
+        return jsonify({"success": False, "error": "This export has no readable .sha256 file to check against."}), 409
+    h = hashlib.sha256()
+    try:
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                h.update(chunk)
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Could not read the export: {e}"}), 503
+    actual = h.hexdigest()
+    match = actual == recorded
+    log_chain_of_custody("report_export_verified", {"file": path, "recorded_sha256": recorded,
+                                                    "computed_sha256": actual, "match": match})
+    return jsonify({"success": True, "match": match, "recorded": recorded, "computed": actual})
+
+
 @reporting_bp.route('/api/export_report', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
@@ -7215,7 +7478,8 @@ def export_report():
     # is always treated as its own single, always-included event.
     if isinstance(data.get('events'), list):
         all_events = data['events']
-        if requested_event_ids:
+        # An explicit empty list selects nothing - it used to mean "all".
+        if requested_event_ids is not None:
             events = [e for e in all_events if e.get('event_id') in requested_event_ids]
         else:
             events = all_events

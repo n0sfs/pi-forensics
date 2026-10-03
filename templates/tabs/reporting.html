@@ -846,6 +846,11 @@
                                                             </div>
                                                             <div id="exportReportStatus" class="small text-subtle mb-2"></div>
                                                             <div id="exportMismatchWarning" class="small alert alert-warning py-2 px-3 mb-2" style="display:none;"></div>
+                                                            <details id="previousExportsBox" class="mb-2" ontoggle="if (this.open) loadPreviousExports()">
+                                                                <summary class="small fw-bold text-info">Previous exports</summary>
+                                                                <div class="small text-subtle my-1">Every export is kept with its SHA-256. Verify re-hashes a file and compares it with the hash recorded when it was exported.</div>
+                                                                <div id="previousExportsList" class="small"></div>
+                                                            </details>
                                                         </div>
                                                         <div class="col-md-4">
                                                             <div class="bg-app-dark border border-secondary rounded-2 p-3 h-100">
