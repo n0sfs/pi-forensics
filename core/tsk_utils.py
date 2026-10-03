@@ -20,8 +20,13 @@ import pytsk3
 TSK_DEFAULT_SECTOR_SIZE = 512  # matches the sector size this app's images have always assumed (mmls/fls/dc3dd never handled 4Kn-native source drives specially either - not a new limitation)
 TSK_READ_CHUNK_BYTES = 1024 * 1024
 TSK_MAX_TIMELINE_ENTRIES = 5000
-TSK_MAX_WALK_DIRS = 5000   # safety cap against pathological/looping directory structures
-TSK_MAX_WALK_DEPTH = 25
+# Loops (a reused inode pointing back up the tree) are caught exactly by the
+# walk's visited-directory set; these caps are only resource backstops now.
+# They were 5000 / 25 while they were also the loop guard - and 5000
+# directories is far less than one Windows system volume, so registry/EVTX
+# scans of a real Windows disk never reached C:\Windows (2026-10-02).
+TSK_MAX_WALK_DIRS = 250_000
+TSK_MAX_WALK_DEPTH = 64
 TSK_WALK_UNREADABLE_PATHS_KEPT = 10  # how many unreadable directory paths a walk's stats name
 
 
@@ -145,7 +150,16 @@ def _tsk_walk(fs, start_inode_num=None, max_dirs=TSK_MAX_WALK_DIRS, max_depth=TS
         stats["max_dirs"] = max_dirs
         stats["max_depth"] = max_depth
 
+    seen_dirs = set()
+
     def _walk(inode_num, path, depth):
+        # A directory already walked is a loop (or a reused inode on damaged
+        # media), not new ground - walking it again would never end.
+        if inode_num in seen_dirs:
+            if stats is not None:
+                stats["loops_skipped"] = stats.get("loops_skipped", 0) + 1
+            return
+        seen_dirs.add(inode_num)
         if visited[0] >= max_dirs:
             if stats is not None:
                 stats["dirs_capped"] = True

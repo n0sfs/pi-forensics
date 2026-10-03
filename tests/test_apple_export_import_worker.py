@@ -152,7 +152,7 @@ class TestExecutionWorkerImportAppleExport:
 
         mock_tag.assert_called_once()
         kml_path = mock_tag.call_args[0][1]
-        assert kml_path.endswith("apple_photos_location_history.kml")
+        assert os.path.basename(kml_path).startswith("apple_photos_location_history_") and kml_path.endswith(".kml")
         with open(kml_path, "r", encoding="utf-8") as f:
             content = f.read()
         assert "51.507400" in content or "51.5074" in content
@@ -172,7 +172,7 @@ class TestExecutionWorkerImportAppleExport:
         mock_tag.assert_not_called()
         assert "No GPS-tagged photos found" in job["log"]
 
-    def test_an_exiftool_timeout_is_treated_as_zero_gps_points_not_a_crash(self, tmp_path):
+    def test_an_exiftool_timeout_is_reported_not_read_as_zero_gps_points(self, tmp_path):
         import subprocess as real_subprocess
         photos_dir = str(tmp_path / "apple_export" / "Photos")
         os.makedirs(photos_dir, exist_ok=True)
@@ -183,11 +183,14 @@ class TestExecutionWorkerImportAppleExport:
         job, mock_record, mock_tag, mock_run = self._run(
             tmp_path, import_result=_ok_result(photos_dir=photos_dir), exiftool_side_effect=exiftool_side_effect,
         )
-        assert job["status"] == "Completed Successfully"
+        # Not a crash - and not "no GPS photos" either (2026-10-02): the photos
+        # were never checked, and the result says so.
+        assert job["status"] == "Completed with 1 problem - see the log"
         mock_tag.assert_not_called()
-        assert "No GPS-tagged photos found" in job["log"]
+        assert "Photos GPS was NOT checked - exiftool timed out" in job["log"]
+        assert "No GPS-tagged photos found" not in job["log"]
 
-    def test_an_exiftool_malformed_json_output_is_treated_as_zero_gps_points_not_a_crash(self, tmp_path):
+    def test_an_exiftool_malformed_json_output_is_reported_not_read_as_zero_gps_points(self, tmp_path):
         photos_dir = str(tmp_path / "apple_export" / "Photos")
         os.makedirs(photos_dir, exist_ok=True)
 
@@ -197,8 +200,9 @@ class TestExecutionWorkerImportAppleExport:
         job, mock_record, mock_tag, mock_run = self._run(
             tmp_path, import_result=_ok_result(photos_dir=photos_dir), exiftool_side_effect=exiftool_side_effect,
         )
-        assert job["status"] == "Completed Successfully"
+        assert job["status"] == "Completed with 1 problem - see the log"
         mock_tag.assert_not_called()
+        assert "could not be parsed" in job["log"]
 
     def test_warnings_from_import_apple_export_are_surfaced_in_the_log(self, tmp_path):
         job, mock_record, mock_tag, mock_run = self._run(

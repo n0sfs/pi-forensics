@@ -55,3 +55,49 @@ def format_strings_output(lines, more, timed_out):
     if timed_out:
         output += "\n\n[... strings was stopped at its time limit - the output above is incomplete ...]"
     return output or "[no printable strings found]"
+
+
+CAPPED_OUTPUT_MAX_BYTES = 2 * 1024 * 1024
+
+
+def run_capped(cmd, timeout, max_bytes=CAPPED_OUTPUT_MAX_BYTES):
+    """Runs cmd (stderr merged into stdout) keeping at most max_bytes of its
+    output - the same reasoning as strings_first_lines() above, for binwalk and
+    clamscan (2026-10-02): subprocess.run(capture_output=True) held all of it.
+    Returns (text, returncode, truncated, timed_out); a stopped process has
+    returncode None."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    timed_out = threading.Event()
+
+    def _expire():
+        timed_out.set()
+        proc.kill()
+
+    timer = threading.Timer(timeout, _expire)
+    timer.start()
+    chunks, size, truncated = [], 0, False
+    try:
+        while True:
+            block = proc.stdout.read(65536)
+            if not block:
+                break
+            if size + len(block) > max_bytes:
+                chunks.append(block[:max_bytes - size])
+                truncated = True
+                proc.kill()
+                break
+            chunks.append(block)
+            size += len(block)
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdout.close()
+        proc.wait()
+    rc = None if (truncated or timed_out.is_set()) else proc.returncode
+    text = b"".join(chunks).decode('utf-8', errors='replace').strip()
+    if truncated:
+        text += f"\n\n[... output cut at {max_bytes // (1024 * 1024)} MB - the tool was stopped there ...]"
+    if timed_out.is_set():
+        text += "\n\n[... stopped at its time limit - the output above is incomplete ...]"
+    return text, rc, truncated, timed_out.is_set()
