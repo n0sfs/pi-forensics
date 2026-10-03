@@ -23512,6 +23512,9 @@ async function startRecoveryTool() {
 
     if (tool === 'testdisk_analyze') {
         const outEl = document.getElementById("recoveryLogOutput");
+        const startBtn = document.getElementById("btnRecoveryStart");
+        if (startBtn?.disabled) return;   // one testdisk run at a time
+        if (startBtn) startBtn.disabled = true;
         if (outEl) outEl.textContent = "Running...";
         try {
             const res = await fetch('/api/recovery/testdisk_analyze', {
@@ -23525,13 +23528,15 @@ async function startRecoveryTool() {
                 : `[ERROR] ${data.error}` + (data.output ? `\n\n${data.output}` : '');
         } catch (err) {
             if (outEl) outEl.textContent = '[REQUEST FAILED - check the appliance is still running, then retry]';
+        } finally {
+            if (startBtn) startBtn.disabled = false;
         }
         return;
     }
 
     const dest = document.getElementById("recoveryDest")?.value || "/mnt";
     const metadata = {
-        case_number: document.getElementById("recoveryCaseNum")?.value || "RECOVERY",
+        case_number: document.getElementById("recoveryCaseNum")?.value || "UNASSIGNED",
         evidence_id: document.getElementById("recoveryEvidenceId")?.value || "ITEM-01",
         examiner: document.getElementById("recoveryExaminer")?.value || "UNSPECIFIED",
         notes: `${tool} recovery`
@@ -24120,7 +24125,9 @@ async function startMtpPull() {
         });
         const data = await res.json();
         if (!data.success) showToast(`Start failed: ${data.error}`, 'danger');
-    } catch (err) {}
+    } catch (err) {
+        showToast(`Start failed: ${err.message}`, 'danger');
+    }
 }
 
 function toggleIosEncryptField() {
@@ -24163,7 +24170,9 @@ async function startIosBackup() {
         });
         const data = await res.json();
         if (!data.success) showToast(`Start failed: ${data.error}`, 'danger');
-    } catch (err) {}
+    } catch (err) {
+        showToast(`Start failed: ${err.message}`, 'danger');
+    }
 }
 
 async function startAndroidAcquisition() {
@@ -24218,7 +24227,9 @@ async function startAndroidAcquisition() {
         });
         const data = await res.json();
         if (!data.success) showToast(`Start failed: ${data.error}`, 'danger');
-    } catch (err) {}
+    } catch (err) {
+        showToast(`Start failed: ${err.message}`, 'danger');
+    }
 }
 
 // ===================== ADVANCED SETTINGS =====================
