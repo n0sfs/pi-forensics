@@ -919,6 +919,10 @@ def pull_whatsapp_key(serial):
     if not result["success"]:
         return jsonify(result), 500
 
+    # Indexed into the case like the crash reports and SIM read beside it
+    # (2026-10-03) - the key is what WhatsApp decryption needs later.
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    _auto_tag_case_artifact(case_folder or dest_dir, result["path"])
     log_chain_of_custody("whatsapp_key_pulled", {"serial": serial, "path": result["path"]})
     return jsonify(result)
 

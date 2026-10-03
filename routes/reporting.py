@@ -4750,7 +4750,7 @@ _SIGNOFF_HASH_NOTE = ("The SHA-256 of this exported file is recorded in the .sha
                       "the case's chain-of-custody log (report_exported).")
 
 
-def _draw_pdf_signoff(c, y, examiner):
+def _draw_pdf_signoff(c, y, examiner, title="Sign-off & Signatures"):
     """Sign-off block - the attestation, the examiner and their qualifications,
     the export date, and blank signature/date lines."""
     if y < 150:
@@ -4758,7 +4758,7 @@ def _draw_pdf_signoff(c, y, examiner):
         y = 730
     y -= 15
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Sign-off & Signatures")
+    c.drawString(50, y, title)
     y -= 18
     attestation, qualifications, export_date = _signoff_details()
     for para in attestation.split("\n"):
@@ -5628,6 +5628,12 @@ REPORT_SECTION_BLOCKS = [
      "in_legacy_default": False, "requires_events": True, "force_page_break": True, "remappable": False},
     {"key": "custody_log", "default_title": "Physical Evidence Custody Log",
      "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
+    # The examiner's attestation and signature lines (2026-10-03). The DFIR
+    # and Police templates always end with one; the Standard template had
+    # none, so its reports could not be signed as exported. Opt-in, last,
+    # and OFF when a caller omits it (LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED).
+    {"key": "signoff", "default_title": "Sign-off & Signatures",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
 ]
 # key -> the header dict field a remappable block draws from by default -
 # also the full set of choices a custom template's Report Template Builder
@@ -5700,7 +5706,7 @@ FEATURE_MODULES = {
 # include-when-absent default long enough that changing it now would alter
 # existing non-UI callers' output, which is the exact thing this set exists to
 # avoid. Its own <input> starting unchecked is what keeps it off in practice.
-LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED = {"analysis_results", "pattern_of_life"}
+LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED = {"analysis_results", "pattern_of_life", "signoff"}
 
 def _expand_legacy_sections_dict(sections_dict):
     """Converts the plain sections:{key: bool} dict (today's Export-modal
@@ -5863,6 +5869,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "geolocation": lambda y, title, field: _draw_pdf_geolocation_block(c, y, geo_data or [], title=title),
         "pattern_of_life": lambda y, title, field: _draw_pdf_pattern_of_life_block(c, y, case_folder, title=title, attachment_files=attachment_files),
         "custody_log": lambda y, title, field: _draw_pdf_custody_log_block(c, y, custody_log or [], title=title, exhibit_numbers=exhibit_numbers),
+        "signoff": lambda y, title, field: _draw_pdf_signoff(c, y, header.get('examiner'), title=title),
     }
 
     for i, entry in enumerate(resolved_sections):
@@ -6577,12 +6584,12 @@ def _html_methodology_tools(events, anchor_id=None):
         + esc("\n".join(_environment_lines(_report_environment(events)))) + '</pre>'
     )
 
-def _html_signoff(examiner, anchor_id=None):
+def _html_signoff(examiner, anchor_id=None, title="Sign-off & Signatures"):
     esc = html.escape
     attestation, qualifications, export_date = _signoff_details()
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     return (
-        f'<h2{id_attr}>Sign-off &amp; Signatures</h2>'
+        f'<h2{id_attr}>{esc(title)}</h2>'
         f'<p style="white-space:pre-wrap;">{esc(attestation)}</p>'
         f'<p>Examiner: {esc(str(examiner))}</p>'
         + (f'<p>Qualifications: {esc(qualifications)}</p>' if qualifications else '')
@@ -7097,6 +7104,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "geolocation": lambda anchor, title, field: _html_geolocation_block(geo_data or [], title=title, anchor_id=anchor),
         "pattern_of_life": lambda anchor, title, field: _html_pattern_of_life_block(case_folder, title=title, anchor_id=anchor, attachment_files=attachment_files),
         "custody_log": lambda anchor, title, field: _html_custody_log_block(custody_log or [], anchor_id=anchor, title=title, exhibit_numbers=exhibit_numbers),
+        "signoff": lambda anchor, title, field: _html_signoff(header.get('examiner'), anchor_id=anchor, title=title),
     }
 
     for entry in resolved_sections:

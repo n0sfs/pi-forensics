@@ -137,3 +137,11 @@ def test_verify_refuses_a_file_that_is_not_an_export_of_this_report(client, evid
     folder, report = _case(evidence_root)
     res = client.post("/api/report_exports/verify", json={"report_path": report, "path": report})
     assert res.status_code == 400
+
+
+def test_standard_template_signoff_is_opt_in(client, evidence_root):
+    # Off when a caller omits it - existing exports keep their shape.
+    _, report = _case(evidence_root)
+    assert "Sign-off &amp; Signatures" not in _export_html(client, report, sections={"case_details": True})
+    body = _export_html(client, report, sections={"case_details": True, "signoff": True})
+    assert "Sign-off &amp; Signatures" in body and "Report exported:" in body

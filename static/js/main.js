@@ -15521,6 +15521,8 @@ async function loadCaseReportingSettings() {
         // Pattern of Life (2026-09-20) - same absent-means-off handling, same reason.
         const polDefEl = document.getElementById('defSecPatternOfLife');
         if (polDefEl) polDefEl.checked = Object.prototype.hasOwnProperty.call(sections, 'pattern_of_life') ? !!sections.pattern_of_life : false;
+        const signoffDefEl = document.getElementById('defSecSignoff');
+        if (signoffDefEl) signoffDefEl.checked = !!sections.signoff;
         setChecked('defSecAuditTrail', sections, 'audit_trail');
         setChecked('defFieldTelemetry', jobFields, 'telemetry');
         setChecked('defFieldParams', jobFields, 'params');
@@ -15703,6 +15705,7 @@ async function saveCaseReportingSettings() {
         geolocation: document.getElementById("defSecGeolocation")?.checked ?? false,
         analysis_results: document.getElementById("defSecAnalysisResults")?.checked ?? false,
         pattern_of_life: document.getElementById("defSecPatternOfLife")?.checked ?? false,
+        signoff: document.getElementById("defSecSignoff")?.checked ?? false,
         audit_trail: document.getElementById("defSecAuditTrail")?.checked ?? true,
     };
     const jobFields = {
@@ -18998,6 +19001,7 @@ async function prepareExportPane() {
             setIfKnown('expSecGeolocation', sections, 'geolocation');
             setIfKnown('expSecAnalysisResults', sections, 'analysis_results');
             setIfKnown('expSecPatternOfLife', sections, 'pattern_of_life');
+            setIfKnown('expSecSignoff', sections, 'signoff');
             setIfKnown('expSecAuditTrail', sections, 'audit_trail');
             setIfKnown('expFieldTelemetry', jobFields, 'telemetry');
             setIfKnown('expFieldParams', jobFields, 'params');
@@ -19454,6 +19458,7 @@ function gatherExportRequestBody() {
             geolocation: !!document.getElementById("expSecGeolocation")?.checked,
             analysis_results: !!document.getElementById("expSecAnalysisResults")?.checked,
             pattern_of_life: !!document.getElementById("expSecPatternOfLife")?.checked,
+            signoff: !!document.getElementById("expSecSignoff")?.checked,
             audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
         };
         job_fields = {
@@ -21464,7 +21469,7 @@ async function startLogicalAcquisition() {
     const makeZip = document.getElementById("logicalAcqMakeZip")?.checked || false;
     const destPath = document.getElementById("destPath")?.value.trim() || '/mnt';
     const metadata = {
-        case_number: document.getElementById("caseNum")?.value || "2026-UNASSIGNED",
+        case_number: document.getElementById("caseNum")?.value || "UNASSIGNED",
         evidence_id: document.getElementById("evidenceId")?.value || "ITEM-01",
         examiner: document.getElementById("examiner")?.value || "UNSPECIFIED",
         notes: document.getElementById("notes")?.value || "None",
@@ -23250,7 +23255,7 @@ async function startAcquisition() {
     const source = useUnlockedSource ? encVolUnlockedSourcePath : rawSource;
 
     const metadata = {
-        case_number: document.getElementById("caseNum")?.value || "2026-UNASSIGNED",
+        case_number: document.getElementById("caseNum")?.value || "UNASSIGNED",
         evidence_id: document.getElementById("evidenceId")?.value || "ITEM-01",
         examiner: document.getElementById("examiner")?.value || "UNSPECIFIED",
         notes: document.getElementById("notes")?.value || "None"
@@ -23919,7 +23924,7 @@ async function pullIosCrashReports() {
     const udid = document.getElementById("mobileIosSelect")?.value;
     const statusEl = document.getElementById("mobileIosCrashReportStatus");
     if (!udid) return showToast('Select a connected, trusted iOS device first.', 'warning');
-    const destinationDir = activeCase ? activeCase.case_folder : document.getElementById("mobileDest")?.value || '/mnt';
+    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : '/mnt');
     if (statusEl) statusEl.textContent = 'Pulling crash reports...';
     try {
         const res = await fetch('/api/mobile/ios/pull_crash_reports', {
@@ -23975,7 +23980,7 @@ async function readSimCard() {
     const outputEl = document.getElementById("mobileSimOutput");
     const statusEl = document.getElementById("mobileSimStatus");
     if (readerIndex === '' || readerIndex === undefined) return showToast('Detect readers and select one first.', 'warning');
-    const destinationDir = activeCase ? activeCase.case_folder : document.getElementById("mobileDest")?.value || '/mnt';
+    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : '/mnt');
     if (statusEl) statusEl.textContent = 'Reading card...';
     if (outputEl) outputEl.textContent = 'Running...';
     try {
@@ -24036,13 +24041,13 @@ async function pullWhatsappKey() {
     const dev = _currentlySelectedAndroidDevice();
     const statusEl = document.getElementById("mobileWhatsappKeyStatus");
     if (!dev) return showToast('Select a connected Android device first.', 'warning');
-    const destinationDir = activeCase ? activeCase.case_folder : document.getElementById("mobileDest")?.value || '/mnt';
+    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : '/mnt');
     if (statusEl) statusEl.textContent = 'Pulling key file...';
     try {
         const res = await fetch(`/api/mobile/android/${encodeURIComponent(dev.serial)}/pull_whatsapp_key`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ destination_dir: destinationDir })
+            body: JSON.stringify({ destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
         });
         const data = await res.json();
         if (!data.success) {
@@ -24082,7 +24087,7 @@ async function startCompanionUnifiedExtraction() {
         confirmText: 'Install and extract',
     })) return;
 
-    const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById("mobileDest")?.value || '/mnt');
+    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : '/mnt');
     const metadata = {
         case_number: document.getElementById("mobileCaseNum")?.value || 'UNASSIGNED',
         evidence_id: document.getElementById("mobileEvidenceId")?.value || 'ITEM-01',
@@ -24183,7 +24188,7 @@ async function startMtpPull() {
 
     const dest = document.getElementById("mobileDest")?.value || '/mnt';
     const metadata = {
-        case_number: document.getElementById("mobileCaseNum")?.value || "2026-UNASSIGNED",
+        case_number: document.getElementById("mobileCaseNum")?.value || "UNASSIGNED",
         evidence_id: document.getElementById("mobileEvidenceId")?.value || "ITEM-01",
         examiner: document.getElementById("mobileExaminer")?.value || "UNSPECIFIED",
         notes: "Android MTP fallback pull (no adb access)"
@@ -24228,7 +24233,7 @@ async function startIosBackup() {
     if (encryptEnabled && !encrypt_password) return showToast("Enter an encryption password, or turn off the encrypted backup toggle.", 'warning');
 
     const metadata = {
-        case_number: document.getElementById("mobileCaseNum")?.value || "2026-UNASSIGNED",
+        case_number: document.getElementById("mobileCaseNum")?.value || "UNASSIGNED",
         evidence_id: document.getElementById("mobileEvidenceId")?.value || "ITEM-01",
         examiner: document.getElementById("mobileExaminer")?.value || "UNSPECIFIED",
         notes: "iOS full backup via idevicebackup2"
@@ -24255,7 +24260,7 @@ async function startAndroidAcquisition() {
     const dest = document.getElementById("mobileDest")?.value || '/mnt';
 
     const metadata = {
-        case_number: document.getElementById("mobileCaseNum")?.value || "2026-UNASSIGNED",
+        case_number: document.getElementById("mobileCaseNum")?.value || "UNASSIGNED",
         evidence_id: document.getElementById("mobileEvidenceId")?.value || "ITEM-01",
         examiner: document.getElementById("mobileExaminer")?.value || "UNSPECIFIED",
         notes: `Android ${mode} via adb`
