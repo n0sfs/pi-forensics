@@ -88,12 +88,12 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 - **Extracting a file from inside a disk image never overwrites a file of the same name.** On a
   failed extraction it no longer deletes one either. A file named "." or "..", or with a name too long
   or unusable to write, is now extracted under a safe name instead of failing.
-- **In-image scans say when they could not search the whole image.** "None found" used to look the
-  same whether or not everything was searched. Scans now name what they skipped - folders nested more
-  than 25 levels deep, folders past the 5,000-folder limit, folders that could not be read, a
-  filesystem that would not open, partitions with no readable filesystem - and a "none found" for an
-  incomplete search is shown as a warning, not a green success. The 5,000-folder limit is reached by
-  a full Windows system disk, so expect to see it there.
+- **In-image scans search the whole image, and say when they couldn't.** The walk used to stop after
+  5,000 folders and 25 levels - far short of one Windows system disk, so a registry or event-log scan
+  there could miss C:\Windows entirely and still say "none found". Loops are now caught directly, the
+  limits are 250,000 folders and 64 levels, and anything not searched (folders past those limits,
+  folders that could not be read, a filesystem that would not open, a scan's time limit) is named,
+  with "none found" shown as a warning rather than a green success.
 - **An image that can't be opened at all is reported as such**, instead of "no recognised filesystem
   found".
 - **A file that can only be partly read from an image is no longer hashed, scanned, parsed or

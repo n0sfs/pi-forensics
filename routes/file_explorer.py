@@ -29,7 +29,7 @@ from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.case_file import refuses_closed_case_work
-from core.strings_utils import strings_first_lines, format_strings_output
+from core.strings_utils import strings_first_lines, format_strings_output, run_capped
 from core.paths import closed_case_refusal, safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, INSTALL_DIR, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets, ALEAPP_DIR, ALEAPP_VENV_PYTHON, ILEAPP_DIR, ILEAPP_VENV_PYTHON
 import yara
@@ -705,8 +705,10 @@ def run_binwalk():
         # Extraction can be added as an explicit, separate action later if
         # needed, with its own destination picker rather than happening
         # silently as a side effect of scanning.
-        res = subprocess.run(['binwalk', file_path], capture_output=True, text=True, timeout=120)
-        output = res.stdout.strip() or res.stderr.strip() or "[no output]"
+        output, _rc, _cut, timed_out = run_capped(['binwalk', file_path], timeout=120)
+        if timed_out and not output.strip():
+            return jsonify({"success": False, "error": "binwalk timed out."}), 500
+        output = output or "[no output]"
         sig_count = len(re.findall(r'^\d+\s', output, re.MULTILINE))
         summary = f"{sig_count} signature(s) found" if sig_count else "No signatures found"
         log_chain_of_custody("binwalk_scan", {"path": file_path})
@@ -737,10 +739,17 @@ def run_clamscan():
     try:
         # -r = recursive (harmless no-op on a single file), --no-summary
         # keeps output focused on actual findings rather than a stats block.
-        res = subprocess.run(['clamscan', '-r', '--no-summary', target_path], capture_output=True, text=True, timeout=300)
-        output = res.stdout.strip() or res.stderr.strip() or "[no output]"
-        # clamscan exit codes: 0 = clean, 1 = virus(es) found, 2 = error
-        infected = res.returncode == 1
+        output, rc, cut, timed_out = run_capped(['clamscan', '-r', '--no-summary', target_path], timeout=300)
+        output = output or "[no output]"
+        # clamscan exit codes: 0 = clean, 1 = virus(es) found, 2 = error. A run
+        # stopped early (time limit / output cap) or ending in error is never
+        # reported as CLEAN (2026-10-02).
+        if rc not in (0, 1):
+            reason = ("it was stopped at its time limit" if timed_out else
+                      "its output was cut at the size limit" if cut else f"clamscan exited {rc}")
+            return jsonify({"success": False, "error": f"The scan did not complete ({reason}) - no verdict.",
+                            "output": output}), 500
+        infected = rc == 1
         log_chain_of_custody("clamav_scan", {"path": target_path, "infected": infected})
         _record_analysis_result(case_folder, {"source_type": "real_fs", "path": target_path,
                                                "name": os.path.basename(target_path)}, "ClamAV",
@@ -762,14 +771,18 @@ def _hashdeep_directory_body(target_dir, dest_dir, algo='sha256'):
     custody()/response shaping."""
     manifest_path = os.path.join(dest_dir, f"{os.path.basename(target_dir.rstrip(os.sep))}_hashdeep_{algo}_manifest.txt")
     try:
-        res = subprocess.run(
-            ['hashdeep', '-r', '-c', algo, target_dir],
-            capture_output=True, text=True, timeout=600
-        )
+        # Written straight to the manifest file - it can be hundreds of MB for
+        # a big folder, and capture_output held all of it in memory (2026-10-02).
         with open(manifest_path, 'w') as f:
-            f.write(res.stdout)
+            res = subprocess.run(['hashdeep', '-r', '-c', algo, target_dir], stdout=f,
+                                 stderr=subprocess.PIPE, text=True, timeout=600)
+        if res.returncode != 0:
+            return {"success": False, "manifest_path": manifest_path,
+                    "error": f"hashdeep exited {res.returncode}: {(res.stderr or '').strip()[:300]} - the manifest "
+                             f"may be incomplete."}
         _auto_tag_case_artifact(dest_dir, manifest_path)
-        file_count = sum(1 for line in res.stdout.splitlines() if line and not line.startswith('%') and not line.startswith('#'))
+        with open(manifest_path, 'r', errors='replace') as f:
+            file_count = sum(1 for line in f if line.strip() and not line.startswith('%') and not line.startswith('#'))
         return {"success": True, "manifest_path": manifest_path, "file_count": file_count}
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "hashdeep timed out (large directory - consider a subdirectory instead)."}
@@ -1092,6 +1105,7 @@ def execution_worker_import_apple_export(export_root, case_folder, dest_dir, sou
 
         kml_path = None
         points_found = 0
+        gps_problem = None
         if result["photos_dir"]:
             update_job(status="Extracting Photos GPS data...", progress_percent=70.0)
             append_log(f"[*] Running EXIF geolocation extraction against {result['photos_dir']}...")
@@ -1099,29 +1113,42 @@ def execution_worker_import_apple_export(export_root, case_folder, dest_dir, sou
             for ext in GEO_IMAGE_EXTENSIONS:
                 cmd += ['-ext', ext]
             cmd += ['-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', '-FileName', '-Directory', result["photos_dir"]]
+            # A failed or timed-out exiftool run used to become an empty list
+            # and "No GPS-tagged photos found" (2026-10-02) - it is reported as
+            # what it is, and the import ends with that problem stated.
+            entries = []
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-                entries = json.loads(proc.stdout) if proc.stdout.strip() else []
-            except (subprocess.TimeoutExpired, json.JSONDecodeError):
-                entries = []
+                if proc.returncode != 0 and not proc.stdout.strip():
+                    gps_problem = f"exiftool failed: {(proc.stderr or '').strip()[:200] or f'exit {proc.returncode}'}"
+                else:
+                    entries = json.loads(proc.stdout) if proc.stdout.strip() else []
+            except subprocess.TimeoutExpired:
+                gps_problem = "exiftool timed out after 10 minutes"
+            except json.JSONDecodeError:
+                gps_problem = "exiftool's output could not be parsed"
             points = _geo_points_from_exiftool_entries(entries)
             points_found = len(points)
             kml_doc = _build_geo_kml(points, "Apple Export - Photos Location Data")
             if kml_doc:
-                kml_path = os.path.join(dest_dir, "apple_photos_location_history.kml")
+                kml_path = os.path.join(dest_dir, f"apple_photos_location_history_{time.strftime('%Y%m%d_%H%M%S')}.kml")
                 with open(kml_path, 'w', encoding='utf-8') as f:
                     f.write(kml_doc)
                 _auto_tag_case_artifact(dest_dir, kml_path)
                 append_log(f"[+] {points_found} GPS-tagged photo(s) exported to {kml_path}")
+            elif gps_problem:
+                append_log(f"[!] Photos GPS was NOT checked - {gps_problem}.")
             else:
                 append_log("[*] No GPS-tagged photos found in the Photos export.")
 
         log_chain_of_custody("apple_export_import", {
             "export_root": export_root, "products_found": result["products_found"],
             "record_count": len(result["records"]), "photo_gps_points": points_found,
+            "photo_gps_problem": gps_problem,
         }, source_ip=source_ip, user=user)
 
-        update_job(status="Completed Successfully", progress_percent=100.0)
+        update_job(status="Completed with 1 problem - see the log" if gps_problem else "Completed Successfully",
+                   progress_percent=100.0)
         append_log("[+] Apple Data & Privacy export import complete.")
     except Exception as e:
         update_job(status="Failed")

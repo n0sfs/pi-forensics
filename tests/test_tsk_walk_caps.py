@@ -130,3 +130,20 @@ def test_notes_name_the_caps_that_bit(monkeypatch):
     notes = " ".join(tsk_utils.walk_incomplete_notes(stats, where="NTFS (sector 2048)"))
     assert "NTFS (sector 2048):" in notes
     assert "deeper than 4 levels" in notes or "after 10 directories" in notes
+
+
+def test_a_directory_loop_is_walked_once_not_forever(monkeypatch):
+    """The visited set is the loop guard now (2026-10-02) - the directory cap
+    used to be, at a value far below a real Windows volume."""
+    def list_dir(fs, inode_num):
+        # root(None) -> a(1) -> b(2) -> back to a(1): a loop on damaged media.
+        tree = {None: [("a", 1)], 1: [("b", 2)], 2: [("a_again", 1)]}
+        return [{"name": n, "inode": i, "is_dir": True, "deleted": False, "is_virtual": False}
+                for n, i in tree[inode_num]]
+
+    monkeypatch.setattr(tsk_utils, "_tsk_list_dir", list_dir)
+    stats = {}
+    paths = [p for _e, p in tsk_utils._tsk_walk(_FakeFs(), stats=stats)]
+    assert paths == ["/a", "/a/b", "/a/b/a_again"]
+    assert stats["loops_skipped"] == 1
+    assert not stats["dirs_capped"] and not stats["depth_capped"]

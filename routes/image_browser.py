@@ -51,7 +51,7 @@ from core.tsk_utils import (
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 from core.decrypted_sources import get_decrypted_source_kind
 from core.case_file import refuses_closed_case_work
-from core.strings_utils import strings_first_lines, format_strings_output
+from core.strings_utils import strings_first_lines, format_strings_output, run_capped
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label, scan_match_is_reportable,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
@@ -4146,11 +4146,10 @@ def image_binwalk():
     try:
         fs = _tsk_open_fs(image_path, offset)
         tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix=os.path.splitext(name_hint)[1])
-        res = subprocess.run(['binwalk', tmp_path], capture_output=True, text=True, timeout=120)
-        output = res.stdout.strip() or res.stderr.strip() or "[no output]"
-        output = output.replace(tmp_path, name_hint)  # don't leak the temp path to the examiner
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "binwalk timed out."}), 500
+        output, _rc, _cut, timed_out = run_capped(['binwalk', tmp_path], timeout=120)
+        if timed_out and not output.strip():
+            return jsonify({"success": False, "error": "binwalk timed out."}), 500
+        output = (output or "[no output]").replace(tmp_path, name_hint)  # don't leak the temp path to the examiner
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not scan file: {e}"}), 500
     finally:
