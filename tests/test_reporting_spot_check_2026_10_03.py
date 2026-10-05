@@ -145,3 +145,17 @@ def test_standard_template_signoff_is_opt_in(client, evidence_root):
     assert "Sign-off &amp; Signatures" not in _export_html(client, report, sections={"case_details": True})
     body = _export_html(client, report, sections={"case_details": True, "signoff": True})
     assert "Sign-off &amp; Signatures" in body and "Report exported:" in body
+
+
+def test_custom_template_saved_without_signoff_keeps_it_off():
+    # A template re-saved by a client that predates the block must not grow
+    # a sign-off section; every older block still fills in enabled.
+    record, err = reporting._custom_report_template_from_payload(
+        {"name": "Old", "sections": [{"key": "case_info", "enabled": True}]})
+    assert err is None
+    by_key = {s["key"]: s for s in record["sections"]}
+    assert by_key["signoff"]["enabled"] is False
+    assert by_key["executive_summary"]["enabled"] is True
+    record, _ = reporting._custom_report_template_from_payload(
+        {"name": "New", "sections": [{"key": "signoff", "enabled": True}]})
+    assert {s["key"]: s for s in record["sections"]}["signoff"]["enabled"] is True

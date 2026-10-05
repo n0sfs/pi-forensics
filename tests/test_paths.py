@@ -121,6 +121,11 @@ def test_classify_extension(name, expected_category, expected_ext):
     ("2026-CASE-01_PIXEL8A-01_accounts.json", "analysis_log"),
     ("2026-CASE-01_PIXEL8A-01_notifications.json", "analysis_log"),
     ("2026-CASE-01_PIXEL8A-01_android_companion_sms_extraction.json", "analysis_log"),
+    # The pulled WhatsApp key (2026-10-05) - both of pull_whatsapp_key()'s
+    # names. Was unclassified, so its auto-tag call silently did nothing.
+    ("R58M12345_20261003-120000_whatsapp_key", "analysis_log"),
+    ("R58M12345_whatsapp_key", "analysis_log"),
+    ("whatsapp_key_notes.txt", None),
     # Anchored to the exact timestamp shape - a similarly-named real evidence
     # folder an examiner happens to create must never be misclassified.
     ("live_collection_import_notes", None),

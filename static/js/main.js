@@ -1011,8 +1011,8 @@ function populateToolReference() {
     });
 }
 
-// Mirrors routes/reporting.py's REPORT_SECTION_BLOCKS one-for-one (same 16
-// keys, same order) - kept as a second, hand-written copy rather than
+// Mirrors routes/reporting.py's REPORT_SECTION_BLOCKS one-for-one (same 19
+// keys) - kept as a second, hand-written copy rather than
 // fetched from the backend, since this is static reference prose (what a
 // section IS), not live template data the way the Report Template Builder's
 // own block list already is. "Remappable" flags the 7 free-text sections a
@@ -1034,10 +1034,12 @@ const REPORT_FIELD_MAPPING = [
     ["Recommendations / Next Steps", "Free text (Remappable)", "Report Narrative"],
     ["Exhibits", "Attached files/URLs + captions + tags + analysis results", "Files &amp; Artifacts tab (check/caption); File Explorer (tag/analyze)"],
     ["Geolocation / GPS Evidence", "KML files attached to or found in the case folder", "Auto-discovered; generate via File Explorer's \"Extract Geolocation (KML)\""],
+    ["Analysis Results", "Keyword/IOC hits, parsed artifacts and examiner-tagged items from the case's analysis index", "Automatic - File Explorer (tag/analyze) and the analysis tools; opt-in checkbox on the Standard template"],
     ["Case Activity Log", "Chain-of-custody entries matching this case #", "Automatic"],
     ["Filesystem Timeline (MACB)", "MACB walk of an acquired disk image, or real file timestamps from a mobile pull/backup or Logical Acquisition folder", "Automatic, needs the image or output folder still on disk"],
     ["Physical Evidence Custody Log", "From/To custodian handoff entries, append-only, each optionally linked to which exhibit(s) changed hands", "Case Notes &amp; Custody Log tab"],
     ["Pattern of Life: Contact Correlation &amp; Location Activity", "Correlated contacts/co-occurrences + frequent-location clusters - the same data the interactive Pattern of Life tab shows (no map image or graph, no Home/Work labeling in the export)", "Automatic - reflects whatever the case's own parsed_artifacts index and Relationship Graph already show"],
+    ["Sign-off &amp; Signatures", "Attestation statement, examiner, qualifications, export date, blank signature/date lines", "Settings &gt; Case &amp; Reporting (attestation text, qualifications); examiner from the case header. Opt-in on the Standard template, always included by DFIR/Police"],
 ];
 
 function populateReportFieldMapping() {
