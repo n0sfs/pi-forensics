@@ -349,6 +349,11 @@ _CASE_ROLE_ANALYSIS_LOG_RE = re.compile(
     # Companion-app SMS extraction manifest (routes/mobile.py, 2026-09-04) -
     # the device-modification disclosure + extracted SMS summary.
     r'|_companion_sms_extraction\.json'
+    # WhatsApp key file pulled from an Android device (routes/mobile.py,
+    # 2026-10-05) - auto-tagged into the case like the crash reports and SIM
+    # read pulled beside it. No extension: pull_whatsapp_key() names it
+    # <serial>[_<timestamp>]_whatsapp_key.
+    r'|_whatsapp_key'
     r'|^live_collection_import_\d{8}_\d{6})$')
 _CASE_ROLE_BUNDLE_RE = re.compile(r'_case_bundle_\d{8}-\d{6}\.zip$')
 

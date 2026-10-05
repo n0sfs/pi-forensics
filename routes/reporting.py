@@ -454,7 +454,10 @@ def _custom_report_template_from_payload(req):
     sections = list(by_key.values())
     for block in REPORT_SECTION_BLOCKS:
         if block['key'] not in by_key:
-            row = {"key": block['key'], "title": block['default_title'], "enabled": True}
+            # A block added after a template was saved stays off when a re-save
+            # omits it, so the template keeps the shape it was built with.
+            row = {"key": block['key'], "title": block['default_title'],
+                   "enabled": block['key'] not in CUSTOM_TEMPLATE_BLOCKS_OFF_WHEN_OMITTED}
             if block["remappable"]:
                 row["source_field"] = NARRATIVE_BLOCK_FIELD_MAP[block['key']]
             sections.append(row)
@@ -5707,6 +5710,11 @@ FEATURE_MODULES = {
 # existing non-UI callers' output, which is the exact thing this set exists to
 # avoid. Its own <input> starting unchecked is what keeps it off in practice.
 LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED = {"analysis_results", "pattern_of_life", "signoff"}
+# The same rule for a custom template saved without one of these keys
+# (_custom_report_template_from_payload): an opt-in block a caller never sent
+# is filled in disabled, not enabled. Only blocks added from 2026-10-03 on -
+# widening it would change what re-saving an existing template produces.
+CUSTOM_TEMPLATE_BLOCKS_OFF_WHEN_OMITTED = {"signoff"}
 
 def _expand_legacy_sections_dict(sections_dict):
     """Converts the plain sections:{key: bool} dict (today's Export-modal
