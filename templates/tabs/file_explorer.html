@@ -131,6 +131,7 @@
                          virtual entries inside an image (Image Browser mode) only get Extract,
                          since Metadata/Binwalk/ClamAV/etc. all need a real path on disk. -->
                     <div id="fileContextMenu" class="dropdown-menu dropdown-menu-dark" style="display:none; position:fixed; z-index:2000; max-height: calc(100vh - 16px); overflow-y: auto;">
+                        <div id="ctxMenuTarget" class="dropdown-header text-info text-truncate fw-bold" style="max-width: 340px;"></div>
                         <div id="ctxMenuRealActions">
                             <button id="btnAutoAnalyze" class="dropdown-item fw-bold text-info" onclick="openAutoAnalyzeModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Detects what this evidence item is (Windows/Linux disk image, memory image, or mobile backup) and runs a curated set of the tools above automatically, as one background job - the fast default path. Every step also stays available individually below."><i class="bi bi-lightning-fill me-2"></i>Auto Analyze...</button>
                             <!-- Copy/Delete moved here (2026-09-11, a review pass's own top finding) - they

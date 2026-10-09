@@ -356,6 +356,7 @@ def test_manual_cleanup_restores_the_recorded_original_sms_app(tmp_path):
          mock.patch.object(mobile, "_adb_run") as adb, \
          mock.patch.object(mobile, "snapshot_job", return_value={"active": False}):
         adb.side_effect = lambda serial, args, timeout: (
+            (0, "device\n", "") if args == ["get-state"] else
             (0, mobile.PIF_COMPANION_PACKAGE + "\n", "") if "get-role-holders" in args else (0, "", ""))
         # Past the auth decorators (functools.wraps) - this tests the restore logic, not auth.
         __import__("inspect").unwrap(mobile.cleanup_android_companion_extraction)()
@@ -369,3 +370,16 @@ def test_a_hostile_recorded_package_name_is_never_passed_to_the_device_shell():
     mobile._sms_role_pending_set("SERIAL123", "x; reboot")
     assert not mobile._ANDROID_PACKAGE_RE.match("x; reboot")
     assert mobile._ANDROID_PACKAGE_RE.match("com.google.android.apps.messaging")
+
+
+def test_manual_cleanup_refuses_when_the_phone_is_not_connected():
+    """2026-10-09: an absent phone used to fall through - every adb call failed and the route still
+    answered success:true, which the page showed as a clean cleanup."""
+    app = __import__("flask").Flask(__name__)
+    with app.test_request_context(json={"serial": "SERIAL123"}), \
+         mock.patch.object(mobile, "_adb_run", return_value=(1, "", "error: device 'SERIAL123' not found")) as adb, \
+         mock.patch.object(mobile, "snapshot_job", return_value={"active": False}):
+        resp, status = __import__("inspect").unwrap(mobile.cleanup_android_companion_extraction)()
+        assert status == 409
+        assert "not connected" in resp.get_json()["error"]
+        assert [c[0][1] for c in adb.call_args_list] == [["get-state"]]  # nothing else was attempted

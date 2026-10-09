@@ -60,7 +60,7 @@
                                                         <option value="Archived">Archived</option>
                                                     </select>
                                                     <i class="bi bi-info-circle text-subtle" style="font-size:0.75rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="bottom" tabindex="0" role="button"
-                                                       title="Where this case stands in its own lifecycle - shown in the Case Manager list and included in exported reports. New cases start Open."></i>
+                                                       title="Where this case stands in its own lifecycle - shown in the Case Manager list and included in exported reports. New cases start Open. Closed and Archived also LOCK the case: its report, notes, exhibits and tags become read-only and no new acquisition can be saved into it. The Custody Log, exports and Verify still work. Re-open the case to edit it again."></i>
                                                 </div>
                                                 <div class="d-flex align-items-center gap-2">
                                                     <i class="bi bi-people-fill text-subtle"></i>
@@ -115,7 +115,7 @@
                                         </div>
                                         <div id="repLegacyNotice" class="alert alert-warning small py-2 px-3 mb-3" style="display:none;">
                                             <i class="bi bi-exclamation-triangle-fill me-1"></i>
-                                            This is a single-job report, not a consolidated case file. Migrate this case from the Case Manager to combine all of its evidence items into one file.
+                                            This is a single-job report (a job that ran without a case), not a consolidated case file. Create a case in the Case Manager and run new jobs into its folder to keep all of a case's evidence items in one file.
                                         </div>
                                         <div class="reports-shell">
                                             <!-- Condensed 2026-09-09 from 13 nav items to 9 - Case Notes
@@ -848,7 +848,7 @@
                                                             <div id="exportMismatchWarning" class="small alert alert-warning py-2 px-3 mb-2" style="display:none;"></div>
                                                             <details id="previousExportsBox" class="mb-2" ontoggle="if (this.open) loadPreviousExports()">
                                                                 <summary class="small fw-bold text-info">Previous exports</summary>
-                                                                <div class="small text-subtle my-1">Every export is kept with its SHA-256. Verify re-hashes a file and compares it with the hash recorded when it was exported.</div>
+                                                                <div class="small text-subtle my-1">Every PDF and HTML export is kept in this case's folder with its SHA-256 (JSON and CSV downloads are not recorded here). Verify re-hashes a file and compares it with the hash recorded when it was exported.</div>
                                                                 <div id="previousExportsList" class="small"></div>
                                                             </details>
                                                         </div>

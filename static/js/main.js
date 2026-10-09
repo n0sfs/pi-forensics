@@ -49,6 +49,7 @@ let currentDrivesList = [];
 // elsewhere, e.g. active network mounts).
 let encVolActiveMountId = null;
 let encVolUnlockedSourcePath = null;
+let encVolUnlockedFromDrive = ''; // the #driveSelect value when the volume was unlocked - an unlock belongs to ONE drive
 let encVolActiveType = null; // 'bitlocker'|'luks'|'veracrypt' - which type is currently unlocked, needed to route Lock/status calls to the right /api/${type}/... endpoint
 let encVolMountConsumedByJob = false; // true once a started job is actually using the unlocked mount, so fetchProgress() knows the backend's own post-job auto-unlock applies
 
@@ -170,7 +171,7 @@ document.addEventListener('change', (ev) => {
 // that's about to overwrite every field this flag tracks with different
 // data - see confirmDiscardUnsavedReportingChanges() below.
 window.addEventListener('beforeunload', (ev) => {
-    if (!reportHasUnsavedChanges) return;
+    if (!reportHasUnsavedChanges && !reportingDraftsPending()) return;
     ev.preventDefault();
     ev.returnValue = '';
 });
@@ -181,11 +182,27 @@ window.addEventListener('beforeunload', (ev) => {
 // new/cleared case's own data. Resolves true (safe to proceed) when there's
 // nothing to lose. A true answer means the caller MUST then really discard -
 // see discardReportingEdits().
+// Text typed into the Case Notes / Custody Log "add" boxes but not yet added (2026-10-09). These
+// sit outside the dirty-tracked narrative pane, were never cleared on a case switch, and Add Note
+// files into whichever case is active NOW - so a half-typed observation for case A could be added,
+// permanently, to case B (notes and custody entries have no delete).
+const REPORT_DRAFT_FIELD_IDS = ['newCaseNoteText', 'newCaseNoteAssignedTo', 'newCustodyFrom', 'newCustodyTo', 'newCustodyReason', 'newCustodyNotes'];
+function reportingDraftsPending() {
+    return REPORT_DRAFT_FIELD_IDS.some(id => (document.getElementById(id)?.value || '').trim());
+}
+function clearReportingDrafts() {
+    REPORT_DRAFT_FIELD_IDS.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    const files = document.getElementById('newCaseNoteFiles');
+    if (files) files.value = '';
+}
 async function confirmDiscardUnsavedReportingChanges() {
-    if (!reportHasUnsavedChanges) return true;
+    if (!reportHasUnsavedChanges && !reportingDraftsPending()) return true;
     return await appConfirm({
         title: 'Discard unsaved report changes?',
-        message: "This case's Report Narrative, Case Details or Files & Artifacts have changes that haven't been saved. Leaving the case discards them.",
+        message: reportHasUnsavedChanges
+            ? "This case's Report Narrative, Case Details or Files & Artifacts have changes that haven't been saved"
+                + (reportingDraftsPending() ? ", and a case note or custody entry is typed but not added" : '') + ". Leaving the case discards them."
+            : "A case note or custody entry is typed but has not been added. Leaving the case discards it - it would otherwise be filed into the NEW case.",
         confirmText: 'Discard changes', cancelText: 'Keep editing',
     });
 }
@@ -274,7 +291,7 @@ function showAppConfirmDialog(opts) {
 // poll) until dismissed, doesn't match the dark Bootstrap theme, and isn't touch-friendly on the
 // kiosk - a real usability complaint, not a cosmetic one. Yes/no gates before a destructive
 // action use appConfirm() above (a toast can't return a boolean).
-function showToast(message, type) {
+function showToast(message, type, delayMs) {
     const container = document.getElementById('toastContainer');
     if (!container) { alert(message); return; } // defensive fallback only - should never happen
 
@@ -313,7 +330,7 @@ function showToast(message, type) {
 
     // Errors/warnings stay up longer than a plain success/info confirmation - worth more of the
     // examiner's attention, and often longer text (a backend error message).
-    const delay = (type === 'danger' || type === 'warning') ? 8000 : 4500;
+    const delay = delayMs || ((type === 'danger' || type === 'warning') ? 8000 : 4500);
     const bsToast = new bootstrap.Toast(toastEl, { delay });
     toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
     bsToast.show();
@@ -791,7 +808,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "What's the Case Status field for?",
-                a: "Reporting's own header (next to the case number) has a Status dropdown (Open / In Progress / In Review / On Hold / Closed / Archived) for your own case tracking - Open means created but not yet actively worked, In Progress means you're actively working it, and In Review means it's been handed to another examiner or a supervisor to check. The Case Manager's case list shows a colored badge for each case's current status (and can filter by it), and the Total Cases stat you can enable in Settings shows a live breakdown of every case's status across the whole station."
+                a: "Reporting's own header (next to the case number) has a Status dropdown (Open / In Progress / In Review / On Hold / Closed / Archived) - Open means created but not yet actively worked, In Progress means you're actively working it, and In Review means it's been handed to another examiner or a supervisor to check. Closed and Archived are not just labels: they LOCK the case - its report, notes, exhibits and tags become read-only and no new acquisition can be saved into it (the Custody Log, exports and Verify still work); re-open it to edit again. The Case Manager's case list shows a colored badge for each case's current status (and can filter by it), and the Total Cases stat you can enable in Settings shows a live breakdown of every case's status across the whole station."
             },
             {
                 q: "How does this station track what was done and by whom?",
@@ -1271,16 +1288,35 @@ function sortExplorerRows(field) {
     renderExplorerActiveTable();
 }
 
+// Entries the server could not read in the folder now listed (2026-10-09). /api/files/browse names
+// them instead of leaving them out, but the page never showed that, so a damaged USB or share with
+// I/O errors listed as a clean, shorter folder. Kept at module level because this table re-renders
+// (sort, select-all, tag badges) long after the fetch that produced it.
+let explorerUnreadableEntries = [];
+
+function appendExplorerUnreadableNote(container) {
+    if (!explorerUnreadableEntries.length || explorerActiveRowRenderer !== buildFileTableRow) return;
+    const n = explorerUnreadableEntries.length;
+    const note = document.createElement('div');
+    note.className = 'p-2 text-warning small';
+    // Names come off the evidence drive - text node only.
+    note.textContent = `${n} entr${n === 1 ? 'y' : 'ies'} in this folder could not be read and ${n === 1 ? 'is' : 'are'} NOT listed below: `
+        + explorerUnreadableEntries.slice(0, 5).map(u => u.name).join(', ') + (n > 5 ? `, and ${n - 5} more` : '')
+        + '. The drive or share may have read errors.';
+    container.appendChild(note);
+}
+
 function renderExplorerActiveTable() {
     const container = document.getElementById('explorerContainer');
     if (!container || !explorerActiveRowRenderer) return;
     container.innerHTML = '';
     if (explorerRenderUpRow) explorerRenderUpRow();
+    appendExplorerUnreadableNote(container);
 
     if (explorerActiveRows.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'p-2 text-subtle small';
-        empty.textContent = '(empty)';
+        empty.textContent = explorerUnreadableEntries.length && explorerActiveRowRenderer === buildFileTableRow ? '(nothing readable)' : '(empty)';
         container.appendChild(empty);
         return;
     }
@@ -1396,6 +1432,10 @@ function buildFileTableRow(tbody, item) {
 
     tr.oncontextmenu = (ev) => {
         ev.preventDefault();
+        // Right-click / long-press selects the row like a click does (2026-10-09). It used to change
+        // only the menu's target, so the highlighted row, the preview and the Metadata/Hex panes kept
+        // describing the PREVIOUS file while Delete/Copy/Tag acted on this one.
+        if (!tr.classList.contains('active')) tr.onclick();
         showFileContextMenu(ev, item);
         return false;
     };
@@ -1704,7 +1744,7 @@ async function _runBatchTagApply(tagId, newTagFields, comment) {
     statusEl.textContent = tagName
         ? `Tagged ${successCount} of ${items.length} file(s) with "${tagName}"${failCount ? ` - ${failCount} failed` : ''}.`
         : `${successCount} succeeded, ${failCount} failed - no tag was ever created (check the tag name and try again).`;
-    if (successCount > 0) initFileViewsTree(true);
+    if (successCount > 0) { initFileViewsTree(true); fetchExplorerFileTagsForListing(); }
 }
 
 // --- Batch Hash Check modal ---
@@ -3443,6 +3483,7 @@ async function applyTagToCurrentItem(tagId) {
             document.getElementById('tagItemComment').value = '';
             await refreshTagItemModalList();
             initFileViewsTree(true);
+            fetchExplorerFileTagsForListing(); // the row badges in the listing, not only File Views
         } else {
             statusEl.textContent = `Failed: ${data.error}`;
         }
@@ -3464,6 +3505,7 @@ async function removeTagFromCurrentItem(tagId) {
             statusEl.textContent = 'Tag removed.';
             await refreshTagItemModalList();
             initFileViewsTree(true);
+            fetchExplorerFileTagsForListing(); // the row badges in the listing, not only File Views
         } else {
             statusEl.textContent = `Failed: ${data.error}`;
         }
@@ -3499,6 +3541,7 @@ async function createAndApplyNewTag() {
             document.getElementById('tagItemComment').value = '';
             await refreshTagItemModalList();
             initFileViewsTree(true);
+            fetchExplorerFileTagsForListing(); // the row badges in the listing, not only File Views
         } else {
             statusEl.textContent = `Failed: ${data.error}`;
         }
@@ -3658,6 +3701,7 @@ async function saveManageTagModal() {
             manageTagModalInstance.hide();
             loadManageTagsSection();
             initFileViewsTree(true);
+            fetchExplorerFileTagsForListing(); // the row badges in the listing, not only File Views
         } else {
             statusEl.textContent = `Failed: ${data.error}`;
         }
@@ -3677,6 +3721,7 @@ async function deleteManageTag(tagId, name) {
         if (data.success) {
             loadManageTagsSection();
             initFileViewsTree(true);
+            fetchExplorerFileTagsForListing(); // the row badges in the listing, not only File Views
         } else {
             showToast(`Delete failed: ${data.error}`, 'danger');
         }
@@ -5038,6 +5083,7 @@ async function loadExplorer(path) {
             accessed: item.accessed, changed: item.changed, created: item.created, raw: item
         }));
         explorerListingExtraCols = [];
+        explorerUnreadableEntries = Array.isArray(data.unreadable) ? data.unreadable : [];
         resetExplorerBatchSelection();
         explorerActiveRowRenderer = buildFileTableRow;
         renderExplorerActiveTable();
@@ -6098,7 +6144,7 @@ async function previewSelectedFile(item) {
     nameSpan.textContent = item.name;
     const sizeSpan = document.createElement('div');
     sizeSpan.className = 'text-subtle small';
-    sizeSpan.textContent = `${item.size_str} - no inline preview for this file type. Use Actions for Metadata, Strings, etc.`;
+    sizeSpan.textContent = `${item.size_str} - no inline preview for this file type. Right-click (or press and hold) the file for Metadata, Strings, hashing and the other tools.`;
     preview.appendChild(icon);
     preview.appendChild(nameSpan);
     preview.appendChild(sizeSpan);
@@ -6174,8 +6220,15 @@ function positionContextMenu(ev) {
     clampContextMenuToViewport();
 }
 
+// The menu is a floating list that often covers its own row, so it says which file it will act on.
+function setContextMenuTargetLabel(name) {
+    const el = document.getElementById('ctxMenuTarget');
+    if (el) el.textContent = name || '';
+}
+
 function showFileContextMenu(ev, item) {
     contextMenuTargetItem = item;
+    setContextMenuTargetLabel(item.name);
     // Right-click also selects the item, so the same actions used
     // elsewhere in File Explorer work correctly here too.
     activeSelectedFile = item.path;
@@ -6218,6 +6271,7 @@ const CTX_MENU_IMAGE_ITEMS = [
 
 function showExplorerImageContextMenu(ev, entry) {
     explorerImageSelected = entry;
+    setContextMenuTargetLabel(entry.name);
     const realActions = document.getElementById('ctxMenuRealActions');
     const imageActions = document.getElementById('ctxMenuImageActions');
     if (realActions) realActions.style.display = 'none';
@@ -6227,7 +6281,7 @@ function showExplorerImageContextMenu(ev, entry) {
         if (!btn) return;
         const applies = item.visible(entry);
         btn.style.display = applies ? '' : 'none';
-        btn.disabled = applies && item.disabledWhen ? item.disabledWhen() : false;
+        setCtxItemDisabled(btn, !!(applies && item.disabledWhen ? item.disabledWhen() : false));
     });
     resetCtxMenuSections('ctxMenuImageActions');
     positionContextMenu(ev);
@@ -6409,13 +6463,29 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnAutoAnalyze', section: null, visible: item => item.is_dir || isImageFile(item.name) || isMemoryImageFile(item.name) },
 ];
 
+// Why a greyed-out context-menu item is greyed out (2026-10-09). A disabled item gave no hint at all:
+// its tooltip never shows on touch, and "Tag..." / "Attach to Case" simply looked broken with no case
+// selected. Tapping the item now shows this (the page-wide data-disabled-reason handler).
+function ctxMenuDisabledReason() {
+    if (!activeCase) return 'Select or create a case first (the Case button in the top bar).';
+    if (activeCaseIsReadOnly()) return `This case is ${activeCase.case_status} and read-only - re-open it to change tags or exhibits.`;
+    if (CASE_STATUSES_CLOSED_TO_NEW_WORK.includes(activeCase.case_status)) return `This case is ${activeCase.case_status} - re-open it to save new output into it.`;
+    return 'Not available right now - another job may be running.';
+}
+
+function setCtxItemDisabled(btn, off) {
+    btn.disabled = off;
+    if (off) btn.dataset.disabledReason = ctxMenuDisabledReason();
+    else delete btn.dataset.disabledReason;
+}
+
 function updateContextToolbar(item) {
     CTX_MENU_REAL_FS_ITEMS.forEach(entry => {
         const btn = document.getElementById(entry.id);
         if (!btn) return;
         const applies = entry.visible(item);
         btn.style.display = applies ? '' : 'none';
-        btn.disabled = applies && entry.disabledWhen ? entry.disabledWhen() : false;
+        setCtxItemDisabled(btn, !!(applies && entry.disabledWhen ? entry.disabledWhen() : false));
     });
     autoHideEmptyCtxMenuSections('ctxMenuRealActions');
     if (!item.is_dir) refreshCtxMenuAlreadyRunBadges(item.path);
@@ -7402,7 +7472,10 @@ async function runSelectedHashdeep() {
         } else {
             showToast(`hashdeep failed: ${data.error}`, 'danger');
         }
-    } catch (err) {}
+    } catch (err) {
+        console.error('Hash Directory Tree failed:', err);
+        showToast('Hash Directory Tree failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
+    }
 }
 
 async function runSelectedSqliteDissect() {
@@ -7790,7 +7863,10 @@ async function runSelectedGeolocationExport() {
         } else {
             showToast(`Geolocation export failed: ${data.error}`, 'danger');
         }
-    } catch (err) {}
+    } catch (err) {
+        console.error('Geolocation export failed:', err);
+        showToast('Geolocation export failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
+    }
 }
 
 async function runTakeoutImport() {
@@ -7856,7 +7932,10 @@ async function runLeappGeolocationExport() {
         } else {
             showToast(`ALEAPP/iLEAPP location export failed: ${data.error}`, 'danger');
         }
-    } catch (err) {}
+    } catch (err) {
+        console.error('LEAPP location export failed:', err);
+        showToast('LEAPP location export failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
+    }
 }
 
 // Browser-artifact field->plain-label map (Chrome/Chromium + Firefox),
@@ -9373,13 +9452,29 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     live_collection_build: (status) => `Live Collection USB build finished: ${status}` + (
         status === 'Completed Successfully'
             ? '\n\nThe drive is ready - plug it into a live target machine and follow the README on the drive.'
-            : '\n\nCheck the status panel\'s log for what went wrong before using this drive.'
+            : '\n\nThe full log is in the Output console on the Forensic Acquisition tab - read what went wrong before using this drive.'
     ),
     live_collection_import: (status) => `Live collection import finished: ${status}\n\nCheck the case folder for the new live_collection_import_<timestamp> folder and its hash manifest.`,
     takeout_import: (status) => `Google Takeout import finished: ${status}\n\nSee File Views > Parsed Artifacts for Search/YouTube History and other imported data, and Reporting > Geolocation for any location data found.`,
     apple_export_import: (status) => `Apple Data & Privacy export import finished: ${status}\n\nSee File Views > Parsed Artifacts for Contacts/Calendars/Reminders and other imported data, and Reporting > Geolocation for any GPS-tagged photos found.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
+
+// What a job's final status means for the examiner (2026-10-09): every finish toast used to be
+// a blue 'info' that vanished in 4.5 s, a failed 6-hour image included.
+function jobStatusToastType(status) {
+    const st = String(status || '').toLowerCase();
+    if (/fail|error|refus|could not/.test(st)) return 'danger';
+    if (/stop|cancel|warning|partial|incomplete/.test(st)) return 'warning';
+    if (/^completed/.test(st)) return 'success';
+    return 'info';
+}
+// Formats with no entry in IMAGE_JOB_COMPLETION_MESSAGES (dd/e01/ddrescue/recovery/mobile...) still
+// announce how they ended - their only cue used to be a numeric badge that did not say pass or fail.
+function genericJobFinishedMessage(format, status) {
+    const name = String(format || 'job').replace(/_/g, ' ');
+    return `${name} finished: ${status}\n\nThe full log is in that tab's Output panel.`;
+}
 
 // --- Per-tab job-completion sidebar badges ----------------------------------------
 // This app has exactly one shared background job at a time (core/jobs.py's single
@@ -9401,7 +9496,8 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     // Mobile Forensics
     ios_backup: 'navBadgeMobile', android_pull: 'navBadgeMobile',
     android_backup: 'navBadgeMobile', android_bugreport: 'navBadgeMobile',
-    android_companion_sms: 'navBadgeMobile', android_companion_contacts_calllog: 'navBadgeMobile',
+    android_physical: 'navBadgeMobile', mtp_pull: 'navBadgeMobile',
+    android_companion_extraction: 'navBadgeMobile', auto_analyze_mobile: 'navBadgeMobile',
     // File Recovery (whole-device/whole-image tools reached from that tab)
     photorec: 'navBadgeRecovery', extundelete: 'navBadgeRecovery',
     foremost: 'navBadgeRecovery', scalpel: 'navBadgeRecovery', triage_scan: 'navBadgeRecovery',
@@ -9436,6 +9532,12 @@ function clearNavBadge(badgeId) {
 document.addEventListener('shown.bs.tab', (ev) => {
     const badgeId = Object.keys(NAV_BADGE_TO_TAB_ID).find((k) => NAV_BADGE_TO_TAB_ID[k] === ev.target?.id);
     if (badgeId) clearNavBadge(badgeId);
+    // The drive pickers on these tabs only ever refreshed on page load or a Scan on another tab, so a
+    // drive plugged in after load was missing with nothing saying to look again (2026-10-09). The light
+    // refresh skips the SMART query, which would spin the drives up on every tab switch.
+    if (['acquisition-tab', 'ddrescue-tab', 'live-collection-tab'].includes(ev.target?.id)) refreshDrives({ skipSmart: true });
+    // Reaching Mobile from a Home tile skips the sidebar button's own onclick refresh.
+    if (ev.target?.id === 'mobile-tab') refreshMobileDevices();
 });
 
 let explorerImagePath = null;
@@ -10084,6 +10186,7 @@ function renderExplorerImageEntryRow(container, entry, displayName) {
 
     tr.oncontextmenu = (ev) => {
         ev.preventDefault();
+        if (!tr.classList.contains('active')) tr.onclick();
         showExplorerImageContextMenu(ev, entry);
         return false;
     };
@@ -10570,7 +10673,10 @@ async function extractExplorerImageSelected() {
         });
         const data = await res.json();
         showToast(data.success ? data.message : `Extraction failed: ${data.error}`, data.success ? 'success' : 'danger');
-    } catch (err) {}
+    } catch (err) {
+        console.error('Extract failed:', err);
+        showToast('Extract failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
+    }
 }
 
 // A virtual in-image entry has no real on-disk path to attach directly, so
@@ -10627,7 +10733,10 @@ async function extractAndAttachExplorerImageSelected() {
         } else {
             showToast(`Extracted to ${extractData.path}, but attaching to the case failed: ${attachData.error}`, 'danger');
         }
-    } catch (err) {}
+    } catch (err) {
+        console.error('Extract and attach failed:', err);
+        showToast('Extract and attach failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
+    }
 }
 
 async function runImageBinwalk() {
@@ -10737,7 +10846,10 @@ async function runImageHashManifest() {
                 : `\n\nChecked against ${hashListIds.length} saved SHA256 hash list(s) - no matches.`;
         }
         showToast(msg, data.hash_list_match_count > 0 ? 'warning' : 'success');
-    } catch (err) {}
+    } catch (err) {
+        console.error('Hash manifest failed:', err);
+        showToast('Hash manifest failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
+    }
 }
 
 async function runImageYaraSweep() {
@@ -10771,7 +10883,10 @@ async function runImageYaraSweep() {
             ? `\n\n${data.matched_file_count} file(s) matched a rule - see the report for details.`
             : `\n\nNo matches.`;
         showToast(msg, data.matched_file_count > 0 ? 'warning' : 'success');
-    } catch (err) {}
+    } catch (err) {
+        console.error('YARA sweep failed:', err);
+        showToast('YARA sweep failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
+    }
 }
 
 async function runImageBrowserArtifactsParse() {
@@ -10963,7 +11078,10 @@ async function runImageRecoverDeleted() {
             msg += `\n\n${recoverGaps.notes.join('. ')}.`;
         }
         showToast(msg, recoverGaps.gaps.length || data.files_incomplete > 0 ? 'warning' : 'success');
-    } catch (err) {}
+    } catch (err) {
+        console.error('Recover deleted files failed:', err);
+        showToast('Recover deleted files failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
+    }
 }
 
 // --- Case Attachments Gallery (Reporting > Files) ---
@@ -15474,6 +15592,11 @@ function gatherCustomFieldValues() {
 let caseReportingFieldsEditing = [];
 
 async function loadCaseReportingSettings() {
+    // Unsaved edits stay on screen (2026-10-09). The Settings tab button calls this every time it is
+    // tapped, so editing the attestation text or a custom field, hopping to Reporting and back used to
+    // repaint the form from the server and silently discard the edit. Save clears the flag before
+    // its own reload, so a saved form still refreshes.
+    if (caseReportingSettingsDirty) return;
     // Custom template options must exist in the <select> BEFORE setting its
     // value below - otherwise assigning a 'custom:<id>' value the browser
     // doesn't recognize yet silently no-ops, leaving the select stuck on
@@ -15913,6 +16036,7 @@ function discardReportingEdits() {
     currentExaminersList = [];
     editingCaseNoteId = null;
     assigningCaseNoteId = null;
+    clearReportingDrafts();
 }
 
 function snapshotReportEditBase() {
@@ -17914,6 +18038,11 @@ function renderCaseNotesList() {
     renderNewCaseNoteLinkedFilesChecklist();
     const container = document.getElementById("caseNotesContainer");
     if (!container) return;
+    // loadCaseForEditing() re-renders this list on every return to the Reporting tab, after an attach,
+    // after Verify All Evidence... - which rebuilt an open edit box from the saved text and silently
+    // threw away what was typed (2026-10-09). Carry the live text across the rebuild.
+    const openEditBox = container.querySelector('textarea[data-note-edit]');
+    const keptEdit = openEditBox ? { id: openEditBox.dataset.noteEdit, value: openEditBox.value } : null;
 
     if (!currentLoadedReportData) {
         container.innerHTML = '<span class="text-subtle small italic">Load a case above, then open this tab to see and add case notes.</span>';
@@ -18013,7 +18142,8 @@ function renderCaseNotesList() {
             const textarea = document.createElement('textarea');
             textarea.className = 'form-control form-control-sm mb-1';
             textarea.rows = 3;
-            textarea.value = note.text || '';
+            textarea.dataset.noteEdit = note.note_id;
+            textarea.value = (keptEdit && keptEdit.id === note.note_id) ? keptEdit.value : (note.text || '');
             card.appendChild(textarea);
 
             const btnRow = document.createElement('div');
@@ -19405,22 +19535,26 @@ async function runExportReportInner() {
 
         if (res.ok) {
             const reportHash = res.headers.get('X-Report-Sha256');
+            const savedName = res.headers.get('X-Report-Filename');
             const blob = await res.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
             const ext = format === 'html' ? '.html' : '.pdf';
-            a.download = reportPath.split('/').pop().replace('.json', ext);
+            a.download = savedName || reportPath.split('/').pop().replace('.json', ext);
             document.body.appendChild(a);
             a.click();
             a.remove();
             if (statusEl) {
-                statusEl.textContent = reportHash ? `Export complete. SHA256: ${reportHash}` : 'Export complete.';
+                statusEl.textContent = savedName && reportHash
+                    ? `Exported ${savedName}. A copy stays on the station in this case's folder, with ${savedName}.sha256 beside it (the SHA-256 of the file's bytes): ${reportHash}. Your browser also downloaded a copy under the same name.`
+                    : (reportHash ? `Export complete. SHA256: ${reportHash}` : 'Export complete.');
                 statusEl.className = 'small text-success';
             }
         } else {
             const data = await res.json();
-            if (statusEl) { statusEl.textContent = `Export failed: ${data.error}`; statusEl.className = 'small text-danger'; }
+            // The server's message already starts "Report export failed:" - no doubled prefix.
+            if (statusEl) { statusEl.textContent = /^report export failed/i.test(data.error || '') ? data.error : `Export failed: ${data.error}`; statusEl.className = 'small text-danger'; }
         }
     } catch (err) {
         if (statusEl) { statusEl.textContent = `Export failed: ${err.message}`; statusEl.className = 'small text-danger'; }
@@ -20793,7 +20927,7 @@ async function setCaseStatus(c, newStatus) {
         const data = await res.json();
         if (!data.success) return showToast(`Could not update case status: ${data.error}`, 'danger');
 
-        showToast(archiving ? `"${c.case_number}" archived.` : `"${c.case_number}" re-opened (status: ${newStatus}).`, 'success');
+        showToast(archiving ? `"${c.case_number}" archived. It is read-only until you re-open it.` : `"${c.case_number}" re-opened (status: ${newStatus}).`, 'success');
 
         // If this exact case is the one currently loaded in Reporting,
         // keep it in sync too - only for the consolidated schema, whose
@@ -20848,7 +20982,8 @@ async function handleCaseStatusDropdownChange(selectEl) {
             selectEl.value = previousStatus;
             return;
         }
-        showToast(`Case status set to "${newStatus}".`, 'success');
+        showToast(`Case status set to "${newStatus}".` + (CASE_STATUSES_READ_ONLY.includes(newStatus)
+            ? ' The case is now read-only - re-open it to edit its report or add new work.' : ''), 'success', CASE_STATUSES_READ_ONLY.includes(newStatus) ? 9000 : undefined);
         // Keeps the case bar's finished-status badge, the loaded record and
         // the read-only lock in step - this dropdown is the other way a case
         // reaches (or leaves) Closed/Archived.
@@ -22171,6 +22306,15 @@ async function toggleWriteBlockForSelectedDrive() {
         const statusData = await statusRes.json();
         const newEnableState = !statusData.write_blocker_active;
 
+        // Turning protection OFF is the dangerous direction: one tap on the wrong drive used to
+        // make evidence writable with no question asked (2026-10-09).
+        if (!newEnableState && !(await appConfirm({
+            title: `Make ${drive} writable?`,
+            message: 'The write blocker comes OFF this drive and stays off until you turn it back on here. '
+                + 'Only do this for a blank destination or utility drive - never for evidence. The change is recorded in the Station Audit Log.',
+            confirmText: 'Unlock drive', cancelText: 'Keep protected',
+        }))) return;
+
         const res = await fetch('/api/toggle_write_block', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -22214,7 +22358,8 @@ function usbPortLabel(portClass) {
     return 'Unknown Port';
 }
 
-async function refreshDrives() {
+async function refreshDrives(opts) {
+    const smartDriveBefore = document.getElementById('driveSelect')?.value || '';
     try {
         const res = await fetch('/api/drives');
         const drivesData = await res.json();
@@ -22242,7 +22387,9 @@ async function refreshDrives() {
             // wording via data-placeholder (see acquisition.html/
             // recovery.html/drive_management.html), falling back to the
             // original text for any select that doesn't set one.
-            const placeholderText = selectEl.dataset.placeholder || '-- Choose Target Source Drive --';
+            const placeholderText = currentDrivesList.length === 0
+                ? '-- No drives detected: connect one, then tap Scan --'
+                : (selectEl.dataset.placeholder || '-- Choose Target Source Drive --');
             selectEl.replaceChildren(new Option(placeholderText, ''));
             currentDrivesList.forEach(dev => {
                 const opt = document.createElement("option");
@@ -22253,7 +22400,9 @@ async function refreshDrives() {
             });
             if (currentDrivesList.some((d) => d.device === prevValue)) selectEl.value = prevValue;
         });
-        checkSmartTelemetry();
+        // A light refresh only re-queries SMART when the selected drive is gone - so the panel never
+        // keeps describing a drive that was unplugged.
+        if (!(opts && opts.skipSmart) || (document.getElementById('driveSelect')?.value || '') !== smartDriveBefore) checkSmartTelemetry();
         refreshDriveManagementStatus();
         populateLiveCollectionDriveSelects();
     } catch (err) {
@@ -22275,7 +22424,9 @@ function populateLiveCollectionDriveSelects() {
         const sel = document.getElementById(id);
         if (!sel) return;
         const prevValue = sel.value;
-        sel.innerHTML = '<option value="">-- Select USB Drive --</option>';
+        sel.innerHTML = candidates.length
+            ? '<option value="">-- Select USB Drive --</option>'
+            : '<option value="">-- No USB drive detected: plug one in, then reopen this tab --</option>';
         candidates.forEach((dev) => {
             const opt = document.createElement('option');
             opt.value = dev.device;
@@ -22537,6 +22688,28 @@ async function startImportLiveCollection() {
     }
 }
 
+// The Target Source Drive dropdown's change handler (2026-10-09): SMART as before,
+// plus the encrypted-volume section that hangs off the same drive.
+function onAcquisitionDriveChange() {
+    checkSmartTelemetry();
+    const drive = document.getElementById("driveSelect")?.value || '';
+    if (encVolUnlockedSourcePath) {
+        if (drive && encVolUnlockedFromDrive && drive !== encVolUnlockedFromDrive) {
+            showToast(`A ${ENC_VOL_TYPE_LABELS[encVolActiveType] || 'encrypted'} volume from ${encVolUnlockedFromDrive} is still unlocked. Click Lock / Cleanup before imaging ${drive}.`, 'warning');
+        }
+    } else if (document.getElementById("encVolSourceToggle")?.checked) {
+        loadEncVolPartitions(); // the partition list belongs to the previous drive
+    }
+}
+
+let smartCheckToken = 0;
+function resetDriveTelemetryPanel() {
+    ['lblModel', 'lblMediaType', 'lblCapacity', 'lblSerial', 'lblTemp', 'lblReallocated', 'lblPending', 'lblPowerHours']
+        .forEach(id => { const el = document.getElementById(id); if (el) el.innerText = '--'; });
+    const badge = document.getElementById("lblHealthBadge");
+    if (badge) { badge.className = "badge bg-secondary"; badge.textContent = "UNCHECKED"; }
+}
+
 async function checkSmartTelemetry() {
     const driveSelect = document.getElementById("driveSelect");
     const targetDrive = driveSelect ? driveSelect.value : "";
@@ -22544,7 +22717,12 @@ async function checkSmartTelemetry() {
 
     const devPathLbl = document.getElementById("lblDevicePath");
     if (devPathLbl) devPathLbl.innerText = targetDrive || "--";
+    // Clear the previous drive's model/serial/health first (2026-10-09). They used
+    // to stay on screen next to the NEW path - and after an unplug, next to "--" -
+    // and an examiner transcribes the serial from this panel.
+    resetDriveTelemetryPanel();
     if (!targetDrive) return;
+    const myCheck = ++smartCheckToken; // a slower answer for an earlier pick must not overwrite this one
 
     try {
         const res = await fetch('/api/smart_check', {
@@ -22553,6 +22731,7 @@ async function checkSmartTelemetry() {
             body: JSON.stringify({ drive: targetDrive })
         });
         const data = await res.json();
+        if (myCheck !== smartCheckToken) return;
 
         if (data.success) {
             if (document.getElementById("lblModel")) document.getElementById("lblModel").innerText = data.vendor_model || "--";
@@ -22756,6 +22935,7 @@ async function unlockEncVol() {
         }
         encVolActiveMountId = data.mount_id;
         encVolUnlockedSourcePath = data.source_path;
+        encVolUnlockedFromDrive = document.getElementById("driveSelect")?.value || '';
         encVolActiveType = type;
         if (status) status.textContent = `Unlocked. Acquisition will image the decrypted volume (not ${partition} directly) as long as this stays unlocked. Click Lock / Cleanup when finished.`;
         const lockBtn = document.getElementById("btnLockEncVol");
@@ -22783,6 +22963,7 @@ async function lockEncVol() {
         }
         encVolActiveMountId = null;
         encVolUnlockedSourcePath = null;
+        encVolUnlockedFromDrive = '';
         encVolActiveType = null;
         if (status) status.textContent = "Locked and unmounted. Select the encrypted partition and Unlock again if needed.";
         const lockBtn = document.getElementById("btnLockEncVol");
@@ -23255,6 +23436,21 @@ async function startAcquisition() {
     // of this code needed for 2 separate variable trios.
     const useUnlockedSource = fmt !== 'ddrescue' && !!encVolUnlockedSourcePath;
     const source = useUnlockedSource ? encVolUnlockedSourcePath : rawSource;
+    if (useUnlockedSource) {
+        // An unlock belongs to the ONE drive it was made from (2026-10-09). Unlock
+        // drive A, pick drive B, press Start, and this used to image A's
+        // decrypted volume while the screen showed B's path and SMART data.
+        const unlockLabel = ENC_VOL_TYPE_LABELS[encVolActiveType] || 'encrypted';
+        if (encVolUnlockedFromDrive && encVolUnlockedFromDrive !== rawSource) {
+            return showToast(`The unlocked ${unlockLabel} volume belongs to ${encVolUnlockedFromDrive}, but ${rawSource} is selected. Click Lock / Cleanup first, or select ${encVolUnlockedFromDrive} again.`, 'danger');
+        }
+        // The "Also unlock" switch only hides the controls - the unlock outlives it.
+        if (!document.getElementById("encVolSourceToggle")?.checked && !await appConfirm({
+            title: 'Image the decrypted volume?',
+            message: `A ${unlockLabel} volume from ${encVolUnlockedFromDrive || rawSource} is still unlocked, so this will image the decrypted data, not the raw drive. To image the raw drive instead, turn on "Also unlock this volume now" and click Lock / Cleanup first.`,
+            confirmText: 'Image decrypted volume',
+        })) return;
+    }
 
     const metadata = {
         case_number: document.getElementById("caseNum")?.value || "UNASSIGNED",
@@ -23716,9 +23912,13 @@ async function inspectDdrescueMapfile() {
 }
 
 async function stopAcquisition() {
+    // One shared job runs station-wide, and Stop is on several tabs - name what it will stop.
+    const job = currentJobSnapshot.active ? currentJobSnapshot : null;
     if (!await appConfirm({
-        title: 'Stop the running job?',
-        message: 'The running tool is stopped now. Anything it already wrote is kept but is INCOMPLETE - it is not a verified result.\n\n'
+        title: job ? `Stop the running ${job.format} job?` : 'Stop the running job?',
+        message: (job && job.pct !== null ? `It is about ${job.pct.toFixed(0)}% done.\n\n` : '')
+            + 'The running tool is stopped now. Anything it already wrote is kept but is INCOMPLETE - it is not a verified result. '
+            + 'Starting it again with the same Evidence ID is refused while that partial output exists - use a new Evidence ID.\n\n'
             + 'A phone extraction still restores the device afterwards (default SMS app, permissions, collector app): '
             + 'leave the phone connected until the log shows the restore has finished.',
         confirmText: 'Stop job', cancelText: 'Keep running',
@@ -23735,7 +23935,8 @@ async function stopAcquisition() {
             showToast(`Stop failed: ${data.error}`, 'danger');
         }
     } catch (err) {
-        showToast('Stop failed - see console.', 'danger');
+        console.error('Stop failed:', err);
+        showToast(`Stop failed: ${err.message || 'the request did not complete'} - check the job is still running, then retry.`, 'danger');
     }
 }
 
@@ -23743,15 +23944,26 @@ async function stopAcquisition() {
 let mobileIosDevices = [];
 let mobileAndroidDevices = [];
 
+let mobileRefreshInFlight = false;
 async function refreshMobileDevices() {
+    // Each device can take several 15 s probes, and the tab button, the tab-shown listener and the
+    // Refresh button can all ask at once - one scan at a time (2026-10-09).
+    if (mobileRefreshInFlight) return;
+    mobileRefreshInFlight = true;
+    const refreshBtn = document.getElementById("btnMobileRefresh");
+    const refreshBtnHtml = refreshBtn ? refreshBtn.innerHTML : '';
+    if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = 'Scanning...'; }
     try {
         const res = await fetch('/api/mobile/devices');
         const data = await res.json();
         mobileIosDevices = data.ios || [];
         mobileAndroidDevices = data.android || [];
+        const tools = data.tools || {};
 
         const iosSelect = document.getElementById("mobileIosSelect");
         if (iosSelect) {
+            // Keep the examiner's pick across the rebuild - it used to flip back to the first device.
+            const prevIos = iosSelect.value;
             iosSelect.innerHTML = '';
             if (mobileIosDevices.length === 0) {
                 iosSelect.innerHTML = '<option value="">No devices found - tap Refresh</option>';
@@ -23762,12 +23974,20 @@ async function refreshMobileDevices() {
                     opt.textContent = dev.trusted ? `${dev.name} (${dev.model})` : `${dev.udid} (NOT TRUSTED)`;
                     iosSelect.appendChild(opt);
                 });
+                if (mobileIosDevices.some(d => d.udid === prevIos)) iosSelect.value = prevIos;
             }
             onMobileIosSelect();
+            if (mobileIosDevices.length === 0) {
+                const iosStatus = document.getElementById("mobileIosStatus");
+                if (iosStatus) iosStatus.innerText = tools.idevice_id === false
+                    ? 'libimobiledevice (idevice_id) is not installed on this station, so iPhones cannot be detected.'
+                    : 'No iPhone/iPad detected. Unlock it, plug it in with a data cable (not a charge-only one), tap "Trust" on the device if asked, then Refresh.';
+            }
         }
 
         const androidSelect = document.getElementById("mobileAndroidSelect");
         if (androidSelect) {
+            const prevAndroid = androidSelect.value;
             androidSelect.innerHTML = '';
             if (mobileAndroidDevices.length === 0) {
                 androidSelect.innerHTML = '<option value="">No devices found - tap Refresh</option>';
@@ -23778,10 +23998,23 @@ async function refreshMobileDevices() {
                     opt.textContent = dev.authorized ? `${dev.serial} (${dev.model})` : `${dev.serial} (${dev.state.toUpperCase()})`;
                     androidSelect.appendChild(opt);
                 });
+                if (mobileAndroidDevices.some(d => d.serial === prevAndroid)) androidSelect.value = prevAndroid;
             }
             onMobileAndroidSelect();
+            if (mobileAndroidDevices.length === 0) {
+                const androidStatus = document.getElementById("mobileAndroidStatus");
+                if (androidStatus) androidStatus.innerText = tools.adb === false
+                    ? 'adb is not installed on this station, so Android phones cannot be detected.'
+                    : 'No Android phone detected. On the phone: enable Developer options > USB debugging, unlock it, set the USB mode to File Transfer, and try another cable or port - then Refresh. If USB debugging is not possible, use the MTP Fallback below.';
+            }
         }
-    } catch (err) {}
+    } catch (err) {
+        console.error('Device scan failed:', err);
+        showToast(`Could not scan for devices: ${err.message || 'request failed'}. Check the station is reachable, then Refresh.`, 'danger');
+    } finally {
+        mobileRefreshInFlight = false;
+        if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.innerHTML = refreshBtnHtml; }
+    }
 }
 
 // Single Start button is shared between platforms - only enabled when the
@@ -24020,7 +24253,14 @@ function onMobileAndroidSelect() {
 
     const statusEl = document.getElementById("mobileAndroidStatus");
     if (statusEl) {
-        statusEl.innerText = (dev && !dev.authorized) ? 'Device connected but not authorized yet - approve the USB debugging prompt on the device, then Refresh.' : '';
+        // The advice depends on WHICH not-ready state adb reported - "approve the prompt" is wrong for offline.
+        const androidStateHelp = {
+            unauthorized: 'Device connected but not authorized yet - approve the USB debugging prompt on the device (tick "Always allow"), then Refresh.',
+            offline: 'The device is listed but offline - unplug and re-plug it, unlock it, then Refresh. If that does not help, try another cable or port.',
+        };
+        statusEl.innerText = (dev && !dev.authorized)
+            ? (androidStateHelp[dev.state] || `The device reports "${dev.state}", so it is not usable yet. Re-plug it, unlock it and check USB debugging, then Refresh. ("no permissions" means this station has no USB rule for that phone.)`)
+            : '';
     }
 
     // Switching devices while Physical mode is already selected should
@@ -24129,8 +24369,21 @@ async function cleanupCompanionUnifiedExtraction() {
             body: JSON.stringify({ serial: dev.serial }),
         });
         const data = await res.json();
-        if (!data.success) return showToast(`Cleanup failed: ${data.error}`, 'danger');
-        showToast('Device state cleanup complete.', 'success');
+        if (!data.success) return showToast(`Cleanup failed: ${data.error}`, 'danger', 15000);
+        // Say what actually happened - this is the one action whose job is to undo changes made to a
+        // device, and it used to give the same reassurance whatever the phone's state was.
+        const r = data.results || {};
+        const notes = [];
+        if (r.sms_role_note) notes.push(r.sms_role_note);
+        if ('sms_role_restored_to' in r && r.sms_role_restored_to === null) notes.push('The phone\'s previous default SMS app could NOT be restored - set one on the phone (Settings > Apps > Default apps).');
+        if ('sms_role_removed' in r && r.sms_role_removed === false) notes.push('The collector could NOT be removed as the default SMS app - check the phone\'s Default apps setting.');
+        if (notes.length) {
+            showToast('Cleanup finished, but needs your attention:\n' + notes.join('\n'), 'warning', 30000);
+        } else {
+            showToast('Cleanup finished: ' + (r.uninstalled
+                ? 'permissions revoked and the collector app uninstalled.'
+                : 'the collector app was not installed on the phone, so there was nothing to remove.'), 'success', 10000);
+        }
     } catch (err) {
         showToast('Request failed.', 'danger');
     }
@@ -24233,6 +24486,16 @@ async function startIosBackup() {
     const encrypt_password = encryptEnabled ? (document.getElementById("mobileIosEncryptPassword")?.value || '') : '';
 
     if (encryptEnabled && !encrypt_password) return showToast("Enter an encryption password, or turn off the encrypted backup toggle.", 'warning');
+
+    // Encrypted backup changes the PHONE, and the result is harder to read later (2026-10-09). Both facts
+    // used to surface only afterwards - in the log and the report - so say them before anything is done.
+    if (encryptEnabled && !await appConfirm({
+        title: 'Turn on backup encryption on this iPhone?',
+        message: 'This changes a setting on the device that STAYS on after the backup finishes. It is recorded in the report as a device modification.\n\n'
+            + 'Write the password down - without it the backup cannot be opened. This station\'s built-in SMS, Contacts and Calls parser reads only UNENCRYPTED iOS backups, '
+            + 'so an encrypted one has to be opened with its password in another tool (for example MVT).',
+        confirmText: 'Turn on and back up', cancelText: 'Cancel',
+    })) return;
 
     const metadata = {
         case_number: document.getElementById("mobileCaseNum")?.value || "UNASSIGNED",
@@ -25492,10 +25755,31 @@ async function gitUpdateApp() {
         if (data.success) {
             const badge = document.getElementById('updateAvailableBadge');
             if (badge) badge.style.display = 'none';
+            // This page is still running the OLD main.js against the new backend until it reloads
+            // (2026-10-09). Wait for the service to come back, then reload it.
+            if (data.restarting) waitForServiceThenReload();
         }
     } catch (err) {
         diagResult("Update App (Git Pull)", "[REQUEST FAILED]");
     }
+}
+
+// After a restart this page must reload to pick up the new front-end code. Reloads once the
+// service has gone down and come back (or, failing to see it go down, after 20 s). Other open
+// browsers and the touchscreen are not reloaded by this - the toast says so.
+async function waitForServiceThenReload() {
+    showToast('Update installed. Waiting for the service to restart, then this page will reload. Any OTHER browser or the touchscreen showing this app needs a reload too (Settings > Service Controls & Diagnostics > Reload Touch Kiosk).', 'info', 15000);
+    const started = Date.now();
+    let sawDown = false;
+    while (Date.now() - started < 120000) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+            const r = await fetch('/api/whoami', { cache: 'no-store' });
+            if (r.ok && (sawDown || Date.now() - started > 20000)) { location.reload(); return; }
+            if (!r.ok) sawDown = true;
+        } catch (err) { sawDown = true; }
+    }
+    showToast('The service did not answer after the update - reload this page manually.', 'warning');
 }
 
 // --- Update-available check + notification ---------------------------------------
@@ -25684,10 +25968,18 @@ async function fetchNetworkInterfaces() {
     }
 }
 
+let progressPolledOnce = false;
+let currentJobSnapshot = { active: false, format: '', pct: null }; // what Stop is about to stop
+function jobProgressPhrase(job) {
+    return job && job.pct !== null && job.pct !== undefined ? ` - about ${job.pct.toFixed(0)}% done` : '';
+}
 async function fetchProgress() {
     try {
         const res = await fetch('/api/progress');
         const data = await res.json();
+        // pct is null for a tool with no known total (a carve) - "about 0% done" would be a lie.
+        currentJobSnapshot = { active: !!data.active, format: String(data.format || '').replace(/_/g, ' '),
+                               pct: data.total_bytes > 0 ? (data.progress_percent || 0) : null };
 
         const currentSpeed = data.speed_mbps || 0;
         
@@ -25709,7 +26001,12 @@ async function fetchProgress() {
             }
 
             if (document.getElementById("recoveryProgressBar")) document.getElementById("recoveryProgressBar").style.width = `${data.progress_percent}%`;
-            if (document.getElementById("recoveryProgressPct")) document.getElementById("recoveryProgressPct").innerText = `${data.progress_percent.toFixed(1)}%`;
+            // Carving tools cannot know a total up front, so "0.0%" for hours looked frozen. Show
+            // what they have written so far instead (2026-10-09).
+            const recoveryNoTotal = !(data.total_bytes > 0);
+            if (document.getElementById("recoveryProgressPct")) document.getElementById("recoveryProgressPct").innerText = recoveryNoTotal ? '--' : `${data.progress_percent.toFixed(1)}%`;
+            if (document.getElementById("recoveryBytesVal")) document.getElementById("recoveryBytesVal").innerText = recoveryNoTotal
+                ? `${imgFormatBytes(data.transferred_bytes || 0)} written so far - this tool cannot know the total in advance, so there is no percentage.` : '';
             if (document.getElementById("recoveryJobStatus")) document.getElementById("recoveryJobStatus").innerText = `Status: ${data.status}`;
 
             const recoveryLogOutput = document.getElementById("recoveryLogOutput");
@@ -25832,19 +26129,25 @@ async function fetchProgress() {
         // which could hide a "Completed Successfully"/"Failed"/"Stopped"
         // result before it's ever seen - this catches that active->inactive
         // transition, per job format, and surfaces it once.
-        const completionMsgFn = IMAGE_JOB_COMPLETION_MESSAGES[data.format];
-        if (completionMsgFn) {
-            if (lastImageJobActiveByFormat[data.format] && !data.active) {
-                showToast(completionMsgFn(data.status), 'info');
-            }
-            lastImageJobActiveByFormat[data.format] = data.active;
+        const completionMsgFn = IMAGE_JOB_COMPLETION_MESSAGES[data.format]
+            || ((status) => genericJobFinishedMessage(data.format, status));
+        if (lastImageJobActiveByFormat[data.format] && !data.active) {
+            const finishType = jobStatusToastType(data.status);
+            showToast(completionMsgFn(data.status), finishType, finishType === 'danger' ? 30000 : (finishType === 'warning' ? 15000 : 10000));
         }
+        lastImageJobActiveByFormat[data.format] = data.active;
 
         // Same active->inactive transition, generalized across every job format (not
         // just the in-image ones above) to bump that job's owning tab's sidebar badge -
         // but only when the examiner isn't already looking at that tab, since there's
         // nothing to notify them of if they watched it finish themselves.
-        if (lastGlobalJobActive && !data.active) {
+        // A job that already ended before this page loaded (2026-10-09): the server still
+        // holds its final status and log, but with no active->inactive transition to
+        // observe, a remote analyst returning the next day to a failed 5-hour image saw
+        // "IDLE" and a blank console. The first poll renders that settled state once.
+        const settledOnLoad = !progressPolledOnce && !data.active && !!data.status && data.status !== 'IDLE';
+        progressPolledOnce = true;
+        if ((lastGlobalJobActive || settledOnLoad) && !data.active) {
             // The status/progress/log fields above only update while data.active
             // is true - a fast job (e.g. a small Logical Acquisition, now sharing
             // this same Output panel as of 2026-08-27) can start and finish
@@ -25865,6 +26168,8 @@ async function fetchProgress() {
             if (document.getElementById("recoveryJobStatus")) document.getElementById("recoveryJobStatus").innerText = `Status: ${data.status}`;
             if (document.getElementById("recoveryProgressBar")) document.getElementById("recoveryProgressBar").style.width = `${data.progress_percent || 0}%`;
             if (document.getElementById("recoveryProgressPct")) document.getElementById("recoveryProgressPct").innerText = `${(data.progress_percent || 0).toFixed(1)}%`;
+            if (document.getElementById("recoveryBytesVal")) document.getElementById("recoveryBytesVal").innerText = data.transferred_bytes > 0 && !(data.total_bytes > 0)
+                ? `${imgFormatBytes(data.transferred_bytes)} written.` : '';
             const finalRecoveryLogOutput = document.getElementById("recoveryLogOutput");
             if (finalRecoveryLogOutput && data.log) {
                 finalRecoveryLogOutput.innerText = data.log;
@@ -25881,7 +26186,7 @@ async function fetchProgress() {
                 finalMobileLogOutput.scrollTop = finalMobileLogOutput.scrollHeight;
             }
 
-            const badgeId = JOB_FORMAT_TO_NAV_BADGE[lastGlobalJobFormat];
+            const badgeId = lastGlobalJobActive ? JOB_FORMAT_TO_NAV_BADGE[lastGlobalJobFormat] : null; // transition only, never on a plain reload
             if (badgeId) {
                 const ownerTabId = NAV_BADGE_TO_TAB_ID[badgeId];
                 const activeTabBtn = document.querySelector('#forensicAppTabs .nav-link.active');
@@ -25892,7 +26197,7 @@ async function fetchProgress() {
             // Same transition, refreshing the Guided Workflow checklist (now under Help) so a
             // job started elsewhere and left to finish while looking at it updates without
             // waiting for its own slower 20s poll.
-            if (document.getElementById('help-tab')?.classList.contains('active') && document.getElementById('helpNavWorkflow')?.classList.contains('active')) {
+            if (lastGlobalJobActive && document.getElementById('help-tab')?.classList.contains('active') && document.getElementById('helpNavWorkflow')?.classList.contains('active')) {
                 refreshGuidedWorkflow();
             }
         }
@@ -25908,6 +26213,7 @@ async function fetchProgress() {
             const typeLabel = ENC_VOL_TYPE_LABELS[encVolActiveType] || 'encrypted';
             encVolActiveMountId = null;
             encVolUnlockedSourcePath = null;
+            encVolUnlockedFromDrive = '';
             encVolActiveType = null;
             encVolMountConsumedByJob = false;
             const lockBtn = document.getElementById("btnLockEncVol");
@@ -25928,6 +26234,17 @@ async function fetchProgress() {
         // acquisition format already does, so no separate handling is needed.
         if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = data.active;
         if (document.getElementById("btnRecoveryStart")) document.getElementById("btnRecoveryStart").disabled = data.active;
+        // A Start button disabled because ANOTHER job holds the one shared slot says so when
+        // tapped (data-disabled-reason) - it used to be dead with no explanation.
+        const busyWhy = data.active
+            ? `Another job is running (${currentJobSnapshot.format}${jobProgressPhrase(currentJobSnapshot)}). Wait for it to finish, or stop it first.`
+            : null;
+        ['startBtn', 'btnRecoveryStart', 'btnLiveCollectionImport', 'btnMobileStart', 'btnCompanionExtractionStart', 'btnMtpPullStart'].forEach(id => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (busyWhy) el.dataset.disabledReason = busyWhy;
+            else if (el.dataset.disabledReason && el.dataset.disabledReason.startsWith('Another job is running')) delete el.dataset.disabledReason;
+        });
         if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = !data.active;
         if (document.getElementById("btnRecoveryStop")) document.getElementById("btnRecoveryStop").disabled = !data.active;
         if (document.getElementById("btnMobileStop")) document.getElementById("btnMobileStop").disabled = !data.active;
@@ -26051,3 +26368,27 @@ function initHelpTooltips() {
         new bootstrap.Tooltip(triggerEl, { trigger: 'hover focus', placement: triggerEl.getAttribute('data-bs-placement') || 'top' });
     });
 }
+
+
+// The long synchronous File Explorer actions (2026-10-09). Each is one request that can run for minutes
+// with no job slot and no progress, and nothing stopped a second tap starting a duplicate walk. A second
+// tap now says it is already running, and the first says it has started.
+(function guardLongFileExplorerActions() {
+    const LONG_ACTIONS = {
+        runSelectedHashdeep: 'Hash Directory Tree', runSelectedGeolocationExport: 'Geolocation export',
+        runLeappGeolocationExport: 'LEAPP location export', runImageHashManifest: 'Hash manifest',
+        runImageYaraSweep: 'YARA sweep', runImageRecoverDeleted: 'Recover deleted files',
+    };
+    Object.entries(LONG_ACTIONS).forEach(([fnName, label]) => {
+        const original = window[fnName];
+        if (typeof original !== 'function') return;
+        let running = false;
+        window[fnName] = async function (...args) {
+            if (running) { showToast(`${label} is already running - wait for it to finish.`, 'warning'); return; }
+            running = true;
+            showToast(`${label} started - this can take several minutes on a large source. Keep this page open.`, 'info', 6000);
+            try { return await original.apply(this, args); }
+            finally { running = false; }
+        };
+    });
+})();

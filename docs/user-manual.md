@@ -743,9 +743,10 @@ to remove a name added by mistake.
 Marking a case **Closed** or **Archived** means it stops accepting new evidence: starting an
 acquisition, a recovery job, or a mobile extraction whose destination is inside that case is
 refused, and the active-case button in the top bar shows the status so you can see why. Re-open the
-case (Case Manager, or the Status dropdown) to work on it again. Everything that is legitimately
-part of *finishing* a case still works on a closed one — verifying hashes, adding case notes,
-exporting the report, and exporting the case bundle.
+case (Case Manager, or the Status dropdown) to work on it again. A closed or archived case is also
+**read-only**: its Report Narrative, Case Details, case notes, exhibits and tags can't be changed
+until it is re-opened. Everything that is legitimately part of *finishing* a case still works —
+verifying hashes, logging a custody hand-off, exporting the report, and exporting the case bundle.
 
 Most of what you do here saves immediately (Case Notes, the Physical Custody Log, tagging,
 attaching a file from File Explorer's own right-click menu, and an exhibit's caption — editable

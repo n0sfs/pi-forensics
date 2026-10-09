@@ -159,3 +159,17 @@ def test_custom_template_saved_without_signoff_keeps_it_off():
     record, _ = reporting._custom_report_template_from_payload(
         {"name": "New", "sections": [{"key": "signoff", "enabled": True}]})
     assert {s["key"]: s for s in record["sections"]}["signoff"]["enabled"] is True
+
+
+def test_export_download_keeps_the_saved_files_own_name(client, evidence_root):
+    # 2026-10-09: the browser copy used to be renamed <case>.html, which never matched the name written
+    # inside the .sha256 sidecar the station keeps beside the saved file.
+    folder, report = _case(evidence_root)
+    res = client.post("/api/export_report", json={"report_path": report, "format": "html"})
+    assert res.status_code == 200
+    name = res.headers["X-Report-Filename"]
+    assert os.path.isfile(os.path.join(folder, name))
+    sidecar = os.path.join(folder, name + ".sha256")
+    assert os.path.isfile(sidecar)
+    assert name in open(sidecar).read()
+    assert name != "2026-RPT_case.html"

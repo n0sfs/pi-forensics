@@ -223,6 +223,14 @@
         /* Touchscreens - the kiosk: 44px targets, the usual minimum for a
            finger (was 38px, and ~26px for .btn-xs). A mouse keeps the dense
            layout. */
+        /* Help tooltips (2026-10-09): Bootstrap caps them at 200px, so the 500-800 character
+           explanations in Reporting became a ~30-line column taller than the 1024x600 kiosk screen. */
+        .tooltip { --bs-tooltip-max-width: min(420px, 92vw); }
+        .tooltip-inner { text-align: left; }
+        @media (pointer: coarse) {
+            /* the 12px (i) help icons: a finger-sized hit area without moving the layout */
+            i.bi[data-bs-toggle="tooltip"] { padding: .7rem; margin: -.7rem; }
+        }
         @media (pointer: coarse) {
             .btn, .btn-sm, .btn-xs { min-height: 44px; min-width: 44px; }
             .form-control, .form-select { min-height: 44px; }
@@ -231,7 +239,8 @@
         /* A disabled button that says WHY (data-disabled-reason) still receives the tap,
            so the reason can be shown - Bootstrap sets pointer-events: none,
            and a touchscreen has no hover for a tooltip anyway. */
-        .btn:disabled[data-disabled-reason], .btn.disabled[data-disabled-reason] { pointer-events: auto; cursor: not-allowed; }
+        .btn:disabled[data-disabled-reason], .btn.disabled[data-disabled-reason],
+        .dropdown-item:disabled[data-disabled-reason] { pointer-events: auto; cursor: not-allowed; }
         .form-check-label { color: var(--text-bright) !important; font-weight: 600; }
         .form-check-input { background-color: var(--bg-dark); border-color: #64748b; }
         .form-check-input:checked { background-color: var(--accent-blue); border-color: var(--accent-cyan); }

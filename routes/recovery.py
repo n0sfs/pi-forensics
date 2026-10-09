@@ -22,7 +22,7 @@ from core.priv import priv_argv
 from core.auth import requires_auth, requires_permission
 from core.paths import (safe_path, log_chain_of_custody, is_valid_block_device, sanitize_case_slug,
                         case_status_blocking_new_work, is_bulk_tool_output_dir,
-                        case_consolidated_path)
+                        case_consolidated_path, destination_is_on_source_device)
 from core.config import EVIDENCE_ROOT, SCALPEL_CONF_PATH
 from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
@@ -700,6 +700,21 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
         clear_active_proc()
 
 
+def _recovery_destination_problem(dest_path, source):
+    """Why a recovery destination must be refused, or None (2026-10-09).
+    Acquisition already refuses both; recovery did not, so the default `/mnt`
+    (the station's own SD card when no share is mounted there) took a
+    multi-hour carve until the card was full, and a destination on the very
+    drive being carved overwrote the deleted data being recovered."""
+    if dest_path == EVIDENCE_ROOT:
+        return (f"Choose a case folder (or another folder) inside {EVIDENCE_ROOT} as the destination - "
+                f"recovered files are never written straight into {EVIDENCE_ROOT}.")
+    if is_valid_block_device(source) and destination_is_on_source_device(dest_path, source):
+        return (f"The destination {dest_path} is on {source} itself - recovered files can never be written "
+                f"onto the drive being recovered from. Choose a destination on different storage.")
+    return None
+
+
 # --- File Carving / Recovery (PhotoRec) ---
 @recovery_bp.route('/api/recovery/start_photorec', methods=['POST'])
 @requires_auth
@@ -743,6 +758,10 @@ def start_photorec():
     if not dest_path:
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    _dest_problem = _recovery_destination_problem(dest_path, source)
+    if _dest_problem:
+        update_job(active=False)
+        return jsonify({"error": _dest_problem}), 400
 
     # sanitize_case_slug(), not a raw metadata.get() - see the matching
     # comment in routes/acquisition.py's start_logical_acquisition() for why
@@ -836,6 +855,10 @@ def start_extundelete():
     if not dest_path:
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    _dest_problem = _recovery_destination_problem(dest_path, source)
+    if _dest_problem:
+        update_job(active=False)
+        return jsonify({"error": _dest_problem}), 400
 
     case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
@@ -927,6 +950,10 @@ def start_foremost():
     if not dest_path:
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    _dest_problem = _recovery_destination_problem(dest_path, source)
+    if _dest_problem:
+        update_job(active=False)
+        return jsonify({"error": _dest_problem}), 400
 
     case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
@@ -1017,6 +1044,10 @@ def start_scalpel():
     if not dest_path:
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    _dest_problem = _recovery_destination_problem(dest_path, source)
+    if _dest_problem:
+        update_job(active=False)
+        return jsonify({"error": _dest_problem}), 400
 
     case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
@@ -1112,6 +1143,10 @@ def start_triage_scan():
     if not dest_path:
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    _dest_problem = _recovery_destination_problem(dest_path, source)
+    if _dest_problem:
+        update_job(active=False)
+        return jsonify({"error": _dest_problem}), 400
 
     case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'

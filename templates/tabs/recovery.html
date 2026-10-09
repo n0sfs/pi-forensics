@@ -42,6 +42,7 @@
                                                     <input type="text" id="recoveryDest" class="form-control" value="/mnt">
                                                     <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'recoveryDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                                 </div>
+                                                <div class="small text-warning mt-1"><i class="bi bi-exclamation-triangle me-1"></i>Don't recover straight into <code>/mnt</code> - Browse to a case folder (or another drive), so the recovered files land in their own folder and never on the station's own SD card or the drive being recovered from.</div>
                                             </div>
 
                                             <div id="recoveryMapfileRow" class="mb-2" style="display:none;">
@@ -81,6 +82,7 @@
                                             <div class="progress bg-secondary mb-2" style="height: 10px;">
                                                 <div id="recoveryProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
                                             </div>
+                                            <div id="recoveryBytesVal" class="small text-subtle mb-2"></div>
                                             <label class="form-label fw-bold text-light small mb-1">Terminal / Output:</label>
                                             <pre id="recoveryLogOutput" class="log-window" style="height: clamp(180px, 45vh, 420px);">[Recovery tools idle. Select a tool and source above, then Start.]</pre>
                                             <div id="recoveryStructuredOutput" class="font-monospace small border border-secondary rounded-2 p-2" style="display:none; height: clamp(180px, 45vh, 420px); overflow-y: auto; background-color: #090b10;"></div>

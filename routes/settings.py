@@ -2210,7 +2210,7 @@ def _install_tls_pair(tmp_cert_path, tmp_key_path, coc_action, coc_details=None)
         return jsonify({"success": True, "message": f"Certificate installed, but reloading nginx failed: "
                          f"{reload_res.stderr.strip()}. Reload it manually."})
 
-    return jsonify({"success": True, "message": "Certificate installed and nginx reloaded successfully."})
+    return jsonify({"success": True, "message": "Certificate installed and nginx reloaded successfully. Every device that trusted the old certificate must download and trust this new one (Settings > Security > Trust This Certificate), or its browser will show a certificate error."})
 
 @settings_bp.route('/api/system/tls_upload', methods=['POST'])
 @requires_auth
