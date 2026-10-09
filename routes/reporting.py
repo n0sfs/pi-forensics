@@ -7751,6 +7751,9 @@ def export_report():
         resp = send_file(io.BytesIO(content_bytes), as_attachment=True,
                          download_name=os.path.basename(out_path), mimetype=mimetype)
         resp.headers['X-Report-Sha256'] = digest
+        # The saved file's own timestamped name, so the browser copy keeps the name its .sha256
+        # sidecar records (it used to be renamed to <case>.pdf, which never matched the sidecar).
+        resp.headers['X-Report-Filename'] = os.path.basename(out_path)
         return resp
     except Exception as e:
         return jsonify({"error": f"Report export failed: {str(e)}"}), 500

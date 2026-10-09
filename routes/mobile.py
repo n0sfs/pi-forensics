@@ -349,6 +349,7 @@ def execution_worker_ios_backup(udid, dest_dir, encrypt_password, report_file_pa
             final_size = poll_directory_size(udid_backup_dir)
             update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
             append_log(f"[+] iOS backup completed successfully. Backup size: {final_size} bytes")
+            append_log(f"[+] Saved to: {udid_backup_dir}")
             report_data["acquisition_status"] = "COMPLETED"
             report_data["output_size_bytes"] = final_size
         elif snapshot_job()["status"] != "Stopped":
@@ -1189,6 +1190,7 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
             final_size = poll_directory_size(output_path)
             update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
             append_log(f"[+] Android {mode} completed successfully. Size: {final_size} bytes")
+            append_log(f"[+] Saved to: {output_path}")
             report_data["acquisition_status"] = "COMPLETED"
             report_data["output_size_bytes"] = final_size
 
@@ -1351,6 +1353,7 @@ def execution_worker_android_physical(serial, target, engine, hashes, total_byte
         if downstream_proc.returncode in (0, 2) and not dc3dd_self_reported_failure and not upstream_failed:
             update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
             append_log("[+] Physical acquisition completed successfully.")
+            append_log(f"[+] Saved to: {out_file}")
             report_data["acquisition_status"] = "COMPLETED"
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
@@ -1388,7 +1391,10 @@ def execution_worker_android_physical(serial, target, engine, hashes, total_byte
 @mobile_bp.route('/api/mobile/devices', methods=['GET'])
 @requires_auth
 def get_mobile_devices():
-    return jsonify({"ios": list_ios_devices(), "android": list_android_devices()})
+    # "tools" lets the page tell "nothing is plugged in" from "adb / idevice_id is not installed on this
+    # station" - list_*_devices() swallow a missing tool and return [] either way.
+    return jsonify({"ios": list_ios_devices(), "android": list_android_devices(),
+                    "tools": {"adb": bool(shutil.which("adb")), "idevice_id": bool(shutil.which("idevice_id"))}})
 
 
 @mobile_bp.route('/api/mobile/ios/pair', methods=['POST'])
@@ -1916,6 +1922,7 @@ def execution_worker_mtp_pull(bus, devnum, output_path, report_file_path, report
             report_data["acquisition_status"] = "COMPLETED"
             report_data["output_size_bytes"] = transferred_bytes
             append_log(f"[+] MTP pull completed. {files_copied} file(s) captured ({transferred_bytes} bytes), {files_errored} error(s).")
+            append_log(f"[+] Saved to: {output_path}")
 
         _write_report(report_file_path, report_data, append_log)
 
@@ -2796,6 +2803,13 @@ def cleanup_android_companion_extraction():
     if job.get('active') and job.get('format') == 'android_companion_extraction':
         return jsonify({"error": "A companion extraction is running - stop it first; its own cleanup runs "
                                  "automatically when it ends."}), 409
+
+    # An absent or unauthorised phone used to fall straight through: every adb call failed, and the
+    # response was still success:true - which the page showed as a clean cleanup (2026-10-09).
+    rc, out, err = _adb_run(serial, ["get-state"], 10)
+    if rc != 0 or out.strip() != "device":
+        return jsonify({"error": "That phone is not connected and authorised right now, so nothing could be cleaned up. "
+                                 "Re-plug it, unlock it, approve USB debugging, press Refresh and try again."}), 409
 
     results = {}
     rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "get-role-holders", "android.app.role.SMS"],

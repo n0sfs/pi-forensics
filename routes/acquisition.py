@@ -1144,6 +1144,27 @@ def parse_ddrescue_mapfile(map_path):
     return summary
 
 
+def _ddrescue_pass_summary(map_path):
+    """Log lines saying how much a finished ddrescue pass actually recovered, read from its
+    mapfile. A pass that ends with unread areas is NOT a complete image - and the next pass
+    only resumes if it uses the same Case # and Evidence ID, which nothing else says."""
+    m = parse_ddrescue_mapfile(map_path)
+    mapped = m["rescued_bytes"] + m["non_tried_bytes"] + m["bad_sector_bytes"]
+    if mapped <= 0:
+        return [f"[!] Could not read the ddrescue mapfile ({map_path}), so whether the image is complete is "
+                f"unknown - open the Mapfile Inspector before relying on it."]
+    unread = m["non_tried_bytes"] + m["bad_sector_bytes"]
+    pct = 100.0 * m["rescued_bytes"] / mapped
+    lines = [f"[+] ddrescue pass finished: {m['rescued_bytes']:,} bytes rescued ({pct:.2f}%), "
+             f"{unread:,} bytes unread in {m['bad_blocks_count']} bad area(s)."]
+    if unread == 0:
+        lines.append("[+] The mapfile shows no unread areas - the image is complete.")
+    else:
+        lines.append("[!] NOT a complete image yet. Run another pass with the SAME Case # and Evidence ID "
+                     "(a new Evidence ID starts a fresh image and map), then check the Mapfile Inspector.")
+    return lines
+
+
 def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data, hashes=None,
                       dc3dd_log_file=None, dcfldd_hash_log_files=None):
     log_history = []
@@ -1291,6 +1312,11 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
             append_log("[+] Recovery/acquisition completed successfully.")
             report_data["acquisition_status"] = "COMPLETED"
+            if fmt == 'ddrescue':
+                # A pass can exit cleanly with areas still unread; the green 100% above
+                # then reads as "the image is complete" (2026-10-09). Say what the map says.
+                for line in _ddrescue_pass_summary(cmd[-1]):
+                    append_log(line)
 
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
@@ -3095,6 +3121,11 @@ def toggle_write_block():
         chk = subprocess.run(priv_argv("blockdev-getro", drive, legacy=["sudo", "/usr/sbin/blockdev", "--getro", drive]), capture_output=True, text=True)
         is_ro = (chk.returncode == 0 and chk.stdout.strip() == '1')
 
+        # Making a drive writable (or protecting it again) is the one control this app leans on hardest
+        # for evidence integrity, and it used to leave no trace (2026-10-09). The Live Collection build,
+        # which also unlocks a drive, already logs.
+        log_chain_of_custody("write_blocker_toggled", {"device": drive, "write_blocked": is_ro,
+                                                       "requested": "protect" if enable else "unlock"})
         return jsonify({"success": True, "write_blocker_active": is_ro, "device": drive})
 
     except Exception as e:
