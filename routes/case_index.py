@@ -482,6 +482,19 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "android_bugreport_power_event": "Android Bugreport: Power Off/Reset Event",
 }
 
+# File Views lists are capped so one huge category can't stall the browser.
+# Each query fetches one row past its cap, so the response can say honestly
+# that the list was cut short - the tree label shows the full count, and an
+# uncapped-looking list of exactly 2,000 rows used to read as "that's all".
+FILE_VIEWS_ROW_LIMIT = 2000
+PARSED_ARTIFACT_ROW_LIMIT = 5000
+
+
+def _limited_rows_response(rows, limit):
+    truncated = len(rows) > limit
+    return jsonify({"success": True, "rows": rows[:limit], "truncated": truncated, "limit": limit})
+
+
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer', 'reporting')
@@ -505,8 +518,8 @@ def case_index_parsed_artifacts():
         try:
             cur = conn.execute(
                 "SELECT source_type, image_path, fs_offset, inode, source_path, title, url, value, timestamp, extra_json "
-                "FROM parsed_artifacts WHERE artifact_type=? ORDER BY timestamp DESC LIMIT 5000",
-                (category,))
+                "FROM parsed_artifacts WHERE artifact_type=? ORDER BY timestamp DESC LIMIT ?",
+                (category, PARSED_ARTIFACT_ROW_LIMIT + 1))
             for r in cur:
                 rows.append({
                     "source_type": r[0], "image_path": r[1], "fs_offset": r[2], "inode": r[3],
@@ -515,7 +528,7 @@ def case_index_parsed_artifacts():
                 })
         finally:
             conn.close()
-    return jsonify({"success": True, "rows": rows})
+    return _limited_rows_response(rows, PARSED_ARTIFACT_ROW_LIMIT)
 
 # Unified Case Search (2026-09-09) - item 2 of the 6-item investigation-
 # workflow backlog. Reporting's own Search tab (runCaseSearch() in main.js)
@@ -808,11 +821,12 @@ def case_index_files():
         try:
             if category == '__deleted__':
                 cur = conn.execute(
-                    "SELECT image_path, fs_offset, inode, path, name, size, deleted, mtime, atime, ctime, crtime FROM indexed_files WHERE deleted=1 ORDER BY path LIMIT 2000")
+                    "SELECT image_path, fs_offset, inode, path, name, size, deleted, mtime, atime, ctime, crtime FROM indexed_files WHERE deleted=1 ORDER BY path LIMIT ?",
+                    (FILE_VIEWS_ROW_LIMIT + 1,))
             elif category in FILE_VIEW_EXTENSION_CATEGORIES:
                 cur = conn.execute(
-                    "SELECT image_path, fs_offset, inode, path, name, size, deleted, mtime, atime, ctime, crtime FROM indexed_files WHERE category=? AND deleted=0 ORDER BY path LIMIT 2000",
-                    (category,))
+                    "SELECT image_path, fs_offset, inode, path, name, size, deleted, mtime, atime, ctime, crtime FROM indexed_files WHERE category=? AND deleted=0 ORDER BY path LIMIT ?",
+                    (category, FILE_VIEWS_ROW_LIMIT + 1))
             else:
                 cur = None
             if cur:
@@ -821,7 +835,7 @@ def case_index_files():
                                  "mtime": r[7], "atime": r[8], "ctime": r[9], "crtime": r[10]})
         finally:
             conn.close()
-    return jsonify({"success": True, "rows": rows})
+    return _limited_rows_response(rows, FILE_VIEWS_ROW_LIMIT)
 
 @case_index_bp.route('/api/case_index/hits', methods=['POST'])
 @requires_auth
@@ -843,8 +857,8 @@ def case_index_hits():
                 "f.size, f.deleted, f.mtime, f.atime, f.ctime, f.crtime "
                 "FROM triage_hits h LEFT JOIN indexed_files f "
                 "ON h.image_path = f.image_path AND h.fs_offset = f.fs_offset AND h.inode = f.inode "
-                "WHERE h.category=? ORDER BY h.path LIMIT 2000",
-                (category,))
+                "WHERE h.category=? ORDER BY h.path LIMIT ?",
+                (category, FILE_VIEWS_ROW_LIMIT + 1))
             for r in cur:
                 row = {"image_path": r[0], "fs_offset": r[1], "inode": r[2], "path": r[3], "value": r[4], "source_type": r[5],
                        "size": r[6], "deleted": bool(r[7]) if r[7] is not None else False,
@@ -864,7 +878,7 @@ def case_index_hits():
                 rows.append(row)
         finally:
             conn.close()
-    return jsonify({"success": True, "rows": rows})
+    return _limited_rows_response(rows, FILE_VIEWS_ROW_LIMIT)
 
 # --- Tagging: flag a real filesystem or in-image file as evidence of
 # interest (Bookmark/Follow Up/Notable Item by default, custom tags
@@ -1068,8 +1082,8 @@ def case_index_tagged_files():
                 "f.size, f.deleted, f.mtime, f.atime, f.ctime, f.crtime "
                 "FROM tagged_items ti LEFT JOIN indexed_files f "
                 "ON ti.image_path = f.image_path AND ti.fs_offset = f.fs_offset AND ti.inode = f.inode "
-                "WHERE ti.tag_id=? ORDER BY ti.tagged_at DESC LIMIT 2000",
-                (tag_id,))
+                "WHERE ti.tag_id=? ORDER BY ti.tagged_at DESC LIMIT ?",
+                (tag_id, FILE_VIEWS_ROW_LIMIT + 1))
             for r in cur:
                 row = {"image_path": r[0], "fs_offset": r[1], "inode": r[2], "path": r[3], "name": r[4],
                        "comment": r[5], "source_type": r[6],
@@ -1084,7 +1098,7 @@ def case_index_tagged_files():
                 rows.append(row)
         finally:
             conn.close()
-    return jsonify({"success": True, "rows": rows})
+    return _limited_rows_response(rows, FILE_VIEWS_ROW_LIMIT)
 
 @case_index_bp.route('/api/case_index/all_tagged_items', methods=['POST'])
 @requires_auth

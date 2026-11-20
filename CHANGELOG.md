@@ -79,6 +79,9 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **File Views says when a list is cut short.** Each list shows at most 2,000 entries (5,000 for parsed
+  artifacts), but the tree's count is the full total. A capped list now carries a warning saying so,
+  instead of looking like the complete set.
 - **A case's analysis index that is deleted and recreated always gets its tables back.** The
   filesystem can reuse a deleted file's inode number, and the app could then mistake the new, empty
   index for the old one and skip setting it up.
