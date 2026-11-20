@@ -52,6 +52,13 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **Settings shows what your group can't change instead of failing with a 403.** Without the Settings
+  permission, station controls (service, updates, power, diagnostics, network, HTTPS, report and list
+  settings) are disabled, with a visible line saying why. The Station Audit Log, which needs that
+  permission to read, is hidden. Tool Versions still works.
+- **Analysts can write-unlock and safely detach a destination drive.** Drive Management's Toggle Write
+  Blocker and Safe Detach now need Acquisition or Settings. Unlocking is still limited to the black
+  (destination) USB ports.
 - **Retrying a failed phone acquisition no longer needs a new Evidence ID.** iOS backup, Android
   backup/bugreport/pull and MTP pull: an empty folder or 0-byte file left by a failed or stopped run is
   removed, and partial output is kept untouched while the retry writes to `..._attempt2` (then 3, 4...).
