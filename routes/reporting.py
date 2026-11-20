@@ -2802,7 +2802,7 @@ def set_file_caption():
     log_chain_of_custody("file_caption_set", {"case_folder": case_folder, "file_path": file_path, "cleared": not bool(caption)})
     # Captioning an exhibit is genuine case work - see add_case_note()'s
     # identical comment above.
-    ensure_examiner_recorded(case_folder, getattr(g, 'forensic_user', None))
+    ensure_examiner_recorded(case_folder, getattr(g, 'forensic_user', None), updated_at=data['updated_at'])
 
     return jsonify({"success": True, "caption": caption, "updated_at": data['updated_at']})
 
