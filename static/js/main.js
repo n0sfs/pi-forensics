@@ -6340,6 +6340,27 @@ function showExplorerImageContextMenu(ev, entry) {
     positionContextMenu(ev);
 }
 
+// A visible way into the right-click menu (2026-11-20). On the touchscreen the
+// menu was reachable only by press-and-hold, which depends on the browser
+// firing contextmenu for a long press and is undiscoverable either way. This
+// opens the same menu for the row selected in the listing by replaying a
+// contextmenu event on it, so every listing renderer (folder, image, File
+// Views, search) gets it without a second code path.
+function openActionsForSelectedRow(ev) {
+    ev.stopPropagation(); // the document click handler would close the menu straight away
+    const row = document.querySelector('#explorerContainer tr.active');
+    if (!row) {
+        showToast('Select a file or folder in the listing first, then tap Actions.', 'info');
+        return;
+    }
+    const menu = document.getElementById('fileContextMenu');
+    if (menu && menu.style.display === 'block') { hideFileContextMenu(); return; }
+    const r = ev.currentTarget.getBoundingClientRect();
+    row.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: Math.max(8, r.left), clientY: r.bottom + 2,
+    }));
+}
+
 function hideFileContextMenu() {
     const menu = document.getElementById('fileContextMenu');
     if (menu) menu.style.display = 'none';

@@ -79,6 +79,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **File Explorer has a visible Actions button.** It opens the right-click menu for the selected
+  item, so the touchscreen no longer depends on press-and-hold, which some browsers don't treat as a
+  right-click. On a touchscreen, menu rows, folder-tree rows and listing rows are now at least 44 pixels
+  tall, like the buttons already were.
 - **Quick Triage Scan can pick a folder from the browser.** The backend always accepted one, but the
   picker only let you choose a file, so on the touchscreen the only way was to type the path. Picking
   a path now also clears a previously chosen source drive, instead of Start refusing because both are set.

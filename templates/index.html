@@ -235,6 +235,12 @@
             .btn, .btn-sm, .btn-xs { min-height: 44px; min-width: 44px; }
             .form-control, .form-select { min-height: 44px; }
             .form-check-input { width: 1.35em; height: 1.35em; }
+            /* File Explorer menu rows, tree nodes and listing rows were ~26-30px: the rule
+               above only covered .btn and form controls (2026-11-20). */
+            #fileContextMenu .dropdown-item { min-height: 44px; display: flex; align-items: center; }
+            .explorer-tree-node { min-height: 44px; }
+            .explorer-tree-toggle { width: 32px; height: 44px; }
+            #explorerContainer tr.file-item > td { height: 44px; }
         }
         /* A disabled button that says WHY (data-disabled-reason) still receives the tap,
            so the reason can be shown - Bootstrap sets pointer-events: none,
