@@ -52,6 +52,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **Acquisition warns before Start, not after.** If the destination case is Closed or Archived, or the
+  Case # and Evidence ID are already used in that folder, a line under the metadata fields says so as you
+  type, with a one-tap "Use ITEM-NN" for the next free Evidence ID. The Evidence ID field suggests it
+  too. Start still refuses both, exactly as before.
 - **A Closed or Archived case is now read-only.** Its report narrative, case notes, exhibits and
   tags can no longer be changed, so they can't drift from a report you have already handed over.
   Reporting shows a banner saying why, and the editing controls are locked but stay readable.
