@@ -52,6 +52,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **Retrying a failed phone acquisition no longer needs a new Evidence ID.** iOS backup, Android
+  backup/bugreport/pull and MTP pull: an empty folder or 0-byte file left by a failed or stopped run is
+  removed, and partial output is kept untouched while the retry writes to `..._attempt2` (then 3, 4...).
+  Both are logged in the job log and the Custody Log. A completed acquisition at that path is still refused.
 - **Deleting acquired evidence in an open case needs its name typed.** An acquired image and its sidecars
   (.log, .sha256, E01 segments), a phone pull or a container folder, or a folder holding one of them, now
   asks you to type its name before Delete is enabled. The server enforces it too, and the Custody Log entry
