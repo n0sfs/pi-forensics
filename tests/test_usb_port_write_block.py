@@ -60,6 +60,17 @@ def client(app, runtime_config_file):
 
 
 @pytest.fixture(autouse=True)
+def _sda_is_not_the_system_disk(monkeypatch):
+    """These tests use /dev/sda as the example USB drive, as on the station
+    (whose system disk is mmcblk0). On a machine whose own root disk IS
+    /dev/sda - GitHub's ubuntu runners - is_system_disk() rightly refuses it
+    and every route answers 400 before reaching the port check under test."""
+    import core.paths as paths
+    real = paths.is_system_disk
+    monkeypatch.setattr(paths, "is_system_disk", lambda d: False if d == "/dev/sda" else real(d))
+
+
+@pytest.fixture(autouse=True)
 def _reset_write_lock_state():
     """active_write_unlocked_devices is module-level shared state (by
     design, matching this app's single-shared-job architecture) - reset
