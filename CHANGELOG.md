@@ -79,6 +79,12 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **Quick Triage Scan can pick a folder from the browser.** The backend always accepted one, but the
+  picker only let you choose a file, so on the touchscreen the only way was to type the path. Picking
+  a path now also clears a previously chosen source drive, instead of Start refusing because both are set.
+- **E01 only offers the hashes it can record.** ewfacquire always records MD5 plus one of SHA-1 or
+  SHA-256, so for E01 the MD5 box is locked on and the two SHA boxes act as a choice. Your original
+  choices come back when you switch to another format.
 - **Storage errors read as plain sentences.** "[Errno 30] Read-only file system: '/mnt/...'" now reads
   "The storage is read-only (/mnt/...)." The same goes for permission denied, full storage, a
   disconnected share and a few others, in case creation, report export and File Explorer.
