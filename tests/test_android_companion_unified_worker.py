@@ -37,6 +37,16 @@ def _pending_sms_role_file(tmp_path, monkeypatch):
     monkeypatch.setattr(mobile, "COMPANION_SMS_ROLE_PENDING_FILE", str(tmp_path / "pending.json"))
 
 
+@pytest.fixture(autouse=True)
+def _vendored_companion_apk(tmp_path, monkeypatch):
+    # The real APK is downloaded by install.py and is not in git, so a clean
+    # checkout (CI) has none. The worker only checks that the file exists
+    # before handing it to the (mocked) adb install.
+    apk = tmp_path / "pif-companion.apk"
+    apk.write_bytes(b"PK\x03\x04 test stand-in")
+    monkeypatch.setattr(mobile, "PIF_COMPANION_APK", str(apk))
+
+
 def _base_report_data():
     return {"acquisition_status": "IN_PROGRESS", "acquisition_parameters": {}}
 
