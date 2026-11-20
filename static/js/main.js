@@ -252,6 +252,19 @@ function showAppConfirmDialog(opts) {
     ok.classList.toggle('btn-danger', danger);
     ok.classList.toggle('btn-primary', !danger);
     cancel.textContent = opts.cancelText || 'Cancel';
+    // opts.typedConfirm (2026-11-20): the confirm button stays disabled until
+    // this exact text is typed - for deleting acquired evidence.
+    const typedWrap = document.getElementById('appConfirmTypedWrap');
+    const typedInput = document.getElementById('appConfirmTypedInput');
+    const typed = typeof opts.typedConfirm === 'string' && opts.typedConfirm && typedWrap && typedInput ? opts.typedConfirm : null;
+    if (typedWrap) typedWrap.classList.toggle('d-none', !typed);
+    const syncTyped = () => { ok.disabled = !!typed && typedInput.value !== typed; };
+    if (typed) {
+        document.getElementById('appConfirmTypedName').textContent = typed;
+        typedInput.value = '';
+        typedInput.addEventListener('input', syncTyped);
+    }
+    ok.disabled = !!typed;
     // Native confirm() left focus where it was; Bootstrap only restores it for
     // a data-api trigger, so a keyboard user landed back on <body>.
     const returnFocusTo = document.activeElement;
@@ -260,15 +273,18 @@ function showAppConfirmDialog(opts) {
         let ready = false;
         let closing = false;
         let confirmed = false;
-        const onShown = () => { ready = true; cancel.focus(); };
+        const onShown = () => { ready = true; (typed ? typedInput : cancel).focus(); };
         const onHide = () => { closing = true; };
         const onOk = () => {
             if (!ready || closing) return;
+            if (typed && typedInput.value !== typed) return;
             confirmed = true;
             modal.hide();
         };
         const onHidden = () => {
             ok.removeEventListener('click', onOk);
+            if (typed) { typedInput.removeEventListener('input', syncTyped); typedInput.value = ''; }
+            ok.disabled = false;
             modalEl.removeEventListener('shown.bs.modal', onShown);
             modalEl.removeEventListener('hide.bs.modal', onHide);
             modalEl.removeEventListener('hidden.bs.modal', onHidden);
@@ -6835,13 +6851,28 @@ async function deleteSelectedFile() {
     const confirmOpts = activeSelectedIsDir
         ? { title: `Delete folder "${targetName}"?`, message: `${targetPath}\n\nThis permanently deletes the FOLDER AND EVERYTHING INSIDE IT. This cannot be undone.`, confirmText: 'Delete folder' }
         : { title: `Delete "${targetName}"?`, message: `${targetPath}\n\nThis permanently deletes the file. This cannot be undone.`, confirmText: 'Delete file' };
+    // Acquired evidence in an open case needs its name typed (2026-11-20).
+    // The server enforces it too; this only picks the right dialog up front.
+    let confirmName = null;
+    try {
+        const chk = await (await fetch('/api/files/delete_check', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: targetPath })
+        })).json();
+        if (chk && chk.typed_name_required) {
+            confirmName = targetName;
+            confirmOpts.title = `Delete acquired evidence "${targetName}"?`;
+            confirmOpts.message = `${targetPath}\n\nThis is ${chk.evidence_id}'s acquisition output in an open case. `
+                + `Deleting it removes the evidence itself, and its hashes can't be re-verified. This cannot be undone.`;
+            confirmOpts.typedConfirm = targetName;
+        }
+    } catch (e) { /* the server still enforces the typed name */ }
     if (!await appConfirm(confirmOpts)) return;
 
     try {
         const res = await fetch('/api/files/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: targetPath })
+            body: JSON.stringify({ path: targetPath, confirm_name: confirmName })
         });
         const data = await res.json();
         if (data.success) {
