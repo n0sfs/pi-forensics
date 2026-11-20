@@ -3377,6 +3377,69 @@ def veracrypt_status():
         mounts = [{"mount_id": mid, **info} for mid, info in active_veracrypt_mounts.items()]
     return jsonify({"success": True, "mounts": mounts})
 
+def _existing_acquisition_outputs(dest_path, base_name):
+    """Files an acquisition named base_name ({case}_{evidence}) would collide
+    with in dest_path - the image itself (any extension/segment) and its
+    dc3dd/hash logs. Shared by start_imaging()'s refusal and the pre-Start
+    check below, so the warning and the refusal can never disagree."""
+    base_path = f"{dest_path}/{base_name}"
+    return sorted(glob.glob(glob.escape(base_path) + ".*")
+                  + [p for p in (f"{base_path}_{suffix}.log" for suffix in ("dc3dd", *ALLOWED_HASH_ALGOS))
+                     if os.path.lexists(p)])
+
+
+_ITEM_NUMBER_RE = re.compile(r'^ITEM-(\d+)$', re.IGNORECASE)
+
+
+def _suggest_evidence_id(dest_path, case_num):
+    """The next free ITEM-NN for case_num in dest_path: one past the highest
+    ITEM number already used there, never one that collides."""
+    used = 0
+    prefix = f"{case_num}_"
+    try:
+        names = os.listdir(dest_path)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.startswith(prefix):
+            continue
+        stem = name[len(prefix):].split('.', 1)[0]
+        for suffix in ("_dc3dd", *(f"_{a}" for a in ALLOWED_HASH_ALGOS)):
+            if stem.endswith(suffix):
+                stem = stem[:-len(suffix)]
+        m = _ITEM_NUMBER_RE.match(stem)
+        if m:
+            used = max(used, int(m.group(1)))
+    n = used + 1
+    while _existing_acquisition_outputs(dest_path, f"{case_num}_ITEM-{n:02d}"):
+        n += 1
+    return f"ITEM-{n:02d}"
+
+
+@acquisition_bp.route('/api/acquisition_precheck', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def acquisition_precheck():
+    """What Start would refuse, said BEFORE Start (2026-11-20). A Closed or
+    Archived destination case, or a Case #/Evidence ID already used in the
+    destination, used to surface only as an 8-second toast after pressing
+    Start. Read-only: claims no job slot and writes nothing."""
+    req = request.get_json() or {}
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
+    if not dest_path or not os.path.isdir(dest_path):
+        return jsonify({"success": True, "closed_status": None, "collision": None, "suggested_evidence_id": None})
+    case_num = sanitize_case_slug(req.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(req.get('evidence_id')) or 'ITEM-01'
+    existing = _existing_acquisition_outputs(dest_path, f"{case_num}_{evidence_id}")
+    return jsonify({
+        "success": True,
+        "closed_status": case_status_blocking_new_work(dest_path),
+        "collision": os.path.basename(existing[0]) if existing else None,
+        "evidence_id": evidence_id,
+        "suggested_evidence_id": _suggest_evidence_id(dest_path, case_num),
+    })
+
+
 @acquisition_bp.route('/api/start_imaging', methods=['POST'])
 @requires_auth
 @requires_permission('acquisition')
@@ -3612,10 +3675,7 @@ def start_imaging():
     # {case}_{evidence} with no timestamp, and dc3dd/dcfldd/dd truncate an
     # existing of= - so re-imaging with the same Case #/Evidence ID into the
     # same folder silently destroyed the previous image, its log and hashes.
-    base_path = f"{dest_path}/{base_name}"
-    existing = sorted(glob.glob(glob.escape(base_path) + ".*")
-                      + [p for p in (f"{base_path}_{suffix}.log" for suffix in ("dc3dd", *ALLOWED_HASH_ALGOS))
-                         if os.path.lexists(p)])
+    existing = _existing_acquisition_outputs(dest_path, base_name)
     if existing:
         update_job(active=False)
         return jsonify({"error": f"An acquisition named {base_name} already exists in this folder "

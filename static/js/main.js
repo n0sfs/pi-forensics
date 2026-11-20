@@ -431,6 +431,79 @@ function applyE01HashRules(isE01) {
     e01HashRulesActive = isE01;
 }
 
+// Says what Start would refuse BEFORE Start (2026-11-20): a Closed/Archived
+// destination case, or a Case #/Evidence ID already used in the destination.
+// Both used to appear only as an 8-second toast after pressing Start. Also
+// suggests the next free ITEM-NN. Read-only on the server; debounced, and a
+// stale answer (fields changed since it was asked) is dropped.
+let acqPrecheckTimer = null;
+let acqPrecheckSeq = 0;
+function scheduleAcqPrecheck() {
+    clearTimeout(acqPrecheckTimer);
+    acqPrecheckTimer = setTimeout(runAcqPrecheck, 400);
+}
+
+async function runAcqPrecheck() {
+    const box = document.getElementById('acqPrecheck');
+    const evEl = document.getElementById('evidenceId');
+    if (!box || !evEl) return;
+    const seq = ++acqPrecheckSeq;
+    const body = {
+        destination: document.getElementById('destPath')?.value.trim() || '',
+        case_number: document.getElementById('caseNum')?.value.trim() || '',
+        evidence_id: evEl.value.trim(),
+    };
+    let data;
+    try {
+        const res = await fetch('/api/acquisition_precheck', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        if (!res.ok) return; // e.g. no acquisition permission - Start says why
+        data = await res.json();
+    } catch (err) {
+        return; // advisory only; Start still enforces both rules
+    }
+    if (seq !== acqPrecheckSeq) return;
+    evEl.placeholder = data.suggested_evidence_id
+        ? `${data.suggested_evidence_id} (next free)` : 'Evidence ID (e.g. ITEM-01)';
+    box.innerHTML = '';
+    const line = (cls, icon, text) => {
+        const d = document.createElement('div');
+        d.className = cls;
+        const i = document.createElement('i');
+        i.className = `bi ${icon} me-1`;
+        d.appendChild(i);
+        d.appendChild(document.createTextNode(text)); // server names/paths: text nodes only
+        box.appendChild(d);
+        return d;
+    };
+    if (data.closed_status) {
+        line('text-danger fw-semibold', 'bi-lock-fill',
+            `This case is ${data.closed_status} - Start will refuse. Re-open it (Reporting or Case Manager) to add evidence.`);
+    }
+    if (data.collision) {
+        const d = line('text-warning', 'bi-exclamation-triangle-fill',
+            `Evidence ID ${data.evidence_id} is already used here (${data.collision}) - Start will refuse, earlier evidence is never overwritten. `);
+        if (data.suggested_evidence_id) {
+            const use = document.createElement('button');
+            use.type = 'button';
+            use.className = 'btn btn-xs btn-outline-warning ms-1';
+            use.textContent = `Use ${data.suggested_evidence_id}`;
+            use.onclick = () => { evEl.value = data.suggested_evidence_id; runAcqPrecheck(); };
+            d.appendChild(use);
+        }
+    }
+    box.style.display = box.children.length ? '' : 'none';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    ['destPath', 'caseNum', 'evidenceId'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.addEventListener('input', scheduleAcqPrecheck); el.addEventListener('change', scheduleAcqPrecheck); }
+    });
+    document.getElementById('acquisition-tab')?.addEventListener('shown.bs.tab', scheduleAcqPrecheck);
+});
+
 function toggleSidebarCompact() {
     const sidebar = document.getElementById("appSidebar");
     const icon = document.getElementById("sidebarToggleIcon");
@@ -20669,6 +20742,7 @@ function applyActiveCaseToFields() {
     loadCaseForEditing();
     resyncExplorerRootToActiveCase();
     refreshGuidedWorkflow();
+    scheduleAcqPrecheck();
 }
 
 function openCaseManagerModal() {
@@ -21636,6 +21710,7 @@ function selectCurrentFolder() {
     }
     const targetEl = document.getElementById(targetInputIdForModal);
     if (targetEl) targetEl.value = currentBrowsePath;
+    if (targetInputIdForModal === 'destPath') scheduleAcqPrecheck();
     if (folderModalInstance) folderModalInstance.hide();
 }
 
@@ -26226,6 +26301,7 @@ async function fetchProgress() {
         if (lastImageJobActiveByFormat[data.format] && !data.active) {
             const finishType = jobStatusToastType(data.status);
             showToast(completionMsgFn(data.status), finishType, finishType === 'danger' ? 30000 : (finishType === 'warning' ? 15000 : 10000));
+            scheduleAcqPrecheck(); // the finished job's output now occupies its Evidence ID
         }
         lastImageJobActiveByFormat[data.format] = data.active;
 
