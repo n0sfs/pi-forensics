@@ -24963,7 +24963,92 @@ async function fetchWhoami() {
         }
         applyUserMgmtPermissionGating();
         applySidebarPermissionGating();
+        applySettingsPermissionGating();
     } catch (err) { /* non-fatal - indicator just stays hidden */ }
+}
+
+// Settings controls a group can't use are disabled with the reason, instead
+// of offering a red confirm that ends in a 403 (Maintainer decision 2026-11-20,
+// 10-09 item 4A). Display only - every route still checks for itself.
+// Whole sections whose every action needs the `settings` permission:
+const SETTINGS_PERM_SECTIONS = ['secReportConfig', 'secCustomFields', 'secManageTags', 'secAnalysisLists',
+    'secNetMount', 'secNetConfig', 'secHttpsCert'];
+// Individual controls (by their onclick handler) in mixed sections:
+const SETTINGS_PERM_ACTIONS = ['restartForensicService', 'restartKioskDisplay', 'checkForAppUpdate', 'gitUpdateApp',
+    'updateOperatingSystem', 'purgeConsoleLogs', 'runDiagnostic', 'triggerSystemPower', 'updateMvtIndicators'];
+// Drive Management: Analysts may write-unlock (destination/black ports only,
+// enforced server-side) and detach a drive, so `acquisition` is enough.
+const DRIVE_MGMT_ACTIONS = ['toggleWriteBlockForSelectedDrive', 'ejectTargetDrive'];
+const SETTINGS_PERM_REASON = "Your user group doesn't have the Settings permission. Ask an admin.";
+let settingsGatingObserver = null;
+
+function _gateControl(el, allowed, reason) {
+    if (el.dataset.permFree !== undefined) return;
+    if (!allowed) {
+        if (el.dataset.permGated === undefined) el.dataset.permGated = el.title || '';
+        el.disabled = true;
+        el.title = reason;
+    } else if (el.dataset.permGated !== undefined) {
+        el.disabled = false;
+        el.title = el.dataset.permGated;
+        delete el.dataset.permGated;
+    }
+}
+
+function applySettingsPermissionGating() {
+    const canSettings = !!currentUserPermissions.settings;
+    const canDrives = canSettings || !!currentUserPermissions.acquisition;
+    // A visible line, not just a tooltip: a touchscreen never shows title text.
+    const setNote = (container, show, text, afterEl) => {
+        if (!container) return;
+        let note = container.querySelector(':scope > .settings-perm-note');
+        if (show && !note) {
+            note = document.createElement('div');
+            note.className = 'settings-perm-note small text-warning border border-secondary rounded-2 bg-app-dark px-3 py-2 mb-3';
+            note.innerHTML = '<i class="bi bi-lock-fill me-1"></i>';
+            note.appendChild(document.createTextNode(text));
+            if (afterEl && afterEl.parentElement === container) afterEl.after(note); else container.prepend(note);
+        } else if (!show && note) {
+            note.remove();
+        }
+    };
+    const diagPane = document.getElementById('settings-pane-diag');
+    setNote(diagPane, !canSettings, `Service, update, power and diagnostic controls are off. ${SETTINGS_PERM_REASON} Tool Versions still works.`,
+        diagPane && diagPane.querySelector(':scope > h6'));
+    const drivePane = document.getElementById('driveMgmtGroup');
+    setNote(drivePane, !canDrives, "Toggle Write Blocker and Safe Detach need the Acquisition or Settings permission. Ask an admin.",
+        drivePane && drivePane.firstElementChild);
+    for (const id of SETTINGS_PERM_SECTIONS) {
+        const sec = document.getElementById(id);
+        if (!sec) continue;
+        const body = sec.querySelector('.accordion-body') || sec;
+        setNote(body, !canSettings, `Read-only. ${SETTINGS_PERM_REASON}`);
+        // Expand/collapse toggles and links stay usable; anything that acts doesn't.
+        body.querySelectorAll('button:not([data-bs-toggle]), input, select, textarea')
+            .forEach(el => _gateControl(el, canSettings, SETTINGS_PERM_REASON));
+    }
+    const settingsRoot = document.getElementById('settings-app') || document;
+    settingsRoot.querySelectorAll('[onclick]').forEach(el => {
+        const fn = (el.getAttribute('onclick').match(/^\s*([A-Za-z_$][\w$]*)\s*\(/) || [])[1];
+        if (SETTINGS_PERM_ACTIONS.includes(fn)) _gateControl(el, canSettings, SETTINGS_PERM_REASON);
+        else if (DRIVE_MGMT_ACTIONS.includes(fn)) _gateControl(el, canDrives,
+            "Needs the Acquisition or Settings permission. Ask an admin.");
+    });
+    settingsRoot.querySelectorAll('.needs-settings-perm').forEach(el => _gateControl(el, canSettings, SETTINGS_PERM_REASON));
+    // The audit log can't even be read without the permission - hide it.
+    const audit = document.getElementById('secAuditLog')?.closest('.accordion-item');
+    if (audit) audit.style.display = canSettings ? '' : 'none';
+    // Lists, tool rows and network devices are rendered later: re-apply to
+    // whatever appears (idempotent, and only while something is gated).
+    if (!canSettings && !settingsGatingObserver && window.MutationObserver && settingsRoot !== document) {
+        let pending = false;
+        settingsGatingObserver = new MutationObserver(() => {
+            if (pending) return;
+            pending = true;
+            requestAnimationFrame(() => { pending = false; applySettingsPermissionGating(); });
+        });
+        settingsGatingObserver.observe(settingsRoot, { childList: true, subtree: true });
+    }
 }
 
 let switchUserModalInstance = null;
@@ -25827,13 +25912,13 @@ async function loadToolVersions() {
             const actionCell = document.createElement('td');
             if (!t.installed && t.package) {
                 const btn = document.createElement('button');
-                btn.className = 'btn btn-xs btn-outline-success py-0 px-2';
+                btn.className = 'btn btn-xs btn-outline-success py-0 px-2 needs-settings-perm';
                 btn.innerHTML = '<i class="bi bi-download me-1"></i>Install';
                 btn.onclick = () => installTool(t.package, btn);
                 actionCell.appendChild(btn);
             } else if (t.installed && t.update_available && t.package) {
                 const btn = document.createElement('button');
-                btn.className = 'btn btn-xs btn-outline-warning py-0 px-2';
+                btn.className = 'btn btn-xs btn-outline-warning py-0 px-2 needs-settings-perm';
                 btn.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>Update';
                 btn.onclick = () => installTool(t.package, btn);
                 actionCell.appendChild(btn);
