@@ -375,6 +375,7 @@ function toggleFormatControls() {
     // Acquisition DOES hash (each copied file + the manifest itself), via
     // these same shared checkboxes - see startLogicalAcquisition().
     if (hashRow) hashRow.style.display = (fmt === 'ddrescue') ? 'none' : '';
+    applyE01HashRules(fmt === 'e01');
 
     // Guided Workflow automation Tier 2's chain-into-Auto-Analyze checkbox
     // only applies to the shared execution_worker() path (dc3dd/dcfldd/plain
@@ -397,6 +398,37 @@ function toggleFormatControls() {
         logical: "Copies specific folders from an already-mounted evidence source into one hash-verified container with a manifest - without imaging the whole device. No target drive selection needed above; add folders below, then Start.",
     };
     if (helpText) helpText.textContent = FORMAT_HELP[fmt] || '';
+}
+
+// ewfacquire always records MD5 and can add exactly ONE more digest (SHA-1
+// or SHA-256). The checkboxes used to offer all three freely for E01, and a
+// run with both SHA boxes ticked silently produced only one of them (the
+// report names the missing one afterwards - better to not offer it at all).
+let e01HashRulesActive = false;
+let e01Md5WasChecked = null;
+function applyE01HashRules(isE01) {
+    const md5 = document.getElementById('hashMd5');
+    const sha1 = document.getElementById('hashSha1');
+    const sha256 = document.getElementById('hashSha256');
+    if (!md5 || !sha1 || !sha256) return;
+    if (!sha1.dataset.e01Wired) {
+        sha1.dataset.e01Wired = '1';
+        sha1.addEventListener('change', () => { if (e01HashRulesActive && sha1.checked) sha256.checked = false; });
+        sha256.addEventListener('change', () => { if (e01HashRulesActive && sha256.checked) sha1.checked = false; });
+    }
+    if (isE01 && !e01HashRulesActive) {
+        e01Md5WasChecked = md5.checked;
+        md5.checked = true;
+        md5.disabled = true;
+        md5.title = 'E01 always records MD5';
+        if (sha1.checked && sha256.checked) sha1.checked = false;
+        [sha1, sha256].forEach(cb => { cb.title = 'E01 records MD5 plus one of SHA-1 or SHA-256'; });
+    } else if (!isE01 && e01HashRulesActive) {
+        md5.disabled = false;
+        if (e01Md5WasChecked !== null) md5.checked = e01Md5WasChecked;
+        [md5, sha1, sha256].forEach(cb => { cb.title = ''; });
+    }
+    e01HashRulesActive = isE01;
 }
 
 function toggleSidebarCompact() {
@@ -21401,8 +21433,18 @@ function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-bar-chart-line me-2"></i>Select ddrescue Mapfile (.map)';
         if (selectBtn) selectBtn.style.display = 'none';
     } else if (modalPickerMode === 'recoverySource') {
-        if (titleEl) titleEl.innerHTML = '<i class="bi bi-search-heart me-2"></i>Select Source Image';
-        if (selectBtn) selectBtn.style.display = 'none';
+        // Quick Triage Scan also scans a whole folder (the backend accepts
+        // one); the other recovery tools need an image file, so only triage
+        // gets a "pick this folder" button. Without it, a touchscreen had no
+        // way to choose a folder at all - only typing the path worked.
+        const folderOk = document.getElementById('recoveryToolSelect')?.value === 'triage_scan';
+        if (titleEl) titleEl.innerHTML = folderOk
+            ? '<i class="bi bi-search-heart me-2"></i>Select Source Image or Folder'
+            : '<i class="bi bi-search-heart me-2"></i>Select Source Image';
+        if (selectBtn) {
+            selectBtn.style.display = folderOk ? 'inline-block' : 'none';
+            selectBtn.textContent = 'Scan This Folder';
+        }
     } else if (modalPickerMode === 'copyDestination') {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-copy me-2"></i>Copy To...';
         if (selectBtn) { selectBtn.style.display = 'inline-block'; selectBtn.textContent = 'Copy Here'; }
@@ -21517,6 +21559,7 @@ async function loadFolderList(path) {
                     } else if (modalPickerMode === 'recoverySource') {
                         const sourcePathEl = document.getElementById("recoverySourcePath");
                         if (sourcePathEl) sourcePathEl.value = item.path;
+                        onRecoverySourcePathInput(); // a picked path replaces a picked drive, as typing does
                         if (folderModalInstance) folderModalInstance.hide();
                     } else if (modalPickerMode === 'whatsappKeyFile') {
                         const keyPathEl = document.getElementById("whatsappDecryptKeyPath");
@@ -21561,6 +21604,13 @@ function selectCurrentFolder() {
     if (modalPickerMode === 'logicalAcqFolder') {
         if (folderModalInstance) folderModalInstance.hide();
         addLogicalAcqFolder(currentBrowsePath);
+        return;
+    }
+    if (modalPickerMode === 'recoverySource') {
+        const sourcePathEl = document.getElementById("recoverySourcePath");
+        if (sourcePathEl) sourcePathEl.value = currentBrowsePath;
+        onRecoverySourcePathInput();
+        if (folderModalInstance) folderModalInstance.hide();
         return;
     }
     const targetEl = document.getElementById(targetInputIdForModal);
