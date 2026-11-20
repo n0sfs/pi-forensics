@@ -79,6 +79,9 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **A case's analysis index that is deleted and recreated always gets its tables back.** The
+  filesystem can reuse a deleted file's inode number, and the app could then mistake the new, empty
+  index for the old one and skip setting it up.
 - **Switching cases with unsaved report edits really discards them.** If you saved after the switch,
   the previous case's narrative and exhibits used to be written into the new case.
 - **Stopping Auto Analyze frees the station straight away.** It used to stay "busy" until Stop was

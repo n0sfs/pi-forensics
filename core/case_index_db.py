@@ -794,8 +794,12 @@ def _case_index_connect(db_path):
 
     Raises CaseIndexUnavailable (never a bare sqlite3.DatabaseError) if the
     file exists but cannot be opened - see that class for why."""
+    # A file that does not exist yet is always new, whatever the memo says:
+    # the filesystem can hand a deleted index's inode number straight to its
+    # replacement, so (st_dev, st_ino) alone can match a brand-new empty file.
+    existed = os.path.exists(db_path)
     conn = sqlite3.connect(db_path, timeout=30)
-    if _schema_already_ensured(db_path):
+    if existed and _schema_already_ensured(db_path):
         return conn
     try:
         # Not parameterizable (PRAGMA takes no bound values); the value comes
