@@ -32,7 +32,7 @@ def install_web_hardening(app):
     def _handle_request_too_large(e):
         limit = request.max_content_length or REQUEST_BODY_DEFAULT_MAX_BYTES
         return jsonify({"success": False,
-                        "error": f"That upload is too large - this action accepts up to {limit // (1024 * 1024)} MB."}), 413
+                        "error": f"That upload is too large - this action accepts up to {limit // (1024 * 1024)} MiB."}), 413
 
     @app.after_request
     def _security_headers(response):

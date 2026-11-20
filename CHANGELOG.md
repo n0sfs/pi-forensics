@@ -52,6 +52,13 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **Archive and Close ask first.** Both make the case read-only, so a mis-tap now gets a confirm (Case
+  Manager's Archive and Reporting's Status dropdown). Re-open still doesn't ask.
+- **Sizes are labelled GiB, MiB and KiB.** They were always computed in binary units but labelled GB/MB/KB,
+  including in reports' Capacity column. The numbers are unchanged; only the labels are.
+- **The Filesystem Timeline leaves out an evidence container's own manifest.json/manifest.txt** (Logical
+  Acquisition, Live Collection import) and says so in the timeline notes. They're written by the station,
+  and Verify reading them looked like activity on the evidence.
 - **Acquisition warns before Start, not after.** If the destination case is Closed or Archived, or the
   Case # and Evidence ID are already used in that folder, a line under the metadata fields says so as you
   type, with a one-tap "Use ITEM-NN" for the next free Evidence ID. The Evidence ID field suggests it

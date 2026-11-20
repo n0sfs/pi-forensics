@@ -97,7 +97,7 @@ def run_capped(cmd, timeout, max_bytes=CAPPED_OUTPUT_MAX_BYTES):
     rc = None if (truncated or timed_out.is_set()) else proc.returncode
     text = b"".join(chunks).decode('utf-8', errors='replace').strip()
     if truncated:
-        text += f"\n\n[... output cut at {max_bytes // (1024 * 1024)} MB - the tool was stopped there ...]"
+        text += f"\n\n[... output cut at {max_bytes // (1024 * 1024)} MiB - the tool was stopped there ...]"
     if timed_out.is_set():
         text += "\n\n[... stopped at its time limit - the output above is incomplete ...]"
     return text, rc, truncated, timed_out.is_set()

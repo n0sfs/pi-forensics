@@ -545,5 +545,5 @@ def test_capacity_never_renders_as_the_literal_na_gb():
     assert reporting._format_capacity(None) == "N/A"
     assert reporting._format_capacity("") == "N/A"
     assert reporting._format_capacity("N/A") == "N/A"
-    assert reporting._format_capacity(3.69) == "3.69 GB"
-    assert reporting._format_capacity("3.69") == "3.69 GB"
+    assert reporting._format_capacity(3.69) == "3.69 GiB"
+    assert reporting._format_capacity("3.69") == "3.69 GiB"

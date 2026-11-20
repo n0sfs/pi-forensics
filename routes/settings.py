@@ -2459,8 +2459,8 @@ def config_backup():
     # Never hand out a backup that this station would then refuse to restore
     # (app.py's request-size limit for config_restore).
     if len(body) > CONFIG_RESTORE_MAX_BYTES:
-        return jsonify({"success": False, "error": f"This backup would be {len(body) // (1024 * 1024)} MB - larger than the "
-                        f"{CONFIG_RESTORE_MAX_BYTES // (1024 * 1024)} MB a restore accepts (large hash/URL lists are the usual "
+        return jsonify({"success": False, "error": f"This backup would be {len(body) // (1024 * 1024)} MiB - larger than the "
+                        f"{CONFIG_RESTORE_MAX_BYTES // (1024 * 1024)} MiB a restore accepts (large hash/URL lists are the usual "
                         f"cause). Delete or trim a list and try again."}), 413
 
     log_chain_of_custody("config_backup_exported", {})

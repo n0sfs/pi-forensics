@@ -1455,12 +1455,25 @@ def _collect_case_timeline(events, case_folder=None):
         count = 0
         files_walked = 0
         walk_capped = False
+        # The evidence container's own manifest.json/manifest.txt (Logical
+        # Acquisition, Live Collection import) are written by this station,
+        # and Verify reading them sets an access time that looked like
+        # activity on the evidence (tasks.md D14, decided 2026-11-20: exclude
+        # them, and say so).
+        own_files = set()
+        manifest_json = (event.get('acquisition_parameters') or {}).get('manifest_path')
+        if isinstance(manifest_json, str) and os.path.dirname(os.path.realpath(manifest_json)) == os.path.realpath(dest_path):
+            own_files = {"manifest.json", "manifest.txt"}
+        excluded_own = 0
         for fpath, st in _walk_files_with_stat(dest_path):
+            rel_path_no_slash = os.path.relpath(fpath, dest_path).replace(os.sep, "/")
+            if rel_path_no_slash in own_files:
+                excluded_own += 1
+                continue
             files_walked += 1
             if files_walked > FOLDER_TIMELINE_MAX_FILES_WALKED:
                 walk_capped = True
                 break
-            rel_path_no_slash = os.path.relpath(fpath, dest_path).replace(os.sep, "/")
             rel_path = "/" + rel_path_no_slash
 
             # A real captured on-device mtime beats copy time whenever one is
@@ -1503,6 +1516,9 @@ def _collect_case_timeline(events, case_folder=None):
             notes.append(f"{evidence_id}: folder contains more than {FOLDER_TIMELINE_MAX_FILES_WALKED} files - "
                          f"only the first {FOLDER_TIMELINE_MAX_FILES_WALKED} were scanned for timeline entries.")
             truncated = True
+        if excluded_own:
+            notes.append(f"{evidence_id}: left out this station's own container manifest "
+                         f"(manifest.json/manifest.txt) - written at acquisition, not evidence.")
         if manifest_files is not None and manifest_fallback_count:
             notes.append(f"{evidence_id}: {manifest_fallback_count} file(s) have no captured on-device "
                          f"timestamp (added to the device after the timestamp capture ran, most likely) and "
@@ -3637,12 +3653,12 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
             free_gb = round(dest_disk_usage.free / (1024**3), 2)
             required_gb = round(total_size / (1024**3), 2)
             update_job(status="Failed")
-            append_log(f"[-] Pre-flight storage check failed: this volume has only {free_gb} GB free, "
-                       f"but the bundle needs approximately {required_gb} GB.")
+            append_log(f"[-] Pre-flight storage check failed: this volume has only {free_gb} GiB free, "
+                       f"but the bundle needs approximately {required_gb} GiB.")
             return
 
         update_job(status="Building bundle...", total_bytes=total_size)
-        append_log(f"[*] {len(candidates)} file(s), {total_size / (1024**2):.1f} MB total, will be included "
+        append_log(f"[*] {len(candidates)} file(s), {total_size / (1024**2):.1f} MiB total, will be included "
                    f"({'includes' if include_images else 'excludes'} raw acquisition images).")
         for item in not_archived:
             append_log(f"[!] Not archived: {item['arcname']} - {item['reason']}")
@@ -4004,7 +4020,7 @@ def _format_capacity(capacity_gb):
     unit is not part of it."""
     if capacity_gb in (None, '', 'N/A'):
         return 'N/A'
-    return f"{capacity_gb} GB"
+    return f"{capacity_gb} GiB"
 
 def _pick_display_hash(hashes):
     """Evidence Inventory's summary table shows one hash per item - picking
@@ -5710,6 +5726,8 @@ FEATURE_MODULES = {
 # include-when-absent default long enough that changing it now would alter
 # existing non-UI callers' output, which is the exact thing this set exists to
 # avoid. Its own <input> starting unchecked is what keeps it off in practice.
+# Decided 2026-11-20 (tasks.md D16): keep it that way; pinned by
+# tests/test_geolocation_legacy_default.py.
 LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED = {"analysis_results", "pattern_of_life", "signoff"}
 # The same rule for a custom template saved without one of these keys
 # (_custom_report_template_from_payload): an opt-in block a caller never sent

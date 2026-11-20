@@ -1265,7 +1265,7 @@ async function detectAndroidPhysicalTargets() {
             data.targets.forEach((t) => {
                 const opt = document.createElement('option');
                 opt.value = t.device_path;
-                const sizeLabel = t.size_bytes ? `${(t.size_bytes / (1024 ** 3)).toFixed(2)} GB` : 'size unknown';
+                const sizeLabel = t.size_bytes ? `${(t.size_bytes / (1024 ** 3)).toFixed(2)} GiB` : 'size unknown';
                 opt.textContent = `${t.label} (${t.device_path}, ${sizeLabel})`;
                 targetSelect.appendChild(opt);
             });
@@ -9701,7 +9701,7 @@ let explorerImageView = 'browse'; // 'browse' | 'search' | 'timeline'
 function imgFormatBytes(n) {
     if (n === null || n === undefined) return '--';
     if (n < 1024) return `${n} B`;
-    const units = ['KB', 'MB', 'GB', 'TB'];
+    const units = ['KiB', 'MiB', 'GiB', 'TiB'];
     let val = n / 1024;
     let i = 0;
     while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
@@ -11110,7 +11110,7 @@ async function listImageShadowCopies() {
                 const row = document.createElement('div');
                 row.className = 'mb-2 pb-2 border-bottom border-secondary';
                 const info = document.createElement('div');
-                info.textContent = `#${s.index} - created ${s.creation_time || 'unknown'} - ${(s.size / (1024 ** 3)).toFixed(2)} GB`;
+                info.textContent = `#${s.index} - created ${s.creation_time || 'unknown'} - ${(s.size / (1024 ** 3)).toFixed(2)} GiB`;
                 const btn = document.createElement('button');
                 btn.className = 'btn btn-sm btn-outline-info mt-1';
                 btn.textContent = 'Materialize as Browsable Image...';
@@ -11206,7 +11206,7 @@ async function runImageRecoverDeleted() {
                 + (recoverGaps.gaps.length ? ' - in the part of it that was searched.' : '.');
         } else {
             const mb = (data.total_bytes / (1024 * 1024)).toFixed(1);
-            msg = `Recovered ${data.files_recovered} file(s), ${mb} MB total.\nOriginal names/folder structure preserved under:\n${data.output_dir}`;
+            msg = `Recovered ${data.files_recovered} file(s), ${mb} MiB total.\nOriginal names/folder structure preserved under:\n${data.output_dir}`;
         }
         if (data.files_skipped_too_large > 0) {
             msg += `\n\n${data.files_skipped_too_large} file(s) were skipped for being too large or exceeding the total-size budget.`;
@@ -11545,7 +11545,7 @@ async function renderReportFilesGallery() {
         if (!files || !files.length) return;
         const body = buildReportFileGroup(discoveredEl, FILE_VIEWS_EXTENSION_LABELS[cat], files.length, REPORT_EXTENSION_CATEGORY_ICONS[cat]);
         files.forEach(f => {
-            const sizeKb = f.size_bytes ? `${(f.size_bytes / 1024).toFixed(1)} KB · ` : '';
+            const sizeKb = f.size_bytes ? `${(f.size_bytes / 1024).toFixed(1)} KiB · ` : '';
             addRow(body, f.name, `${sizeKb}${f.path}`, f.path, false, null);
         });
     });
@@ -18337,7 +18337,7 @@ function renderCaseNotesList() {
                 const fileLine = document.createElement('div');
                 fileLine.className = 'text-subtle small';
                 fileLine.innerHTML = '<i class="bi bi-file-earmark me-1"></i>'; // static/trusted markup
-                fileLine.appendChild(document.createTextNode(`${att.filename || ''} (${((att.size_bytes || 0) / 1024).toFixed(1)} KB)`)); // untrusted, text node only
+                fileLine.appendChild(document.createTextNode(`${att.filename || ''} (${((att.size_bytes || 0) / 1024).toFixed(1)} KiB)`)); // untrusted, text node only
                 card.appendChild(fileLine);
             }
         });
@@ -19435,7 +19435,7 @@ async function renderExportFilesList() {
     explicitFiles.forEach(fp => addRow(fp.split('/').pop(), `Attached · ${fp}`, 'file', fp, true));
     extraFiles.forEach(f => {
         const kindLabel = f.kind === 'image' ? 'Image' : f.kind === 'text' ? 'Text' : 'File';
-        const sizeKb = f.size_bytes ? ` · ${(f.size_bytes / 1024).toFixed(1)} KB` : '';
+        const sizeKb = f.size_bytes ? ` · ${(f.size_bytes / 1024).toFixed(1)} KiB` : '';
         addRow(f.name, `Found in case folder · ${kindLabel}${sizeKb}`, 'file', f.path, false);
     });
 
@@ -19512,7 +19512,7 @@ async function loadPreviousExports() {
             nameCell.textContent = exp.name;
             const meta = document.createElement('div');
             meta.className = 'text-subtle font-monospace';
-            meta.textContent = `${exp.modified} · ${exp.size < 1024 ? `${exp.size} B` : `${(exp.size / 1024).toFixed(0)} KB`} · SHA-256 ${exp.sha256 || '(no .sha256 file)'}`;
+            meta.textContent = `${exp.modified} · ${exp.size < 1024 ? `${exp.size} B` : `${(exp.size / 1024).toFixed(0)} KiB`} · SHA-256 ${exp.sha256 || '(no .sha256 file)'}`;
             meta.style.wordBreak = 'break-all';
             nameCell.appendChild(meta);
             const actCell = tr.insertCell();
@@ -19680,7 +19680,7 @@ async function runExportReportInner() {
             const s = (val === null || val === undefined) ? '' : String(val);
             return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
         };
-        const header = ['Evidence ID', 'Device Path', 'Model', 'Serial Number', 'Capacity (GB)',
+        const header = ['Evidence ID', 'Device Path', 'Model', 'Serial Number', 'Capacity (GiB)',
                          'Tool', 'Status', 'Timestamp Start', 'MD5', 'SHA1', 'SHA256'];
         const rows = [header];
         events.forEach(event => {
@@ -21078,13 +21078,24 @@ function applyCaseStatusChangeLocally(caseFolder, newStatus) {
 // Closing or archiving the loaded case makes its record read-only, so unsaved
 // Reporting edits would be stranded (2026-10-02 review). Offer to save them
 // first; resolves false when the status change should not go ahead.
-async function saveReportEditsBeforeLocking(caseFolder, newStatus) {
+// Also the confirm for Archive/Close itself (maintainer, 2026-11-20): the case becomes
+// read-only, so a mis-tap on a touchscreen should not lock it silently. When
+// there are unsaved edits, the save prompt below is that confirm.
+async function saveReportEditsBeforeLocking(caseFolder, newStatus, caseNumber) {
     if (!CASE_STATUSES_READ_ONLY.includes(newStatus)) return true;
-    if (!reportHasUnsavedChanges || !activeCase || activeCase.case_folder !== caseFolder) return true;
     const verb = newStatus === 'Archived' ? 'archive' : 'close';
+    if (!reportHasUnsavedChanges || !activeCase || activeCase.case_folder !== caseFolder) {
+        const label = caseNumber || (activeCase && activeCase.case_folder === caseFolder ? activeCase.case_number : '') || 'this case';
+        return await appConfirm({
+            title: `${verb === 'archive' ? 'Archive' : 'Close'} "${label}"?`,
+            message: `${newStatus === 'Archived' ? 'An' : 'A'} ${newStatus} case is read-only: its report, notes and exhibits can't be edited and no new work can be added. `
+                + `You can re-open it from the Case Manager.`,
+            confirmText: `${verb === 'archive' ? 'Archive' : 'Close'} case`, danger: false,
+        });
+    }
     const ok = await appConfirm({
         title: `Save your report changes before you ${verb} this case?`,
-        message: `A ${newStatus} case is read-only, so unsaved Report Narrative, Case Details and Files & Artifacts edits can't be saved afterwards.`,
+        message: `${newStatus === 'Archived' ? 'An' : 'A'} ${newStatus} case is read-only, so unsaved Report Narrative, Case Details and Files & Artifacts edits can't be saved afterwards.`,
         confirmText: `Save and ${verb}`, danger: false,
     });
     if (!ok) return false;
@@ -21110,15 +21121,10 @@ async function reopenLockedCase() {
 // exact case first.
 async function setCaseStatus(c, newStatus) {
     const archiving = newStatus === 'Archived';
-    if (!(await saveReportEditsBeforeLocking(c.case_folder, newStatus))) return;
-    // No confirm() dialog here (removed 2026-09-11, was on both directions) -
-    // both directions are fully reversible one-click actions (Archive never
-    // deletes or touches case data, just hides it from the default "Active"
-    // list; Re-open restores the prior status), and this is already a
-    // dedicated button click on a specific case row, not something
-    // incidentally triggered - a confirmation step added friction without
-    // guarding against anything actually destructive. The success toast
-    // below still confirms exactly what happened either way.
+    // Archiving asks first (saveReportEditsBeforeLocking, 2026-11-20 - it was
+    // confirm-free from 2026-09-11, but Archived became read-only on 10-02).
+    // Re-open still doesn't: it unlocks, it can't strand anything.
+    if (!(await saveReportEditsBeforeLocking(c.case_folder, newStatus, c.case_number))) return;
     try {
         const res = await fetch('/api/cases/set_status', {
             method: 'POST',
@@ -21945,12 +21951,12 @@ async function fetchSystemInfo() {
         setTelemetryWidth("cpuBar", data.cpu_percent);
 
         if (data.local_storage) {
-            setTelemetryText("storageVal", `${data.local_storage.used_gb} / ${data.local_storage.total_gb} GB`);
+            setTelemetryText("storageVal", `${data.local_storage.used_gb} / ${data.local_storage.total_gb} GiB`);
             setTelemetryWidth("storageBar", data.local_storage.percent_used);
         }
 
         if (data.memory) {
-            setTelemetryText("memVal", `${data.memory.used_gb} / ${data.memory.total_gb} GB (${data.memory.percent_used}%)`);
+            setTelemetryText("memVal", `${data.memory.used_gb} / ${data.memory.total_gb} GiB (${data.memory.percent_used}%)`);
             setTelemetryWidth("memBar", data.memory.percent_used);
         }
 
@@ -22853,7 +22859,7 @@ function renderLiveCollectionRunsChecklist() {
             `<label class="form-check-label small" for="liveCollectionRun${i}">` +
             `<strong>${escapeHtmlForPopup(run.platform === 'unix' ? 'Unix/Linux/macOS' : 'Windows')}</strong> - ` +
             `${escapeHtmlForPopup(run.hostname || run.run_name)} ` +
-            `(${run.file_count} file(s), ${sizeKb} KB)${run.timestamp ? ' - ' + escapeHtmlForPopup(run.timestamp) : ''}` +
+            `(${run.file_count} file(s), ${sizeKb} KiB)${run.timestamp ? ' - ' + escapeHtmlForPopup(run.timestamp) : ''}` +
             `</label>`;
         listEl.appendChild(row);
     });
@@ -24110,9 +24116,9 @@ async function inspectDdrescueMapfile() {
 
         if (data.success) {
             recoveryStructuredRow(structured, 'Mapfile', mapPath);
-            recoveryStructuredRow(structured, 'Rescued Data', `${data.rescued_gb} GB`);
-            recoveryStructuredRow(structured, 'Unattempted Data', `${data.non_tried_mb} MB`);
-            recoveryStructuredRow(structured, 'Bad Sectors Size', `${data.bad_sector_kb} KB`);
+            recoveryStructuredRow(structured, 'Rescued Data', `${data.rescued_gb} GiB`);
+            recoveryStructuredRow(structured, 'Unattempted Data', `${data.non_tried_mb} MiB`);
+            recoveryStructuredRow(structured, 'Bad Sectors Size', `${data.bad_sector_kb} KiB`);
             recoveryStructuredRow(structured, 'Hard Error Blocks', String(data.bad_blocks_count));
         } else {
             const err = document.createElement('span');
@@ -24328,7 +24334,7 @@ function onMobileIosSelect() {
     if (document.getElementById("mobileIosModel")) document.getElementById("mobileIosModel").innerText = dev?.model || '--';
     if (document.getElementById("mobileIosVersion")) document.getElementById("mobileIosVersion").innerText = dev?.ios_version || '--';
     if (document.getElementById("mobileIosBuild")) document.getElementById("mobileIosBuild").innerText = dev?.build_version || '--';
-    if (document.getElementById("mobileIosStorage")) document.getElementById("mobileIosStorage").innerText = dev ? `${dev.storage_capacity_gb} GB` : '--';
+    if (document.getElementById("mobileIosStorage")) document.getElementById("mobileIosStorage").innerText = dev ? `${dev.storage_capacity_gb} GiB` : '--';
     if (document.getElementById("mobileIosActivation")) document.getElementById("mobileIosActivation").innerText = dev?.activation_state || '--';
     if (document.getElementById("mobileIosSerial")) document.getElementById("mobileIosSerial").innerText = dev?.serial || '--';
     if (document.getElementById("mobileIosImei")) document.getElementById("mobileIosImei").innerText = dev?.imei || '--';
@@ -26206,7 +26212,7 @@ async function fetchProgress() {
         // Update Standard Tab Status
         if (document.getElementById("speedVal")) document.getElementById("speedVal").innerText = `${currentSpeed.toFixed(1)} MB/s`;
         if (document.getElementById("bytesVal") && data.total_bytes > 0) {
-            document.getElementById("bytesVal").innerText = `${(data.transferred_bytes / (1024**3)).toFixed(2)} / ${(data.total_bytes / (1024**3)).toFixed(2)} GB`;
+            document.getElementById("bytesVal").innerText = `${(data.transferred_bytes / (1024**3)).toFixed(2)} / ${(data.total_bytes / (1024**3)).toFixed(2)} GiB`;
         }
 
         if (data.active) {
@@ -26239,7 +26245,7 @@ async function fetchProgress() {
             // have a reliable global percentage - just show live bytes + status + log.
             if (document.getElementById("mobileJobStatus")) document.getElementById("mobileJobStatus").innerText = `Status: ${data.status}`;
             if (document.getElementById("mobileBytesVal")) {
-                document.getElementById("mobileBytesVal").innerText = `${(data.transferred_bytes / (1024**2)).toFixed(1)} MB`;
+                document.getElementById("mobileBytesVal").innerText = `${(data.transferred_bytes / (1024**2)).toFixed(1)} MiB`;
             }
             const mobileLogOutput = document.getElementById("mobileLogOutput");
             if (mobileLogOutput && data.log) {
@@ -26399,7 +26405,7 @@ async function fetchProgress() {
 
             if (document.getElementById("mobileJobStatus")) document.getElementById("mobileJobStatus").innerText = `Status: ${data.status}`;
             if (document.getElementById("mobileBytesVal")) {
-                document.getElementById("mobileBytesVal").innerText = `${((data.transferred_bytes || 0) / (1024**2)).toFixed(1)} MB`;
+                document.getElementById("mobileBytesVal").innerText = `${((data.transferred_bytes || 0) / (1024**2)).toFixed(1)} MiB`;
             }
             const finalMobileLogOutput = document.getElementById("mobileLogOutput");
             if (finalMobileLogOutput && data.log) {
