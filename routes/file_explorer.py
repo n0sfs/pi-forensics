@@ -27,6 +27,7 @@ import uuid
 
 from flask import Blueprint, jsonify, request, send_file, g
 
+from core.errors import friendly_error
 from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.case_file import refuses_closed_case_work
 from core.strings_utils import strings_first_lines, format_strings_output, run_capped
@@ -251,7 +252,7 @@ def browse_files():
         return jsonify({"path": path, "items": sorted(items, key=lambda x: (not x['is_dir'], x['name'].lower())),
                         "unreadable": unreadable})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": friendly_error(e)}), 500
 
 def _safe_leaf_path(path_str):
     """Like safe_path(), but a symlink resolves to the LINK, not its target.
@@ -304,7 +305,7 @@ def copy_file():
         log_chain_of_custody("file_copy", {"source": src, "destination": dest_path})
         return jsonify({"success": True, "message": f"Copied {os.path.basename(src)} to {dest_dir}"})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 def _delete_refusal(path):
     """Why `path` must not be deleted from the File Explorer, or None.
@@ -363,7 +364,7 @@ def delete_file():
         log_chain_of_custody("file_delete", {"path": path})
         return jsonify({"success": True, "message": f"Deleted {os.path.basename(path)}"})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 # --- File Preview (image/PDF src / text content) ---
 _PREVIEWABLE_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
@@ -426,7 +427,7 @@ def preview_text_file():
         truncated = size > _PREVIEW_TEXT_MAX_BYTES
         return jsonify({"success": True, "content": text, "truncated": truncated, "size_bytes": size})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 @file_explorer_bp.route('/api/files/hex', methods=['POST'])
 @requires_auth
@@ -456,7 +457,7 @@ def get_file_hex():
             "bytes_read": len(raw), "total_size": size, "truncated": size > len(raw),
         })
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 # --- Post-Acquisition Hash Verifier ---
 @file_explorer_bp.route('/api/verify_hash', methods=['POST'])
@@ -487,7 +488,7 @@ def verify_file_hash():
             "hash": computed
         })
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 @file_explorer_bp.route('/api/files/check_hash_lists', methods=['POST'])
 @requires_auth
@@ -522,7 +523,7 @@ def check_hash_lists():
                     hasher.update(chunk)
             computed[algo] = hasher.hexdigest()
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
     matches = []
     for list_id, s in hash_sets.items():
@@ -594,7 +595,7 @@ def yara_scan():
     except yara.Error as e:
         return jsonify({"success": False, "error": f"YARA scan failed: {e}"}), 500
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
     matches = [{"ruleset_id": m.namespace, "ruleset_name": sources[m.namespace]["name"],
                 "rule": m.rule, "tags": list(m.tags), "meta": dict(m.meta)} for m in raw_matches]
@@ -637,7 +638,7 @@ def get_file_exif():
     except json.JSONDecodeError:
         return jsonify({"success": False, "error": "Could not parse exiftool output."}), 500
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 
 def _human_size(num_bytes):
@@ -708,7 +709,7 @@ def get_file_stat_info():
             "group": group,
         })
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 # --- Binwalk: Embedded Filesystem / Firmware Signature Scan ---
 @file_explorer_bp.route('/api/files/binwalk', methods=['POST'])
@@ -744,7 +745,7 @@ def run_binwalk():
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "binwalk timed out."}), 500
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 # testdisk_analyze now lives in routes/recovery.py, alongside the other 5
 # recovery routes - see the dated CLAUDE.md entry for this refactor.
@@ -784,7 +785,7 @@ def run_clamscan():
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "clamscan timed out."}), 500
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 # --- hashdeep: Recursive Directory Hash Manifest ---
 def _hashdeep_directory_body(target_dir, dest_dir, algo='sha256'):
@@ -883,7 +884,7 @@ def _geolocation_kml_directory_body(target_dir, dest_dir):
             with open(kml_path, 'w', encoding='utf-8') as f:
                 f.write(kml_doc)
         except Exception as e:
-            return {"success": False, "error": f"Failed to write KML file: {e}"}
+            return {"success": False, "error": f"Failed to write KML file: {friendly_error(e)}"}
         _auto_tag_case_artifact(dest_dir, kml_path)
 
     return {"success": True, "kml_path": kml_path, "files_scanned": len(entries), "points_found": len(points)}
@@ -968,7 +969,7 @@ def export_leapp_geolocation():
             with open(kml_path, 'w', encoding='utf-8') as f:
                 f.write(kml_doc)
         except Exception as e:
-            return jsonify({"success": False, "error": f"Failed to write KML file: {e}"}), 500
+            return jsonify({"success": False, "error": f"Failed to write KML file: {friendly_error(e)}"}), 500
         _auto_tag_case_artifact(dest_dir, kml_path)
 
     log_chain_of_custody("leapp_geolocation_kml_export", {
@@ -2149,7 +2150,7 @@ def analyze_mft():
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(result["records"], f, indent=2, default=str)
     except OSError as e:
-        return jsonify({"success": False, "error": f"Analyzed successfully but could not write output: {e}"}), 500
+        return jsonify({"success": False, "error": f"Analyzed successfully but could not write output: {friendly_error(e)}"}), 500
 
     case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
     if case_folder and not case_consolidated_path(case_folder):
@@ -2210,7 +2211,7 @@ def parse_usnjrnl():
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(records, f, indent=2, default=str)
     except OSError as e:
-        return jsonify({"success": False, "error": f"Parsed successfully but could not write output: {e}"}), 500
+        return jsonify({"success": False, "error": f"Parsed successfully but could not write output: {friendly_error(e)}"}), 500
 
     case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
     if case_folder and not case_consolidated_path(case_folder):
@@ -2751,8 +2752,8 @@ def _bugreport_parse_body(file_path, dest_dir, case_folder, run_by=None):
     except OSError as e:
         identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
         _record_analysis_result(case_folder, identity, "Bugreport Deep Parse (dumpstate-py)",
-                                f"FAILED - could not write output: {e}", "", run_by=run_by)
-        return {"success": False, "error": f"Parsed successfully but could not write output: {e}"}
+                                f"FAILED - could not write output: {friendly_error(e)}", "", run_by=run_by)
+        return {"success": False, "error": f"Parsed successfully but could not write output: {friendly_error(e)}"}
 
     section_count = len(result["sections"])
     artifact_records = result.get("artifact_records") or []
@@ -2824,7 +2825,7 @@ def run_strings():
                                                "name": os.path.basename(file_path)}, "Strings", summary, output)
         return jsonify({"success": True, "file_name": os.path.basename(file_path), "output": output})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 @file_explorer_bp.route('/api/files/video_contact_sheet', methods=['POST'])
 @requires_auth
