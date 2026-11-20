@@ -31,7 +31,7 @@ from core.errors import friendly_error
 from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.case_file import refuses_closed_case_work
 from core.strings_utils import strings_first_lines, format_strings_output, run_capped
-from core.paths import closed_case_refusal, safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch
+from core.paths import closed_case_refusal, safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch, acquisition_output_location, path_is_within
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, INSTALL_DIR, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets, ALEAPP_DIR, ALEAPP_VENV_PYTHON, ILEAPP_DIR, ILEAPP_VENV_PYTHON
 import yara
 from core.case_index_db import (scan_chunk_matches, 
@@ -336,6 +336,65 @@ def _delete_refusal(path):
     return None
 
 
+def _acquisition_output_hit(path):
+    """(evidence_id, output path) when `path` is, contains, or sits inside an
+    acquisition output recorded in its case - an image and its sidecars
+    (.log, .sha256, E01 segments) or a pull/container folder - else None.
+
+    Eric's decision 2026-11-20 (10-09 item 8): deleting one of these from an
+    open case needs its name typed, not one tap. Closed cases are refused
+    outright by _delete_refusal() before this matters. An unreadable case
+    file answers None: the plain confirm still applies, and this guard must
+    not become a way to be unable to clean up."""
+    import core.paths as _paths  # read at call time, like safe_path()
+    root = os.path.abspath(_paths.EVIDENCE_ROOT)
+    current = os.path.abspath(path)
+    marker = None
+    while path_is_within(current, root):
+        marker = case_consolidated_path(current)
+        if marker or current == root:
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    if not marker:
+        return None
+    try:
+        with open(marker, 'r') as f:
+            events = (json.load(f) or {}).get('events') or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    real = os.path.realpath(path)
+    case_dir = os.path.realpath(os.path.dirname(marker))
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        out, kind = acquisition_output_location(event.get('acquisition_parameters'))
+        if not out or not isinstance(out, str):
+            continue
+        out_real = os.path.realpath(out)
+        if path_is_within(case_dir, out_real):
+            continue  # a tool that wrote straight into the case folder - not one item's container
+        hit = path_is_within(real, out_real) or path_is_within(out_real, real)
+        if not hit and kind == 'image' and os.path.dirname(real) == os.path.dirname(out_real):
+            hit = os.path.basename(real).startswith(os.path.splitext(os.path.basename(out_real))[0])
+        if hit:
+            return (event.get('case_metadata') or {}).get('evidence_id') or 'an evidence item', out
+    return None
+
+
+@file_explorer_bp.route('/api/files/delete_check', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def delete_check():
+    """Read-only: tells the Delete dialog whether to ask for the name typed."""
+    path = _safe_leaf_path((request.get_json() or {}).get('path'))
+    hit = _acquisition_output_hit(path) if path and os.path.lexists(path) and not os.path.islink(path) else None
+    return jsonify({"success": True, "typed_name_required": bool(hit),
+                    "evidence_id": hit[0] if hit else None, "name": os.path.basename(path) if path else None})
+
+
 @file_explorer_bp.route('/api/files/delete', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -354,6 +413,10 @@ def delete_file():
         refusal = _delete_refusal(path)
     if refusal:
         return jsonify({"success": False, "error": refusal}), 409
+    hit = None if os.path.islink(path) else _acquisition_output_hit(path)
+    if hit and req.get('confirm_name') != os.path.basename(path):
+        return jsonify({"success": False, "requires_typed_name": True, "name": os.path.basename(path),
+                        "error": f"This is acquired evidence ({hit[0]}). Type its name to delete it."}), 409
 
     try:
         if os.path.islink(path):
@@ -362,7 +425,7 @@ def delete_file():
             shutil.rmtree(path)
         else:
             os.remove(path)
-        log_chain_of_custody("file_delete", {"path": path})
+        log_chain_of_custody("file_delete", {"path": path, **({"acquisition_output_of": hit[0]} if hit else {})})
         return jsonify({"success": True, "message": f"Deleted {os.path.basename(path)}"})
     except Exception as e:
         return jsonify({"success": False, "error": friendly_error(e)}), 500
