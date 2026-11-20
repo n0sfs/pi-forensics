@@ -2918,10 +2918,11 @@ async function runFileViewsQuery(node, caseFolder) {
         // below reuses the file-Listing pipeline (Name/Size/MACB columns),
         // which doesn't fit this shape at all, so these get their own
         // dedicated renderer instead.
+        const truncation = data.truncated ? (data.limit || (data.rows || []).length) : 0;
         if (node.queryType === 'parsed_artifacts') {
-            renderParsedArtifactsResults(node, data.rows || []);
+            renderParsedArtifactsResults(node, data.rows || [], truncation);
         } else {
-            renderFileViewsResults(node, data.rows || []);
+            renderFileViewsResults(node, data.rows || [], truncation);
         }
     } catch (err) {
         if (node.queryType === 'parsed_artifacts') {
@@ -2939,7 +2940,7 @@ async function runFileViewsQuery(node, caseFolder) {
 // a Back pseudo-row" mechanism the in-image Search view already established,
 // just with its own table markup instead of routing through
 // renderExplorerActiveTable()'s file-row pipeline.
-function renderParsedArtifactsResults(node, rows) {
+function renderParsedArtifactsResults(node, rows, truncatedAt = 0) {
     const container = document.getElementById('explorerContainer');
     if (!container) return;
     container.innerHTML = '';
@@ -2949,6 +2950,7 @@ function renderParsedArtifactsResults(node, rows) {
     backDiv.innerHTML = '<i class="bi bi-arrow-left me-1"></i>Back to Browse';
     backDiv.onclick = () => loadExplorer(explorerPath);
     container.appendChild(backDiv);
+    if (truncatedAt) container.appendChild(buildFileViewsTruncationNotice(truncatedAt, 'newest'));
 
     if (rows.length === 0) {
         const empty = document.createElement('div');
@@ -3009,7 +3011,23 @@ function buildParsedArtifactsTable(rows) {
 // columns (Source Image, and for hits, the matched Value) appended after
 // them, since File Views results can span every image indexed in the case,
 // something a normal single-directory listing never needs to show.
-function renderFileViewsResults(node, rows) {
+// The File Views routes cap each list (2,000 rows, 5,000 for parsed
+// artifacts) and say so with `truncated`. The tree label shows the full
+// count, so without this a capped list silently read as the complete set.
+function buildFileViewsTruncationNotice(limit, order) {
+    const note = document.createElement('div');
+    note.className = 'alert alert-warning py-1 px-2 my-1 small';
+    note.setAttribute('role', 'status');
+    const icon = document.createElement('i');
+    icon.className = 'bi bi-exclamation-triangle me-1';
+    note.appendChild(icon);
+    const which = order === 'newest' ? `the ${limit.toLocaleString()} newest` : `the first ${limit.toLocaleString()}`;
+    note.appendChild(document.createTextNode(
+        `Showing ${which} - the list is capped, and the count in the tree is the full total.`));
+    return note;
+}
+
+function renderFileViewsResults(node, rows, truncatedAt = 0) {
     explorerRenderUpRow = () => {
         const container = document.getElementById('explorerContainer');
         if (!container) return;
@@ -3018,6 +3036,9 @@ function renderFileViewsResults(node, rows) {
         backDiv.innerHTML = '<i class="bi bi-arrow-left me-1"></i>Back to Browse';
         backDiv.onclick = () => loadExplorer(explorerPath);
         container.appendChild(backDiv);
+        if (truncatedAt) {
+            container.appendChild(buildFileViewsTruncationNotice(truncatedAt, node.queryType === 'tags' ? 'newest' : 'first'));
+        }
     };
 
     const isHits = node.queryType === 'hits';
