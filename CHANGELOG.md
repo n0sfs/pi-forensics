@@ -83,6 +83,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **Geolocation export and the Apple export import say when photos couldn't be read.** exiftool lists an
+  unreadable photo (permissions, I/O error) with only its file name and no error text, so it was counted
+  as "scanned, no GPS". Those photos are now counted separately and named in the result, the job log and
+  the Custody Log. If none could be read, or exiftool isn't installed, the result says GPS was not checked.
 - **Saving a caption returns the same "last updated" time that's written to the case file.** When the
   caption also added you as an examiner, that second write re-stamped the time, so the two could differ
   by a second. This was the intermittent `test_set_file_caption_route` failure.
