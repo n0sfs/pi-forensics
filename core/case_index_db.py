@@ -1788,7 +1788,7 @@ def derive_examiner_display(examiners, legacy_examiner, default="N/A"):
     return legacy or default
 
 
-def ensure_examiner_recorded(case_folder, username):
+def ensure_examiner_recorded(case_folder, username, updated_at=None):
     """Adds `username` to a case's own `examiners` list if they aren't
     already on it - closing a real, user-flagged gap (2026-09-10):
     Examiners previously required a manual "+ Add" click in Reporting's
@@ -1816,6 +1816,12 @@ def ensure_examiner_recorded(case_folder, username):
     Never raises - any failure (an invalid/unresolvable case_folder, a
     malformed marker file, a blocked write) just means the examiner isn't
     recorded this time, not that the caller's own real action fails.
+
+    `updated_at` (2026-11-20): a caller that just stamped the record and
+    returns that stamp to the client passes it here, so this second write
+    keeps it. Re-stamping made set_file_caption's response and the file
+    disagree whenever a second boundary fell between the two writes (the
+    intermittent test_set_file_caption_route failure, tasks.md D13).
     """
     if not username or not str(username).strip():
         return
@@ -1848,7 +1854,7 @@ def ensure_examiner_recorded(case_folder, username):
                 return  # already recorded - nothing to write
             examiners.append(username)
             data['examiners'] = examiners
-            data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
+            data['updated_at'] = updated_at or time.strftime("%Y-%m-%d %H:%M:%S")
             _write_case_file(marker_path, data)
     except Exception:
         pass

@@ -212,3 +212,22 @@ def test_set_file_caption_allowed_with_file_explorer_permission_alone(app, runti
     })
     assert res.status_code == 200
     assert res.get_json()["success"] is True
+
+
+def test_returned_updated_at_matches_disk_across_a_second_boundary(client, evidence_root, monkeypatch):
+    """tasks.md D13: the examiner-recording write that follows the caption
+    write used to re-stamp updated_at. Force that second write into a later
+    second; the response and the file must still agree."""
+    import types
+    import core.case_index_db as cidb
+    monkeypatch.setattr(cidb, "time", types.SimpleNamespace(strftime=lambda fmt: "2099-12-31 23:59:59"))
+    exhibit_path = "/mnt/fake_evidence/drive_image.dd"
+    case_folder, report_path = _make_real_case(evidence_root, attached_files=[exhibit_path])
+
+    body = client.post("/api/cases/set_file_caption", json={
+        "case_folder": case_folder, "file_path": exhibit_path, "caption": "c",
+    }).get_json()
+    with open(report_path) as f:
+        on_disk = json.load(f)
+    assert "admin_user" in on_disk.get("examiners", [])  # the second write did happen
+    assert on_disk["updated_at"] == body["updated_at"] != "2099-12-31 23:59:59"

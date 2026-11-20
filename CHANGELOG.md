@@ -83,6 +83,9 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **Saving a caption returns the same "last updated" time that's written to the case file.** When the
+  caption also added you as an examiner, that second write re-stamped the time, so the two could differ
+  by a second. This was the intermittent `test_set_file_caption_route` failure.
 - **Reporting's Overview counts keyword hits the way the report does.** It counted every saved hit, so
   re-running a scan doubled it. Now it counts distinct values, like the report's Analysis Results
   section. File Views still lists every hit.
