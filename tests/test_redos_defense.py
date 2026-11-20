@@ -42,9 +42,17 @@ def test_check_regex_pattern_for_redos_does_not_flag_an_ordinary_safe_pattern():
     assert case_index_db.check_regex_pattern_for_redos(safe) is None
 
 
-def test_a_quadratic_pattern_is_flagged_too():
+def test_a_quadratic_pattern_is_flagged_too(monkeypatch):
     """Not exponential, so the short probes finish instantly - but over an
-    8 MB chunk with no '@' every start position rescans to the end."""
+    8 MB chunk with no '@' every start position rescans to the end.
+
+    The growth RATIO is what identifies quadratic matching (about 15x on 4x
+    the text here). The absolute floor only exists to ignore noise on tiny
+    timings, and on a fast x86 CI runner this pattern's long probe takes
+    ~0.018 s - just under the 0.02 s floor the Pi clears easily - so the
+    test failed or passed by machine speed. Lower the floor for the test so
+    it checks the ratio logic, not the hardware."""
+    monkeypatch.setattr(case_index_db, "REDOS_GROWTH_MIN_SECONDS", 0.002)
     quadratic = re.compile(rb"[\w.+-]+@[\w-]+\.[\w.-]+", re.IGNORECASE)
     error = case_index_db.check_regex_pattern_for_redos(quadratic)
     assert error is not None
