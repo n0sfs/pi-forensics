@@ -1462,9 +1462,9 @@ def collect_case_analysis_findings(case_folder,
         # again. Distinct is also what the section's own wording promises, and
         # what an examiner means by "how many did it find".
         #
-        # This differs from case_index_summary()'s Overview tile, which counts
-        # rows; that is pre-existing behaviour and deliberately left alone
-        # rather than changed as a side effect of adding a report section.
+        # case_index_summary() returns the same distinct count as
+        # keyword_hits.unique_values for the Overview (2026-11-20); its
+        # per-category row counts stay for File Views, which lists rows.
         for category, count in conn.execute(
                 "SELECT category, COUNT(DISTINCT value) FROM triage_hits "
                 "GROUP BY category ORDER BY COUNT(DISTINCT value) DESC"):

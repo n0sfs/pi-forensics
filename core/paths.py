@@ -537,6 +537,15 @@ def nearest_case_status(path, _read_json=None):
             return None
         current = parent
 
+def raw_image_sidecar(out_file, suffix):
+    """The path of a log/hash file that sits beside a raw image: foo.dd +
+    '_dc3dd.log' -> foo_dc3dd.log. Only the trailing '.dd' is replaced -
+    out_file.replace('.dd', ...) also rewrote any '.dd' earlier in the path
+    (a case folder named '2026.dd-review', say), sending dc3dd's log and the
+    hash logs to a folder that does not exist (found 2026-09-23, fixed
+    2026-11-20)."""
+    return (out_file[:-3] if out_file.endswith('.dd') else out_file) + suffix
+
 def case_status_blocking_new_work(dest_path, _read_json=None):
     """Returns the case's status string when `dest_path` is (or is inside) a
     case folder whose status is one of CASE_STATUSES_CLOSED_TO_NEW_WORK, else

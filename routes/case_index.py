@@ -156,6 +156,7 @@ def case_index_summary():
     total_files = 0
     tags = []
     analysis_results_count = 0
+    keyword_unique_values = 0
     if conn:
         try:
             for row in conn.execute("SELECT category, COUNT(*) FROM indexed_files WHERE deleted=0 GROUP BY category"):
@@ -168,6 +169,13 @@ def case_index_summary():
                     keyword_hits[row[0]] = row[1]
                 elif row[0].startswith(KEYWORD_CATEGORY_PREFIX):
                     custom_keyword_hits.append({"category": row[0], "label": resolve_scan_category_label(row[0]), "count": row[1]})
+            # Distinct (category, value) - the number the report's Analysis Results
+            # section gives (2026-11-20). The per-category counts above count
+            # rows, which is what File Views lists, but re-running a scan writes
+            # the same hit again, so a row total doubled on every rescan and the
+            # Overview disagreed with the report.
+            keyword_unique_values = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT category, value FROM triage_hits)").fetchone()[0]
             for row in conn.execute("SELECT artifact_type, COUNT(*) FROM parsed_artifacts GROUP BY artifact_type"):
                 parsed_artifact_counts[row[0]] = row[1]
             for row in conn.execute(
@@ -194,7 +202,7 @@ def case_index_summary():
         "total_files": total_files,
         "by_extension": by_extension,
         "deleted_files": deleted_files,
-        "keyword_hits": {"total": keyword_hit_total, **keyword_hits},
+        "keyword_hits": {"total": keyword_hit_total, "unique_values": keyword_unique_values, **keyword_hits},
         "custom_keyword_hits": custom_keyword_hits,
         "parsed_artifact_counts": parsed_artifact_counts,
         "tags": tags,

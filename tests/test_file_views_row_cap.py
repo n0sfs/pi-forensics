@@ -106,3 +106,22 @@ def test_a_list_exactly_at_the_cap_is_not_flagged(client, case_folder, small_cap
 def test_an_unindexed_case_is_not_flagged(client, case_folder, small_cap):
     data = client.post('/api/case_index/files', json={"case_folder": case_folder, "category": _category()}).get_json()
     assert data["rows"] == [] and data["truncated"] is False
+
+
+def test_summary_unique_keyword_values_do_not_double_on_a_rescan(client, case_folder):
+    # 2026-11-20: re-running a scan writes the same hit again; the Overview
+    # used the row total, which doubled, while the report counts distinct values.
+    conn = case_index_db._case_index_connect(case_index_db.case_index_db_path(case_folder))
+    try:
+        cat = sorted(case_index_db.TRIAGE_PATTERNS)[0]
+        rows = [("real_fs", None, None, None, "/p/a.txt", cat, "value-1", "2026-11-20 00:00:00"),
+                ("real_fs", None, None, None, "/p/a.txt", cat, "value-2", "2026-11-20 00:00:00")]
+        for _ in range(2):  # the same scan, run twice
+            conn.executemany("INSERT INTO triage_hits (source_type, image_path, fs_offset, inode, path, category, value, found_at) "
+                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        conn.commit()
+    finally:
+        conn.close()
+    data = client.post('/api/case_index/summary', json={"case_folder": case_folder}).get_json()
+    assert data["keyword_hits"][sorted(case_index_db.TRIAGE_PATTERNS)[0]] == 4  # File Views lists rows
+    assert data["keyword_hits"]["unique_values"] == 2  # the Overview/report number

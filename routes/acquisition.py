@@ -32,6 +32,7 @@ from flask import Blueprint, jsonify, request, g
 from core.priv import priv_argv, priv_available
 from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import (
+    raw_image_sidecar,
     safe_path, log_chain_of_custody, is_valid_block_device,
     is_valid_block_device_or_partition, _DEVICE_RE, classify_usb_port,
     describe_usb_port, sanitize_case_slug, case_status_blocking_new_work, system_disk_names, destination_is_on_source_device,
@@ -1255,11 +1256,11 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             # the real extension, and could silently pick the wrong file if
             # a case/evidence ID happens to contain ".dd". Falls back to the
             # old derivation only for a caller that doesn't pass it.
-            dc3dd_log = dc3dd_log_file or out_file.replace('.dd', '_dc3dd.log')
+            dc3dd_log = dc3dd_log_file or raw_image_sidecar(out_file, '_dc3dd.log')
             computed_hashes = parse_dc3dd_hashes(dc3dd_log)
         elif fmt == 'dcfldd':
             for h in hashes:
-                log_path = (dcfldd_hash_log_files or {}).get(h) or out_file.replace('.dd', f'_{h}.log')
+                log_path = (dcfldd_hash_log_files or {}).get(h) or raw_image_sidecar(out_file, f'_{h}.log')
                 val = read_hash_log_file(log_path, h)
                 if val:
                     computed_hashes[h] = val
