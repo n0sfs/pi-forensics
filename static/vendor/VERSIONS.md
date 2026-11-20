@@ -1,6 +1,6 @@
 # Vendored front-end libraries
 
-Served locally so an offline station or LAN gets a styled, working UI (Maintainer decision 2026-11-20; they used to load from cdn.jsdelivr.net, with Chart.js unpinned).
+Served locally so an offline station or LAN gets a styled, working UI (Maintainer decision 2026-11-20; they used to load from a public CDN, with Chart.js unpinned).
 Copied unmodified from the npm packages (npm verified each tarball's integrity hash). Source maps left out.
 
 | Library | Version | Files |

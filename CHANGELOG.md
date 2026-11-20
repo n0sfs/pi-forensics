@@ -53,7 +53,7 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 ### Changed
 
 - **Bootstrap 5.3.0, Bootstrap Icons 1.10.0 and Chart.js 4.4.1 are served from the station.** They loaded
-  from cdn.jsdelivr.net (Chart.js unpinned), so an offline station or isolated lab LAN got an unstyled
+  from a public CDN (Chart.js unpinned), so an offline station or isolated lab LAN got an unstyled
   page. Versions are listed in static/vendor/VERSIONS.md, and a test keeps third-party URLs out of the page.
 - **Archive and Close ask first.** Both make the case read-only, so a mis-tap now gets a confirm (Case
   Manager's Archive and Reporting's Status dropdown). Re-open still doesn't ask.
