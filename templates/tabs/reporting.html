@@ -848,7 +848,7 @@
                                                             <div id="exportMismatchWarning" class="small alert alert-warning py-2 px-3 mb-2" style="display:none;"></div>
                                                             <details id="previousExportsBox" class="mb-2" ontoggle="if (this.open) loadPreviousExports()">
                                                                 <summary class="small fw-bold text-info">Previous exports</summary>
-                                                                <div class="small text-subtle my-1">Every PDF and HTML export is kept in this case's folder with its SHA-256 (JSON and CSV downloads are not recorded here). Verify re-hashes a file and compares it with the hash recorded when it was exported.</div>
+                                                                <div class="small text-subtle my-1">Every export (PDF, HTML, Raw JSON, Evidence Inventory CSV) is kept in this case's folder with its SHA-256 and a Custody Log entry. Download gets the saved file back; Verify re-hashes it and compares it with the hash recorded when it was exported.</div>
                                                                 <div id="previousExportsList" class="small"></div>
                                                             </details>
                                                         </div>
@@ -995,7 +995,7 @@
                                                                 <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="refreshExportPreview()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh Preview</button>
                                                             </div>
                                                         </div>
-                                                        <div class="small text-subtle mb-1">Renders exactly what Export would currently produce, from the checkboxes above - nothing is saved to disk until you click Export. Does not auto-update; click Refresh Preview after changing a checkbox.</div>
+                                                        <div class="small text-subtle mb-1">Renders exactly what Export would currently produce, from the checkboxes above and the last SAVED version of the report - nothing is written to disk until you click Export. Does not auto-update; click Refresh Preview after changing a checkbox.</div>
                                                         <iframe id="exportPreviewFrame" title="Report preview" style="width:100%; height: clamp(300px, 55vh, 650px); border:1px solid #495057; border-radius:6px; background:#fff;"></iframe>
                                                     </div>
                                                     <div id="exportJsonPreviewGroup" class="mt-3" style="display:none;">

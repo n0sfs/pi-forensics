@@ -19508,7 +19508,7 @@ async function loadPreviousExports() {
             nameCell.textContent = exp.name;
             const meta = document.createElement('div');
             meta.className = 'text-subtle font-monospace';
-            meta.textContent = `${exp.modified} · ${(exp.size / 1024).toFixed(0)} KB · SHA-256 ${exp.sha256 || '(no .sha256 file)'}`;
+            meta.textContent = `${exp.modified} · ${exp.size < 1024 ? `${exp.size} B` : `${(exp.size / 1024).toFixed(0)} KB`} · SHA-256 ${exp.sha256 || '(no .sha256 file)'}`;
             meta.style.wordBreak = 'break-all';
             nameCell.appendChild(meta);
             const actCell = tr.insertCell();
@@ -19521,7 +19521,14 @@ async function loadPreviousExports() {
             btn.disabled = !exp.sha256;
             if (!exp.sha256) btn.title = 'This export has no .sha256 file to check against.';
             btn.onclick = () => verifyPreviousExport(reportPath, exp.path, btn, result);
-            actCell.append(btn, result);
+            // Download the saved file itself (2026-11-20) - re-exporting makes a new file with a new hash.
+            const dl = document.createElement('a');
+            dl.className = 'btn btn-xs btn-outline-info me-1';
+            dl.textContent = 'Download';
+            dl.href = `/api/report_exports/download?report_path=${encodeURIComponent(reportPath)}&path=${encodeURIComponent(exp.path)}`;
+            dl.setAttribute('download', exp.name);
+            dl.title = 'Download this saved export (recorded in the Custody Log)';
+            actCell.append(dl, btn, result);
         }
         list.appendChild(table);
     } catch (err) {
@@ -19576,6 +19583,44 @@ async function runExportReport() {
     }
 }
 
+// Raw JSON / Evidence Inventory CSV are built here in the browser. Since
+// 2026-11-20 the exact text is first saved on the station (versioned name,
+// .sha256 sidecar, Custody Log entry, listed under Previous exports), then
+// downloaded under that same name - they used to be download-only, leaving
+// no record that the case data had left the station. If the station copy
+// cannot be written, the download still happens and the status says so.
+async function saveAndDownloadClientExport(reportPath, format, text, mime, fallbackName, statusEl) {
+    let saved = null, saveError = null;
+    try {
+        const res = await fetch('/api/report_exports/save_client_export', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_path: reportPath, format, content: text }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success) saved = data;
+        else saveError = data.error || `HTTP ${res.status}`;
+    } catch (err) {
+        saveError = err.message;
+    }
+    const url = window.URL.createObjectURL(new Blob([text], { type: mime }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = saved ? saved.filename : fallbackName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+    if (!statusEl) return;
+    if (saved) {
+        statusEl.textContent = `Exported ${saved.filename}. A copy stays on the station in this case's folder, with ${saved.filename}.sha256 beside it (the SHA-256 of the file's bytes): ${saved.sha256}. Your browser also downloaded a copy under the same name.`;
+        statusEl.className = 'small text-success';
+    } else {
+        statusEl.textContent = `Downloaded ${fallbackName}, but no station copy or Custody Log entry was made: ${saveError}`;
+        statusEl.className = 'small text-warning';
+    }
+    if (document.getElementById('previousExportsBox')?.open) loadPreviousExports();
+}
+
 async function runExportReportInner() {
     const reportPath = currentReportPath;
     if (!reportPath) return showToast("Select an active case first.", 'warning');
@@ -19611,16 +19656,8 @@ async function runExportReportInner() {
         const statusEl = document.getElementById("exportReportStatus");
         const onDisk = await _fetchReportJsonFromDisk(reportPath, statusEl);
         if (!onDisk) return;
-        const blob = new Blob([JSON.stringify(onDisk, null, 2)], { type: 'application/json' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = reportPath.split('/').pop();
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
-        if (statusEl) { statusEl.textContent = 'Export complete.'; statusEl.className = 'small text-success'; }
+        await saveAndDownloadClientExport(reportPath, 'json', JSON.stringify(onDisk, null, 2),
+            'application/json', reportPath.split('/').pop(), statusEl);
         return;
     }
 
@@ -19654,16 +19691,8 @@ async function runExportReportInner() {
             ]);
         });
         const csvText = rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
-        const blob = new Blob([csvText], { type: 'text/csv' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = reportPath.split('/').pop().replace('.json', '_evidence_inventory.csv');
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
-        if (statusEl) { statusEl.textContent = 'Export complete.'; statusEl.className = 'small text-success'; }
+        await saveAndDownloadClientExport(reportPath, 'csv', csvText, 'text/csv',
+            reportPath.split('/').pop().replace('.json', '_evidence_inventory.csv'), statusEl);
         return;
     }
 
@@ -19683,6 +19712,7 @@ async function runExportReportInner() {
         if (res.ok) {
             const reportHash = res.headers.get('X-Report-Sha256');
             const savedName = res.headers.get('X-Report-Filename');
+            const reportNotice = res.headers.get('X-Report-Notice');
             const blob = await res.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -19697,6 +19727,10 @@ async function runExportReportInner() {
                     ? `Exported ${savedName}. A copy stays on the station in this case's folder, with ${savedName}.sha256 beside it (the SHA-256 of the file's bytes): ${reportHash}. Your browser also downloaded a copy under the same name.`
                     : (reportHash ? `Export complete. SHA256: ${reportHash}` : 'Export complete.');
                 statusEl.className = 'small text-success';
+                if (reportNotice) {
+                    statusEl.textContent += ` Note: ${reportNotice}`;
+                    statusEl.className = 'small text-warning';
+                }
             }
         } else {
             const data = await res.json();
@@ -19844,7 +19878,22 @@ async function refreshExportPreview() {
             iframe.removeAttribute('src');
             iframe.srcdoc = text;
         }
-        if (statusEl) { statusEl.textContent = 'Preview updated.'; statusEl.className = 'small text-success'; }
+        // The preview renders the SAVED report, like Export does (2026-11-20) - with edits
+        // pending it used to say "Preview updated." as if it showed them.
+        if (statusEl) {
+            const notice = res.headers.get('X-Report-Notice');
+            if (reportHasUnsavedChanges || notice) {
+                statusEl.textContent = [
+                    'Preview updated.',
+                    reportHasUnsavedChanges ? 'It shows the last save - your unsaved edits are not in it; Save first to include them.' : '',
+                    notice || '',
+                ].filter(Boolean).join(' ');
+                statusEl.className = 'small text-warning';
+            } else {
+                statusEl.textContent = 'Preview updated.';
+                statusEl.className = 'small text-success';
+            }
+        }
     } catch (err) {
         if (statusEl) { statusEl.textContent = `Preview failed: ${err.message}`; statusEl.className = 'small text-danger'; }
     }
