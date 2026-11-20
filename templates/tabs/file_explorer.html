@@ -95,6 +95,7 @@
                                                 <div class="d-flex justify-content-between align-items-center mb-1">
                                                     <span class="telemetry-grid-label">Details</span>
                                                     <div class="d-flex gap-1">
+                                                        <button type="button" id="explorerRowActionsBtn" class="btn btn-xs btn-outline-warning py-0 px-2" onclick="openActionsForSelectedRow(event)" title="Actions for the item selected in the listing - the same menu as right-click or press-and-hold"><i class="bi bi-three-dots-vertical"></i>Actions</button>
                                                         <button type="button" id="explorerViewPreviewBtn" class="btn btn-xs btn-info py-0 px-2" onclick="switchExplorerRightView('preview')">Preview</button>
                                                         <button type="button" id="explorerViewHexBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('hex')" title="Raw byte view (offset / hex / ASCII) of the first part of the file">Hex</button>
                                                         <button type="button" id="explorerViewMetadataBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('metadata')" title="Embedded file metadata via ExifTool">Metadata</button>
