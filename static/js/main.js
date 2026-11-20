@@ -5687,7 +5687,7 @@ function buildGeoOutlierNotice(points, outliers, onToggle, speedsChecked) {
 // Renders a Leaflet map (one marker per placemark, fit to bounds) into
 // `container`, plus a plain placemark table underneath that's always shown
 // regardless of whether the map itself could render - this app already
-// depends on CDN-loaded Bootstrap/Chart.js the same way (see the <head>),
+// once depended on CDN-loaded Bootstrap/Chart.js too (vendored 2026-11-20),
 // so a missing Leaflet/map-tile connection isn't a new dependency class,
 // just another instance of the same one, and the raw coordinate data stays
 // accessible either way.
