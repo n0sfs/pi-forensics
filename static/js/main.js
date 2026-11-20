@@ -17096,7 +17096,7 @@ async function renderCaseDashboard() {
 
             const parsedArtifactTotal = Object.values(data.parsed_artifact_counts || {}).reduce((a, b) => a + b, 0);
             const analysisTotal = (data.analysis_results_count || 0) + (data.total_files || 0)
-                + ((data.keyword_hits || {}).total || 0) + parsedArtifactTotal;
+                + ((data.keyword_hits || {}).unique_values ?? (data.keyword_hits || {}).total ?? 0) + parsedArtifactTotal;
             if (analysisCountEl) analysisCountEl.textContent = data.has_analysis_activity ? String(analysisTotal) : '0';
             if (analysisDetailEl) analysisDetailEl.textContent = data.has_analysis_activity
                 ? 'Tools have been run against this case' : 'No analysis tools run yet';
@@ -17107,7 +17107,9 @@ async function renderCaseDashboard() {
                 notes: caseNotes.length,
                 taggedItems,
                 parsedArtifacts: parsedArtifactTotal,
-                keywordHits: (data.keyword_hits || {}).total || 0,
+                // Distinct values, matching the report's Analysis Results section - row
+                // totals doubled on every rescan (2026-11-20).
+                keywordHits: (data.keyword_hits || {}).unique_values ?? (data.keyword_hits || {}).total ?? 0,
             });
         }
     } catch (err) {

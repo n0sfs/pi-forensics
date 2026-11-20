@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
-from core.paths import closed_case_refusal, sanitize_case_slug, safe_path, log_chain_of_custody, case_status_blocking_new_work
+from core.paths import raw_image_sidecar, closed_case_refusal, sanitize_case_slug, safe_path, log_chain_of_custody, case_status_blocking_new_work
 from core.config import EVIDENCE_ROOT, INSTALL_DIR
 from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
@@ -1290,14 +1290,14 @@ def execution_worker_android_physical(serial, target, engine, hashes, total_byte
 
     upstream_cmd = ["adb", "-s", serial, "exec-out", f"su -c 'dd if={target} bs=4M'"]
     if engine == 'dc3dd':
-        dc3dd_log_file = out_file.replace('.dd', '_dc3dd.log')
+        dc3dd_log_file = raw_image_sidecar(out_file, '_dc3dd.log')
         downstream_cmd = ["sudo", "/usr/bin/dc3dd", f"of={out_file}", f"log={dc3dd_log_file}"] + [f"hash={h}" for h in hashes]
     else:
         downstream_cmd = ["sudo", "/usr/bin/dcfldd", f"of={out_file}"]
         if hashes:
             downstream_cmd.append(f"hash={','.join(hashes)}")
             for h in hashes:
-                downstream_cmd.append(f"{h}log={out_file.replace('.dd', f'_{h}.log')}")
+                downstream_cmd.append(f"{h}log={raw_image_sidecar(out_file, f'_{h}.log')}")
 
     append_log(f"[*] Starting physical acquisition of {target} using [{engine.upper()}] via adb (rooted device required)...")
     append_log(f"[*] Upstream (device) command: {' '.join(upstream_cmd)}")
@@ -1326,10 +1326,10 @@ def execution_worker_android_physical(serial, target, engine, hashes, total_byte
 
         computed_hashes = {}
         if engine == 'dc3dd':
-            computed_hashes = parse_dc3dd_hashes(out_file.replace('.dd', '_dc3dd.log'))
+            computed_hashes = parse_dc3dd_hashes(raw_image_sidecar(out_file, '_dc3dd.log'))
         else:
             for h in hashes:
-                val = read_hash_log_file(out_file.replace('.dd', f'_{h}.log'), h)
+                val = read_hash_log_file(raw_image_sidecar(out_file, f'_{h}.log'), h)
                 if val:
                     computed_hashes[h] = val
 

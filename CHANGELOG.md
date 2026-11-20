@@ -83,6 +83,11 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **Reporting's Overview counts keyword hits the way the report does.** It counted every saved hit, so
+  re-running a scan doubled it. Now it counts distinct values, like the report's Analysis Results
+  section. File Views still lists every hit.
+- **An Android physical acquisition into a folder with ".dd" in its name keeps its logs.** The dc3dd
+  log and hash-log paths were built by replacing every ".dd" in the path, not just the extension.
 - **Raw JSON and Evidence Inventory CSV exports are recorded like PDF and HTML.** They used to be
   browser-only downloads. Now each one is also saved in the case folder with a .sha256 file and a
   Custody Log entry, and listed under Previous exports.

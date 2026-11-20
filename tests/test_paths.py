@@ -344,3 +344,12 @@ def test_the_numeric_suffix_strip_cannot_swallow_a_real_case_folder():
     from core.paths import is_bulk_tool_output_dir
     for name in ("2026-CASE-01", "2026-CASE-01.2", "my_photorec_notes", "X_photorec.abc"):
         assert not is_bulk_tool_output_dir(name), name
+
+
+def test_raw_image_sidecar_replaces_only_the_trailing_dd():
+    # 2026-11-20: out_file.replace('.dd', ...) also rewrote a '.dd' earlier in
+    # the path, so dc3dd's log and hash logs went to a folder that did not exist.
+    from core.paths import raw_image_sidecar
+    assert raw_image_sidecar("/mnt/2026.dd-review/PHONE_ITEM-01.dd", "_dc3dd.log") == "/mnt/2026.dd-review/PHONE_ITEM-01_dc3dd.log"
+    assert raw_image_sidecar("/mnt/case/x.dd", "_sha256.log") == "/mnt/case/x_sha256.log"
+    assert raw_image_sidecar("/mnt/case/x.img", "_md5.log") == "/mnt/case/x.img_md5.log"
