@@ -27,6 +27,7 @@ import time
 
 from flask import Blueprint, jsonify, request
 
+from core.errors import friendly_error
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, sanitize_case_slug, case_consolidated_path
 from core.config import EVIDENCE_ROOT, get_custom_case_fields
@@ -99,7 +100,7 @@ def create_case():
     except FileExistsError:
         return jsonify({"success": False, "error": f"A case folder named '{slug}' already exists at this location. Choose a different case number or parent location."}), 409
     except Exception as e:
-        return jsonify({"success": False, "error": f"Could not create case folder: {e}"}), 500
+        return jsonify({"success": False, "error": f"Could not create case folder: {friendly_error(e)}"}), 500
 
     try:
         now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -146,7 +147,7 @@ def create_case():
             os.rmdir(case_dir)
         except OSError:
             pass
-        return jsonify({"success": False, "error": f"Could not create case folder: {e}"}), 500
+        return jsonify({"success": False, "error": f"Could not create case folder: {friendly_error(e)}"}), 500
 
     log_chain_of_custody("case_create", {"case_number": case_number_raw, "examiner": examiner, "case_folder": case_dir})
     return jsonify({"success": True, "case": case_record})
@@ -165,7 +166,7 @@ def list_cases():
         cases = list_case_folders(unreadable_out=unreadable)
         return jsonify({"success": True, "cases": cases, "unreadable": unreadable})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": friendly_error(e)}), 500
 
 
 @case_management_bp.route('/api/cases/log_select', methods=['POST'])
@@ -249,7 +250,7 @@ def set_case_status():
             data.pop('status_before_archive', None)
         _write_case_file(marker_path, data)
     except Exception as e:
-        return jsonify({"success": False, "error": f"Could not update case status: {e}"}), 500
+        return jsonify({"success": False, "error": f"Could not update case status: {friendly_error(e)}"}), 500
 
     log_chain_of_custody("case_status_changed", {
         "case_folder": case_folder, "case_number": data.get('case_number', ''),

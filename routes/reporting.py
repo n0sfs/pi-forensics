@@ -61,6 +61,7 @@ import urllib.request
 
 from flask import Blueprint, jsonify, request, g, send_file, Response
 
+from core.errors import friendly_error
 from core.auth import requires_auth, requires_permission, get_current_user_permissions, _effective_client_ip
 from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path,
@@ -7756,4 +7757,4 @@ def export_report():
         resp.headers['X-Report-Filename'] = os.path.basename(out_path)
         return resp
     except Exception as e:
-        return jsonify({"error": f"Report export failed: {str(e)}"}), 500
+        return jsonify({"error": f"Report export failed: {friendly_error(e)}"}), 500

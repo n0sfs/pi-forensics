@@ -79,6 +79,9 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **Storage errors read as plain sentences.** "[Errno 30] Read-only file system: '/mnt/...'" now reads
+  "The storage is read-only (/mnt/...)." The same goes for permission denied, full storage, a
+  disconnected share and a few others, in case creation, report export and File Explorer.
 - **File Views says when a list is cut short.** Each list shows at most 2,000 entries (5,000 for parsed
   artifacts), but the tree's count is the full total. A capped list now carries a warning saying so,
   instead of looking like the complete set.
