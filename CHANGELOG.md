@@ -83,6 +83,14 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **Raw JSON and Evidence Inventory CSV exports are recorded like PDF and HTML.** They used to be
+  browser-only downloads. Now each one is also saved in the case folder with a .sha256 file and a
+  Custody Log entry, and listed under Previous exports.
+- **Previous exports have a Download button**, so you can get back the exact file you handed over (the
+  download is logged too). Before, the only option was re-exporting, which makes a new file with a new hash.
+- **Preview says when it isn't showing your unsaved edits.** It renders the last save, as Export does.
+- **A custom template without an Exhibits section says the checked files were left out**, on Export and
+  on Preview, instead of dropping them without a word.
 - **File Explorer has a visible Actions button.** It opens the right-click menu for the selected
   item, so the touchscreen no longer depends on press-and-hold, which some browsers don't treat as a
   right-click. On a touchscreen, menu rows, folder-tree rows and listing rows are now at least 44 pixels

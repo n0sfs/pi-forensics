@@ -7319,12 +7319,12 @@ def _build_html_report_caseuco(header, events, urls, files, audit_entries, case_
 # sidecar, answering "which version did I send, and is it unchanged?".
 
 def _report_export_files(report_file):
-    """The exported PDF/HTML files of one case report, newest first."""
+    """The exported PDF/HTML/JSON/CSV files of one case report, newest first."""
     stem = os.path.basename(report_file.rsplit('.json', 1)[0]) + '_'
     folder = os.path.dirname(report_file)
     out = []
     for name in os.listdir(folder):
-        if name.startswith(stem) and name.endswith(('.pdf', '.html')) and name[len(stem):len(stem) + 1].isdigit():
+        if name.startswith(stem) and name.endswith(('.pdf', '.html', '.json', '.csv')) and name[len(stem):len(stem) + 1].isdigit():
             path = os.path.join(folder, name)
             try:
                 st = os.stat(path)
@@ -7387,6 +7387,102 @@ def verify_report_export():
     log_chain_of_custody("report_export_verified", {"file": path, "recorded_sha256": recorded,
                                                     "computed_sha256": actual, "match": match})
     return jsonify({"success": True, "match": match, "recorded": recorded, "computed": actual})
+
+
+def _save_versioned_export(report_file, case_folder, content_bytes, ext, name_suffix=''):
+    """Writes one export beside the case file as <case>_<stamp>[_n]<suffix><ext>,
+    never overwriting (O_EXCL), with a sha256sum-format sidecar, and tags both
+    as case artifacts. Returns (path, sha256). Shared by the PDF/HTML export
+    and, since 2026-11-20, the JSON/CSV exports (which used to be browser-only
+    downloads with no station copy, no sidecar and no custody entry)."""
+    stem = report_file.rsplit('.json', 1)[0] + '_' + time.strftime('%Y%m%d-%H%M%S')
+    out_path, n = stem + name_suffix + ext, 1
+    while True:
+        try:
+            fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            break
+        except FileExistsError:
+            n += 1
+            out_path = f"{stem}_{n}{name_suffix}{ext}"
+    with os.fdopen(fd, 'wb') as f:
+        f.write(content_bytes)
+        f.flush()
+        os.fsync(f.fileno())
+
+    # A report-level integrity hash - computed over the exported file's
+    # actual bytes (already in memory, the same bytes just written to
+    # disk above), not the source case JSON, so it verifies the specific
+    # PDF/HTML artifact an examiner hands off, not just the data behind
+    # it. Written as a standard sha256sum-format sidecar file (so
+    # `sha256sum -c` works directly against it later) and also returned
+    # as a response header so the examiner sees it immediately, not only
+    # by going and finding the sidecar file afterward.
+    digest = hashlib.sha256(content_bytes).hexdigest()
+    with open(out_path + '.sha256', 'w') as f:
+        f.write(f"{digest}  {os.path.basename(out_path)}\n")
+    _auto_tag_case_artifact(case_folder, out_path)
+    _auto_tag_case_artifact(case_folder, out_path + '.sha256')
+    return out_path, digest
+
+
+@reporting_bp.route('/api/report_exports/save_client_export', methods=['POST'])
+@requires_auth
+@requires_permission('reporting')
+def save_client_export():
+    """Keeps a station copy of a Raw JSON or Evidence Inventory CSV export
+    (2026-11-20). Both are built in the browser from the on-disk case file and
+    used to exist only as a download: no copy in the case folder, no .sha256,
+    no custody entry, absent from Previous exports. The browser sends the exact
+    text it is about to download, so the hash recorded here is the hash of the
+    file the examiner hands over."""
+    req = request.get_json() or {}
+    report_file = safe_path(req.get('report_path'))
+    if not report_file or not os.path.isfile(report_file):
+        return jsonify({"success": False, "error": "Report file not found or outside the permitted evidence directory."}), 404
+    fmt = req.get('format')
+    if fmt not in ('json', 'csv'):
+        return jsonify({"success": False, "error": "format must be 'json' or 'csv'."}), 400
+    content = req.get('content')
+    if not isinstance(content, str) or not content:
+        return jsonify({"success": False, "error": "Nothing to save."}), 400
+    case_folder = os.path.dirname(report_file)
+    try:
+        out_path, digest = _save_versioned_export(
+            report_file, case_folder, content.encode('utf-8'),
+            '.json' if fmt == 'json' else '.csv', '' if fmt == 'json' else '_evidence_inventory')
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Could not save the export: {friendly_error(e)}"}), 503
+    log_chain_of_custody("report_exported", {"case_folder": case_folder, "format": fmt,
+                                             "template": None, "file": out_path, "sha256": digest})
+    return jsonify({"success": True, "filename": os.path.basename(out_path), "sha256": digest})
+
+
+@reporting_bp.route('/api/report_exports/download', methods=['GET'])
+@requires_auth
+@requires_permission('reporting')
+def download_report_export():
+    """A saved export, downloaded again (2026-11-20). Previous exports listed
+    and verified each file but offered no way to get it back off the station
+    - only re-exporting, which makes a NEW file with a new hash. Only a file
+    that _report_export_files() lists for this report can be served, and the
+    download is written to the custody log like the original export was."""
+    path = safe_path(request.args.get('path'))
+    report_file = safe_path(request.args.get('report_path'))
+    if not path or not report_file or not os.path.isfile(report_file):
+        return jsonify({"success": False, "error": "Not an export of this report."}), 400
+    try:
+        listed = any(e["path"] == path for e in _report_export_files(report_file))
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Could not list this case's folder: {friendly_error(e)}"}), 503
+    if not listed or os.path.islink(path):
+        return jsonify({"success": False, "error": "Not an export of this report."}), 400
+    digest = _read_sidecar_digest(path)
+    log_chain_of_custody("report_export_downloaded", {"case_folder": os.path.dirname(report_file),
+                                                      "file": path, "sha256": digest})
+    resp = send_file(path, as_attachment=True, download_name=os.path.basename(path))
+    if digest:
+        resp.headers['X-Report-Sha256'] = digest
+    return resp
 
 
 @reporting_bp.route('/api/export_report', methods=['POST'])
@@ -7588,6 +7684,15 @@ def export_report():
         needs_audit_trail = any(e['key'] == 'audit_trail' for e in resolved_sections)
     else:
         needs_audit_trail = True
+    # A custom template with no Exhibits block renders none of the files the
+    # examiner checked in the export pane (2026-11-20) - it used to drop them
+    # without a word. The export still runs (the template is the examiner's
+    # choice); the response says what was left out.
+    report_notice = None
+    if (template == 'custom' and sel_files and resolved_sections is not None
+            and not any(e['key'] == 'attachments' for e in resolved_sections)):
+        report_notice = (f"This template has no Exhibits section, so the {len(sel_files)} checked file(s) "
+                         "are not in the report. Add an Exhibits block to the template to include them.")
 
     audit_entries = []
     if needs_audit_trail and header['case_number'] not in (None, '', 'N/A'):
@@ -7708,7 +7813,10 @@ def export_report():
             mimetype = 'application/pdf'
 
         if preview:
-            return Response(content_bytes, mimetype=mimetype)
+            resp = Response(content_bytes, mimetype=mimetype)
+            if report_notice:
+                resp.headers['X-Report-Notice'] = report_notice
+            return resp
 
         # Versioned, never overwritten (2026-09-27 review): every export used
         # to replace <case>.pdf and its .sha256, so a report already handed
@@ -7716,34 +7824,8 @@ def export_report():
         # station on the next export. Created exclusively (O_EXCL); the
         # download is served from the same in-memory bytes that were hashed,
         # so two overlapping exports can't hand one request the other's file.
-        stem = report_file.rsplit('.json', 1)[0] + '_' + time.strftime('%Y%m%d-%H%M%S')
-        ext = '.html' if fmt == 'html' else '.pdf'
-        out_path, n = stem + ext, 1
-        while True:
-            try:
-                fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-                break
-            except FileExistsError:
-                n += 1
-                out_path = f"{stem}_{n}{ext}"
-        with os.fdopen(fd, 'wb') as f:
-            f.write(content_bytes)
-            f.flush()
-            os.fsync(f.fileno())
-
-        # A report-level integrity hash - computed over the exported file's
-        # actual bytes (already in memory, the same bytes just written to
-        # disk above), not the source case JSON, so it verifies the specific
-        # PDF/HTML artifact an examiner hands off, not just the data behind
-        # it. Written as a standard sha256sum-format sidecar file (so
-        # `sha256sum -c` works directly against it later) and also returned
-        # as a response header so the examiner sees it immediately, not only
-        # by going and finding the sidecar file afterward.
-        digest = hashlib.sha256(content_bytes).hexdigest()
-        with open(out_path + '.sha256', 'w') as f:
-            f.write(f"{digest}  {os.path.basename(out_path)}\n")
-        _auto_tag_case_artifact(case_folder, out_path)
-        _auto_tag_case_artifact(case_folder, out_path + '.sha256')
+        out_path, digest = _save_versioned_export(report_file, case_folder, content_bytes,
+                                                  '.html' if fmt == 'html' else '.pdf')
         # The file and the digest that was issued, so the custody log alone can
         # say which report (and which hash) went out when.
         log_chain_of_custody("report_exported", {"case_folder": case_folder, "format": fmt,
@@ -7755,6 +7837,8 @@ def export_report():
         # The saved file's own timestamped name, so the browser copy keeps the name its .sha256
         # sidecar records (it used to be renamed to <case>.pdf, which never matched the sidecar).
         resp.headers['X-Report-Filename'] = os.path.basename(out_path)
+        if report_notice:
+            resp.headers['X-Report-Notice'] = report_notice
         return resp
     except Exception as e:
         return jsonify({"error": f"Report export failed: {friendly_error(e)}"}), 500
