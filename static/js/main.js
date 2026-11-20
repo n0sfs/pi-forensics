@@ -8001,10 +8001,12 @@ async function runSelectedGeolocationExport() {
         });
         const data = await res.json();
         if (data.success) {
+            // An unreadable photo was never checked - say so, and never as a plain success.
+            const warn = data.warning ? `\n\n${data.warning}` : '';
             if (data.points_found === 0) {
-                showToast(`Scanned ${data.files_scanned} photo(s) - none had GPS location data. No KML file was needed.`, 'success');
+                showToast(`Scanned ${data.files_scanned} photo(s) - none had GPS location data. No KML file was needed.${warn}`, warn ? 'warning' : 'success', warn ? 15000 : undefined);
             } else {
-                showToast(`Found location data in ${data.points_found} of ${data.files_scanned} photo(s).\nKML file written to:\n${data.kml_path}`, 'info');
+                showToast(`Found location data in ${data.points_found} of ${data.files_scanned} photo(s).\nKML file written to:\n${data.kml_path}${warn}`, warn ? 'warning' : 'info', warn ? 15000 : undefined);
                 loadExplorer(explorerPath);
             }
         } else {

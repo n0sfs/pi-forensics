@@ -42,6 +42,23 @@ def _geo_points_from_exiftool_entries(entries):
     return points
 
 
+
+def exiftool_unreadable(entries):
+    """(count, first error) of the entries exiftool could not read
+    (2026-11-20). With only named tags requested, an unreadable photo
+    (permissions, I/O error) still appears as an entry, with nothing but its
+    file name, and exiftool exits 1 with nothing on stderr - so it looked
+    exactly like "no GPS". Callers request -Error so it says so."""
+    bad = [e for e in entries if isinstance(e, dict) and e.get('Error')]
+    return len(bad), (str(bad[0]['Error']) if bad else None)
+
+
+def exiftool_unreadable_warning(unreadable, total, first_error):
+    if not unreadable:
+        return None
+    return (f"{unreadable} of {total} photo(s) could not be read by exiftool ({first_error}) - "
+            f"they were NOT checked for GPS.")
+
 _LAT_COLUMN_RE = re.compile(r'lat(itude)?', re.IGNORECASE)
 _LON_COLUMN_RE = re.compile(r'lon(g|gitude)?', re.IGNORECASE)
 

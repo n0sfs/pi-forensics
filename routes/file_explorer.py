@@ -41,6 +41,7 @@ from core.case_index_db import (scan_chunk_matches,
 )
 from core.geo_utils import (
     GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _geo_points_from_leapp_records, _build_geo_kml,
+    exiftool_unreadable, exiftool_unreadable_warning,
 )
 from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file, _open_sqlite_readonly
 from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
@@ -857,19 +858,29 @@ def _geolocation_kml_directory_body(target_dir, dest_dir):
     cmd = ['exiftool', '-j', '-n', '-r']
     for ext in GEO_IMAGE_EXTENSIONS:
         cmd += ['-ext', ext]
-    cmd += ['-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', '-FileName', '-Directory', target_dir]
+    # -Error: see exiftool_unreadable() - an unreadable photo is otherwise
+    # indistinguishable from one with no GPS.
+    cmd += ['-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', '-FileName', '-Directory', '-Error', target_dir]
 
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if res.returncode != 0 and not res.stdout.strip():
             return {"success": False, "error": res.stderr.strip() or "exiftool failed with no output."}
         entries = json.loads(res.stdout) if res.stdout.strip() else []
+    except FileNotFoundError:
+        return {"success": False, "error": "exiftool is not installed (package libimage-exiftool-perl)."}
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "exiftool timed out (large directory - consider a subdirectory instead)."}
     except json.JSONDecodeError:
         return {"success": False, "error": "Could not parse exiftool output."}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+    unreadable, first_error = exiftool_unreadable(entries)
+    if entries and unreadable == len(entries):
+        return {"success": False, "error": f"exiftool could not read any of the {unreadable} photo(s) "
+                                           f"({first_error}) - GPS was not checked."}
+    warning = exiftool_unreadable_warning(unreadable, len(entries), first_error)
 
     points = _geo_points_from_exiftool_entries(entries)
     kml_doc = _build_geo_kml(points, f"{os.path.basename(target_dir)} - Geolocation Export")
@@ -887,7 +898,12 @@ def _geolocation_kml_directory_body(target_dir, dest_dir):
             return {"success": False, "error": f"Failed to write KML file: {friendly_error(e)}"}
         _auto_tag_case_artifact(dest_dir, kml_path)
 
-    return {"success": True, "kml_path": kml_path, "files_scanned": len(entries), "points_found": len(points)}
+    result = {"success": True, "kml_path": kml_path, "files_scanned": len(entries) - unreadable,
+              "points_found": len(points), "unreadable_files": unreadable}
+    if warning:
+        result["warning"] = warning
+        result["detail"] = warning  # Auto Analyze shows a step's detail
+    return result
 
 @file_explorer_bp.route('/api/files/geolocation_kml', methods=['POST'])
 @requires_auth
@@ -907,7 +923,8 @@ def extract_geolocation_kml():
     if not result["success"]:
         return jsonify(result), 500
     log_chain_of_custody("geolocation_kml_export", {
-        "directory": target_dir, "files_scanned": result["files_scanned"], "points_found": result["points_found"]
+        "directory": target_dir, "files_scanned": result["files_scanned"], "points_found": result["points_found"],
+        "unreadable_files": result["unreadable_files"],
     })
     return jsonify(result)
 
@@ -1133,13 +1150,15 @@ def execution_worker_import_apple_export(export_root, case_folder, dest_dir, sou
         kml_path = None
         points_found = 0
         gps_problem = None
+        gps_unreadable = 0
         if result["photos_dir"]:
             update_job(status="Extracting Photos GPS data...", progress_percent=70.0)
             append_log(f"[*] Running EXIF geolocation extraction against {result['photos_dir']}...")
             cmd = ['exiftool', '-j', '-n', '-r']
             for ext in GEO_IMAGE_EXTENSIONS:
                 cmd += ['-ext', ext]
-            cmd += ['-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', '-FileName', '-Directory', result["photos_dir"]]
+            cmd += ['-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', '-FileName', '-Directory', '-Error',
+                    result["photos_dir"]]
             # A failed or timed-out exiftool run used to become an empty list
             # and "No GPS-tagged photos found" (2026-10-02) - it is reported as
             # what it is, and the import ends with that problem stated.
@@ -1154,6 +1173,17 @@ def execution_worker_import_apple_export(export_root, case_folder, dest_dir, sou
                 gps_problem = "exiftool timed out after 10 minutes"
             except json.JSONDecodeError:
                 gps_problem = "exiftool's output could not be parsed"
+            except FileNotFoundError:
+                gps_problem = "exiftool is not installed (package libimage-exiftool-perl)"
+            # Unreadable photos (2026-11-20): all of them is a problem, some of
+            # them is stated in the log and the custody entry.
+            gps_unreadable, first_error = exiftool_unreadable(entries)
+            if entries and gps_unreadable == len(entries):
+                gps_problem = f"exiftool could not read any of the {gps_unreadable} photo(s) ({first_error})"
+            else:
+                gps_warning = exiftool_unreadable_warning(gps_unreadable, len(entries), first_error)
+                if gps_warning:
+                    append_log(f"[!] {gps_warning}")
             points = _geo_points_from_exiftool_entries(entries)
             points_found = len(points)
             kml_doc = _build_geo_kml(points, "Apple Export - Photos Location Data")
@@ -1171,7 +1201,7 @@ def execution_worker_import_apple_export(export_root, case_folder, dest_dir, sou
         log_chain_of_custody("apple_export_import", {
             "export_root": export_root, "products_found": result["products_found"],
             "record_count": len(result["records"]), "photo_gps_points": points_found,
-            "photo_gps_problem": gps_problem,
+            "photo_gps_problem": gps_problem, "photo_gps_unreadable": gps_unreadable,
         }, source_ip=source_ip, user=user)
 
         update_job(status="Completed with 1 problem - see the log" if gps_problem else "Completed Successfully",
@@ -3707,7 +3737,8 @@ def _auto_analyze_mobile_step_geolocation_export(path, dest_dir, source_ip=None,
     result = _geolocation_kml_directory_body(path, dest_dir)
     if result["success"]:
         log_chain_of_custody("geolocation_kml_export", {"directory": path, "files_scanned": result["files_scanned"],
-            "points_found": result["points_found"]}, source_ip=source_ip, user=user)
+            "points_found": result["points_found"], "unreadable_files": result["unreadable_files"]},
+            source_ip=source_ip, user=user)
     return result
 
 def _auto_analyze_mobile_step_android_backup_extract(path, dest_dir, source_ip=None, user=None):
