@@ -1934,7 +1934,7 @@ def execution_worker_logical_acquisition(selected_folders, output_root, requeste
         append_log(f"[*] Enumerating {len(selected_folders)} selected folder(s)...")
         files, total_bytes, truncated = _enumerate_logical_acq_files(selected_folders)
         if truncated:
-            append_log(f"[-] Selection exceeds the {LOGICAL_ACQ_MAX_FILES}-file / {LOGICAL_ACQ_MAX_TOTAL_BYTES // (1024**3)}GB cap - stopped enumerating early, only what was found before the cap will be included.")
+            append_log(f"[-] Selection exceeds the {LOGICAL_ACQ_MAX_FILES}-file / {LOGICAL_ACQ_MAX_TOTAL_BYTES // (1024**3)} GiB cap - stopped enumerating early, only what was found before the cap will be included.")
         append_log(f"[*] Found {len(files)} file(s), {total_bytes} bytes total. Beginning copy...")
         update_job(status="Copying files...", total_bytes=total_bytes)
 
@@ -2382,7 +2382,7 @@ def _drive_identity(device):
     return _drive_identity_from_listing({
         "serial": dev.get('serial') or 'N/A',
         "model": dev.get('model') or 'Generic Disk',
-        "size": f"{round(int(dev.get('size') or 0) / (1024**3), 1)} GB",
+        "size": f"{round(int(dev.get('size') or 0) / (1024**3), 1)} GiB",
     })
 
 
@@ -2760,7 +2760,7 @@ def execution_worker_import_live_collection(device, selected_relative_paths, cas
                     f.write(f"Hash-list matches: {summary_data['hash_list_match_count']}\n")
                     if summary_data['memory_image_captured']:
                         mb = round(summary_data['memory_image_size_bytes'] / (1024 * 1024))
-                        f.write(f"Memory image: captured ({mb} MB)\n")
+                        f.write(f"Memory image: captured ({mb} MiB)\n")
                     else:
                         f.write("Memory image: not captured\n")
                 append_log("[*] Wrote summary.json and SUMMARY.txt.")
@@ -2943,7 +2943,7 @@ def list_drives():
                     "name": dev['name'],
                     "device": dev_path,
                     "model": dev.get('model') or 'Generic Disk',
-                    "size": f"{gb_size} GB",
+                    "size": f"{gb_size} GiB",
                     "bytes": bytes_size,
                     "transport": dev.get('tran') or 'usb',
                     "serial": dev.get('serial') or 'N/A',
@@ -3008,7 +3008,7 @@ def smart_check():
         except Exception:
             pass
 
-        capacity_str = f"{round(total_bytes / (1024**3), 2)} GB" if total_bytes > 0 else "N/A"
+        capacity_str = f"{round(total_bytes / (1024**3), 2)} GiB" if total_bytes > 0 else "N/A"
 
         res = subprocess.run(priv_argv("smart", drive, legacy=["sudo", "/usr/sbin/smartctl", "-a", "-j", drive]), capture_output=True, text=True, timeout=15)
         data = json.loads(res.stdout) if res.stdout else {}

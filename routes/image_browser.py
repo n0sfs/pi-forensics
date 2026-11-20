@@ -1336,7 +1336,7 @@ def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
         f"# Ruleset(s) checked: {ruleset_names}",
         f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"# Files scanned: {files_scanned}" + (" (INCOMPLETE - see 'Not covered' below)" if truncated else ""),
-        f"# Files skipped (too large, over {IMAGE_YARA_MAX_FILE_BYTES // (1024*1024)}MB): {files_skipped_too_large}",
+        f"# Files skipped (too large, over {IMAGE_YARA_MAX_FILE_BYTES // (1024*1024)} MiB): {files_skipped_too_large}",
         f"# Files skipped (unreadable/errored): {files_errored}",
         f"# Total matches: {len(match_rows)} file(s)",
         "# Deleted files are excluded - their data may already be partially overwritten on a live evidence filesystem.",
@@ -2127,7 +2127,7 @@ def _extract_ios_backup_essentials_to_temp(fs, backup_dir_inode):
                 declared_size = tsk_file.info.meta.size if tsk_file.info.meta else 0
                 if declared_size > MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES:
                     problems[artifact_type] = (f"its database is larger than the "
-                                               f"{MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES // (1024 * 1024)} MB copy "
+                                               f"{MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES // (1024 * 1024)} MiB copy "
                                                f"limit - not parsed.")
                     continue
                 os.makedirs(out_subdir, exist_ok=True)

@@ -404,3 +404,34 @@ def test_without_a_case_folder_the_guard_does_not_fire(evidence_root):
     folder = _folder_with_files(evidence_root, "PULLED-NOCASE", 2)
     result = _collect_case_timeline([_make_event("EV-1", "android_pull", output_destination=folder)])
     assert result["events"]
+
+
+def test_container_own_manifest_is_left_out_and_said_so(evidence_root):
+    """tasks.md D14 (decided 2026-11-20): a Logical Acquisition / Live
+    Collection container's own manifest.json/.txt are station-written, and
+    Verify reading them created an access time that read as evidence
+    activity. A same-named file deeper in the evidence is still listed."""
+    root = os.path.join(evidence_root, "ITEM-LOG-01_logical")
+    os.makedirs(os.path.join(root, "Users"))
+    _touch(os.path.join(root, "manifest.json"), 1700000000)
+    _touch(os.path.join(root, "manifest.txt"), 1700000000)
+    _touch(os.path.join(root, "Users", "manifest.json"), 1700000000)
+    _touch(os.path.join(root, "Users", "doc.txt"), 1700000000)
+    event = _make_event("ITEM-LOG-01", "logical_acquisition", output_destination=root)
+    event["acquisition_parameters"]["manifest_path"] = os.path.join(root, "manifest.json")
+
+    result = _collect_case_timeline([event])
+    paths = {e["path"] for e in result["events"]}
+    assert paths == {"/Users/manifest.json", "/Users/doc.txt"}
+    assert any("left out this station's own container manifest" in n for n in result["notes"])
+
+
+def test_root_manifest_without_manifest_path_is_still_listed(evidence_root):
+    """No manifest_path recorded (e.g. a phone pull that happens to contain
+    a manifest.json) - nothing is excluded."""
+    root = os.path.join(evidence_root, "PIXEL-02_android_pull")
+    os.makedirs(root)
+    _touch(os.path.join(root, "manifest.json"), 1700000000)
+    result = _collect_case_timeline([_make_event("PIXEL-02", "android_pull", output_destination=root)])
+    assert {e["path"] for e in result["events"]} == {"/manifest.json"}
+    assert not any("container manifest" in n for n in result["notes"])

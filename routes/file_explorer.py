@@ -644,8 +644,8 @@ def get_file_exif():
 
 def _human_size(num_bytes):
     size = float(num_bytes)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
             return f"{size:.0f} {unit}" if unit == "B" else f"{size:.2f} {unit}"
         size /= 1024
 
@@ -3020,7 +3020,7 @@ def quick_triage_scan():
             except Exception as e:
                 print(f"Warning: quick_triage_scan could not write to case index: {e}")
 
-    lines = [f"Scanned {bytes_read / (1024*1024):.1f} MB of {total_size / (1024*1024):.1f} MB total."]
+    lines = [f"Scanned {bytes_read / (1024*1024):.1f} MiB of {total_size / (1024*1024):.1f} MiB total."]
     if scan_truncated_to_prefix:
         lines.append("(First-32MB quick preview only - use the full Triage Scan tool in File Recovery for an exhaustive scan of the whole file.)")
     lines.append("")
