@@ -3899,7 +3899,7 @@ def image_sqlite_query_table():
 # Mobile jobs already do - it competes for that same one global job slot,
 # which is correct: only one long-running operation should run at a time
 # station-wide, regardless of which tab started it.
-IMAGE_TRIAGE_MAX_FILES = 5000  # matches IMAGE_HASH_MAX_FILES's precedent
+IMAGE_TRIAGE_MAX_FILES = 1_000_000  # 2026-11-21: was 5,000 (a request-era cap); a stoppable job, same as Hash Manifest/YARA job runs - matches per category stay capped below, index rows flush every 200
 IMAGE_TRIAGE_MAX_FILE_BYTES = 4 * 1024 * 1024  # 4 MB per file - smaller than quick_triage_scan()'s single-file 32MB cap, since this walks many files
 IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY = 2000  # between quick_triage_scan()'s 500 (one file) and the background job's 50000 (one whole device)
 
