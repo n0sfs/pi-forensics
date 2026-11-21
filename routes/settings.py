@@ -43,7 +43,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from core.priv import priv_argv
 from core.auth import (
-    PERMISSION_KEYS, KIOSK_AUTH_BYPASS_ENABLED,
+    PERMISSION_KEYS, KIOSK_AUTH_BYPASS_ENABLED, is_local_kiosk_request,
     requires_auth, requires_permission, check_auth,
     find_user, find_group, get_user_groups, get_user_group_id,
     get_current_user_permissions, get_current_user_role,
@@ -2622,6 +2622,30 @@ def restart_forensic_service():
 
     threading.Thread(target=delayed_restart, daemon=True).start()
     return jsonify({"success": True, "message": "Forensic service restart initiated - this page will disconnect briefly."})
+
+# Touchscreen input heartbeat (Maintainer decision 2026-11-20, 10-09 item 1A).
+# install.py's kiosk watchdog used to kill Chromium every 30 minutes no matter
+# what, throwing away whatever was being typed. The kiosk page now reports a
+# real touch/key press here (throttled to once a minute), and the watchdog
+# only restarts the browser once this file is 10+ minutes old - the screen is
+# idle, or the page is frozen (the labwc fullscreen hang the watchdog exists
+# for) and so can't report input at all.
+KIOSK_ACTIVITY_FILE = os.path.join(INSTALL_DIR, ".kiosk_last_input")
+
+
+@settings_bp.route('/api/kiosk/activity', methods=['POST'])
+@requires_auth
+def kiosk_activity():
+    if not is_local_kiosk_request():
+        return jsonify({"success": False, "error": "Only the station's own touchscreen reports kiosk activity."}), 403
+    try:
+        with open(KIOSK_ACTIVITY_FILE, 'a'):
+            pass
+        os.utime(KIOSK_ACTIVITY_FILE, None)
+    except OSError as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"success": True})
+
 
 @settings_bp.route('/api/system/restart_kiosk', methods=['POST'])
 @requires_auth
