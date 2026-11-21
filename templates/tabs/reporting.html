@@ -765,51 +765,77 @@
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repTimelinePane" role="tabpanel">
-                                                    <div class="small text-subtle mb-2">Every acquired image's MACB filesystem timeline (plus real file timestamps from a mobile pull/backup or Logical Acquisition folder), merged with parsed browser/registry/event-log/mobile-app artifacts - evidence pulled from the drive/phone itself, not examiner workflow entries (see the Case Notes &amp; Custody Log tab for those). A large image's MACB data can run to thousands of rows; use the filters below to narrow it - the Category row is the fast way to see just a phone's texts, web history, or app-based chats.</div>
-                                                    <div class="d-flex flex-wrap align-items-center gap-3 mb-2 small">
-                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="macb" checked onchange="renderCaseTimeline()">Filesystem (MACB)</label>
-                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="parsed_artifact" checked onchange="renderCaseTimeline()">Parsed Artifacts</label>
-                                                        <select id="caseTimelineEvidenceSelect" class="form-select form-select-sm w-auto" onchange="renderCaseTimeline()">
+                                                    <!-- Toolbar/summary/paging redesign 2026-11-21 (thread "Modernize the
+                                                         activity timeline"): the 5-line intro paragraph moved into the (i)
+                                                         tooltip so the chart and table fit above the fold at 1024x600; a
+                                                         search box, sort toggle, reset, chart zoom and a live match count
+                                                         were added; the table renders in pages of CASE_TIMELINE_PAGE_SIZE
+                                                         rows instead of all 6,000 at once. -->
+                                                    <div class="d-flex align-items-center gap-2 mb-2 small text-subtle">
+                                                        <span>Filesystem (MACB) timestamps merged with parsed artifacts from every evidence item in this case.</span>
+                                                        <i class="bi bi-info-circle" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="bottom" tabindex="0" role="button"
+                                                           title="Every acquired image's MACB filesystem timeline (plus real file timestamps from a mobile pull/backup or Logical Acquisition folder), merged with parsed browser/registry/event-log/mobile-app artifacts - evidence pulled from the drive/phone itself, not examiner workflow entries (see the Case Notes &amp; Custody Log tab for those). A large image's MACB data can run to thousands of rows: search, or narrow by category, evidence item, year/month or contact. Click a bar in the chart to filter the table to that period, then Zoom In to re-plot the chart at a finer scale."></i>
+                                                    </div>
+                                                    <div class="case-timeline-toolbar d-flex flex-wrap align-items-center gap-2 mb-2 small">
+                                                        <div class="input-group input-group-sm case-timeline-search">
+                                                            <span class="input-group-text bg-app-dark border-secondary text-subtle"><i class="bi bi-search"></i></span>
+                                                            <input type="search" id="caseTimelineSearchInput" class="form-control form-control-sm" placeholder="Search path, activity, contact, message text..." oninput="onCaseTimelineSearchInput()" aria-label="Search the timeline" autocomplete="off" spellcheck="false">
+                                                        </div>
+                                                        <select id="caseTimelineEvidenceSelect" class="form-select form-select-sm w-auto" onchange="renderCaseTimeline()" aria-label="Evidence item">
                                                             <option value="__all__">All Evidence Items</option>
                                                         </select>
-                                                        <select id="caseTimelineYearSelect" class="form-select form-select-sm w-auto" onchange="onCaseTimelineYearChange()">
+                                                        <select id="caseTimelineYearSelect" class="form-select form-select-sm w-auto" onchange="onCaseTimelineYearChange()" aria-label="Year">
                                                             <option value="__all__">All Years</option>
                                                         </select>
-                                                        <select id="caseTimelineMonthSelect" class="form-select form-select-sm w-auto" onchange="onCaseTimelineMonthChange()" disabled>
+                                                        <select id="caseTimelineMonthSelect" class="form-select form-select-sm w-auto" onchange="onCaseTimelineMonthChange()" disabled aria-label="Month">
                                                             <option value="__all__">All Months</option>
                                                         </select>
-                                                        <select id="caseTimelineContactSelect" class="form-select form-select-sm w-auto" onchange="renderCaseTimeline()" title="Filter to only the rows involving a specific correlated contact (from the Pattern of Life tab's Contact Correlation) - a person's SMS/calls/emails/calendar invites all resolve to the same entry here, even when they used more than one identity (phone + email).">
+                                                        <select id="caseTimelineContactSelect" class="form-select form-select-sm w-auto" onchange="renderCaseTimeline()" aria-label="Contact" title="Filter to only the rows involving a specific correlated contact (from the Pattern of Life tab's Contact Correlation) - a person's SMS/calls/emails/calendar invites all resolve to the same entry here, even when they used more than one identity (phone + email).">
                                                             <option value="__all__">All Contacts</option>
                                                         </select>
-                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2 ms-auto" onclick="exportCaseTimelineCsv()"><i class="bi bi-download me-1"></i>Export CSV</button>
+                                                        <div class="ms-auto d-flex align-items-center gap-2">
+                                                            <button type="button" id="caseTimelineSortBtn" class="btn btn-sm btn-outline-light text-nowrap" onclick="toggleCaseTimelineSort()" title="Toggle newest-first / oldest-first"><i class="bi bi-sort-down me-1"></i>Newest first</button>
+                                                            <button type="button" class="btn btn-sm btn-outline-light text-nowrap" onclick="resetCaseTimelineFilters()" title="Clear search, filters and zoom"><i class="bi bi-arrow-counterclockwise me-1"></i>Reset</button>
+                                                            <button type="button" class="btn btn-sm btn-outline-info text-nowrap" onclick="exportCaseTimelineCsv()" title="Download every row matching the current filters (not just the rows rendered so far)"><i class="bi bi-download me-1"></i>CSV</button>
+                                                        </div>
                                                     </div>
-                                                    <div class="d-flex flex-wrap align-items-center gap-3 mb-2 small">
-                                                        <span class="text-subtle">Category:</span>
-                                                        <!-- Built from the timeline response's own `categories` list by
-                                                             renderCaseTimelineCategoryFilters() (2026-09-15), not hardcoded
-                                                             here. The five labels that used to live in this markup were a
-                                                             second copy of routes/reporting.py's CASE_TIMELINE_CATEGORIES -
-                                                             exactly the two-independent-copies trap CLAUDE.md calls out and
-                                                             this project has been bitten by twice. A new server-side
-                                                             category would have had no checkbox, so its rows could never be
-                                                             shown; a removed one would have left a checkbox matching
-                                                             nothing. -->
+                                                    <div class="d-flex flex-wrap align-items-center gap-2 mb-2 small">
+                                                        <!-- Category checkboxes are built from the timeline response's own
+                                                             `categories` list by renderCaseTimelineCategoryFilters() (2026-09-15),
+                                                             never hardcoded here - a second copy of routes/reporting.py's
+                                                             CASE_TIMELINE_CATEGORIES is the two-copies trap CLAUDE.md warns about. -->
+                                                        <label class="text-subtle case-timeline-chip"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="macb" checked onchange="renderCaseTimeline()"><span class="ctl-swatch" data-source="macb" aria-hidden="true"></span>Filesystem (MACB)</label>
+                                                        <label class="text-subtle case-timeline-chip"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="parsed_artifact" checked onchange="renderCaseTimeline()"><span class="ctl-swatch" data-source="parsed_artifact" aria-hidden="true"></span>Parsed Artifacts</label>
+                                                        <span class="vr text-secondary mx-1"></span>
                                                         <span id="caseTimelineCategoryFilters" style="display:contents;"></span>
-                                                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setCaseTimelineCategoryFilter(['Communications','Web Activity','Social Media'])">Phone Activity Only</button>
-                                                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setCaseTimelineCategoryFilter(null)">All Categories</button>
+                                                        <span class="d-inline-flex gap-2 text-nowrap">
+                                                            <button type="button" class="btn btn-xs btn-outline-light" onclick="setCaseTimelineCategoryFilter(['Communications','Web Activity','Social Media'])">Phone Activity Only</button>
+                                                            <button type="button" class="btn btn-xs btn-outline-light" onclick="setCaseTimelineCategoryFilter(null)">All Categories</button>
+                                                        </span>
                                                     </div>
-                                                    <div class="border border-secondary rounded-2 mb-2 p-2" style="height: 180px; background-color:#090b10;"><canvas id="caseTimelineChart"></canvas></div>
-                                                    <div id="caseTimelineFilterIndicator" class="small mb-2" style="display:none;">
-                                                        <span class="badge bg-info text-dark">Filtered to <span class="timeline-filter-label"></span></span>
-                                                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 ms-1" onclick="clearCaseTimelineBucketFilter()">Clear</button>
-                                                        <span class="text-subtle ms-1">(click a bar above to filter the table below to that time bucket)</span>
+                                                    <div class="case-timeline-chart-box border border-secondary rounded-2 mb-2 p-2 bg-app-dark"><canvas id="caseTimelineChart"></canvas></div>
+                                                    <div id="caseTimelineZoomIndicator" class="small mb-2 d-none align-items-center flex-wrap gap-2">
+                                                        <span class="badge bg-primary"><i class="bi bi-zoom-in me-1"></i>Chart zoomed to <span class="timeline-zoom-label"></span></span>
+                                                        <button type="button" class="btn btn-xs btn-outline-light" onclick="zoomOutCaseTimeline()"><i class="bi bi-zoom-out me-1"></i>Zoom Out</button>
                                                     </div>
-                                                    <div id="caseTimelineNotes" class="small text-warning mb-2" style="display:none;"></div>
-                                                    <div class="table-responsive font-monospace small border border-secondary rounded-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
-                                                        <table class="table table-sm table-dark mb-0">
-                                                            <thead><tr class="text-info"><th>Timestamp <span id="caseTimelineTzLabel" class="fw-normal text-subtle"></span></th><th>Source</th><th>Category</th><th>Activity</th><th>Detail</th><th>Contact</th><th>Preview</th></tr></thead>
-                                                            <tbody id="caseTimelineBody"><tr><td colspan="7" class="text-subtle p-2">Open this tab to build this case's timeline.</td></tr></tbody>
+                                                    <div id="caseTimelineFilterIndicator" class="small mb-2 d-none align-items-center flex-wrap gap-2">
+                                                        <span class="badge bg-info text-dark">Table filtered to <span class="timeline-filter-label"></span></span>
+                                                        <button type="button" id="caseTimelineZoomInBtn" class="btn btn-xs btn-outline-info" onclick="zoomIntoCaseTimelineBucket()"><i class="bi bi-zoom-in me-1"></i>Zoom In</button>
+                                                        <button type="button" class="btn btn-xs btn-outline-light" onclick="clearCaseTimelineBucketFilter()">Clear</button>
+                                                    </div>
+                                                    <div id="caseTimelineNotes" class="small text-warning mb-2 collapsed" style="display:none;" role="button" tabindex="0" title="Tap to show or hide the full note" onclick="this.classList.toggle('collapsed')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.classList.toggle('collapsed');}"></div>
+                                                    <div class="d-flex align-items-center small mb-1">
+                                                        <span id="caseTimelineSummary" class="text-subtle" aria-live="polite"></span>
+                                                    </div>
+                                                    <div id="caseTimelineScroll" class="case-timeline-scroll small border border-secondary rounded-2 bg-app-dark">
+                                                        <table class="table table-sm table-dark mb-0 case-timeline-table">
+                                                            <colgroup><col class="ctl-col-time"><col class="ctl-col-type"><col class="ctl-col-act"><col></colgroup>
+                                                            <thead><tr class="text-info"><th>Timestamp <span id="caseTimelineTzLabel" class="fw-normal text-subtle"></span></th><th>Type</th><th>Activity</th><th>Detail</th></tr></thead>
+                                                            <tbody id="caseTimelineBody"><tr><td colspan="4" class="text-subtle p-2">Open this tab to build this case's timeline.</td></tr></tbody>
                                                         </table>
+                                                        <div id="caseTimelineMore" class="text-center p-2" style="display:none;">
+                                                            <button type="button" class="btn btn-sm btn-outline-info" onclick="appendCaseTimelinePage()"><i class="bi bi-chevron-double-down me-1"></i><span class="timeline-more-label">Show more</span></button>
+                                                        </div>
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repExportPane" role="tabpanel">

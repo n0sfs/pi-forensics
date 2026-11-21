@@ -88,6 +88,16 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **Evidence Timeline is faster and easier to work through.** The table now draws 200 rows at a time
+  and loads more as you scroll (or with Show More), so a full 6,000-event case opens about 6x faster
+  and filter changes no longer redraw every row. New: a search box (all words must match; "quoted
+  phrases" match exactly, with hits highlighted), a Newest/Oldest first toggle, a Reset button, a live
+  "Showing X of Y matching" count, and Zoom In on a selected chart bar to re-plot that period at a
+  finer scale. The selected bar stays highlighted, and tapping it again clears it. Timestamps read
+  YYYY-MM-DD HH:MM:SS, the table no longer scrolls sideways (contact and message preview now sit
+  under the detail), long paths wrap at folder boundaries, the header stays put while scrolling,
+  and the chart and table fit above the fold on the 1024x600 touchscreen. The CSV export still
+  contains every matching row and now also notes an active search or zoom.
 - **The Mobile tab has a "Before you start" checklist.** It covers iOS, Android and SIM. Steps the
   station can see (device detected, trusted or USB-debugging authorized, destination inside the active
   case) are ticked live. The rest (network isolation, screen kept awake, a known backup password or

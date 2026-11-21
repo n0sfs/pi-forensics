@@ -251,6 +251,37 @@
         .form-check-input { background-color: var(--bg-dark); border-color: #64748b; }
         .form-check-input:checked { background-color: var(--accent-blue); border-color: var(--accent-cyan); }
 
+        /* Evidence Timeline (2026-11-21): fixed-layout table so Detail wraps instead of
+           pushing columns off the right edge, sticky header, and a shorter chart/table on
+           the 600px-tall kiosk so both sit above the fold. */
+        .case-timeline-search { flex: 1 1 220px; max-width: 560px; width: auto; }
+        .case-timeline-chart-box { position: relative; height: 180px; }
+        .case-timeline-scroll { max-height: min(460px, 70vh); overflow-y: auto; overflow-x: hidden; }
+        .case-timeline-table { table-layout: fixed; width: 100%; }
+        .case-timeline-table .ctl-col-time { width: 11rem; }
+        .case-timeline-table .ctl-col-type { width: 7.25rem; }
+        .case-timeline-table .ctl-col-act { width: 8.5rem; }
+        .case-timeline-table thead th { position: sticky; top: 0; z-index: 2; background-color: #121826; border-bottom: 1px solid var(--border-color); }
+        .case-timeline-table td { overflow-wrap: anywhere; vertical-align: top; }
+        .case-timeline-table thead th { font-weight: 600; }
+        .case-timeline-table .ctl-type .badge { margin: 0 .25rem .2rem 0; }
+        .case-timeline-table .ctl-sub { color: var(--text-subtle); font-size: .75rem; }
+        .case-timeline-table .ctl-preview { white-space: pre-wrap; color: var(--text-bright); background-color: #0d1320; border-left: 3px solid var(--accent-cyan); }
+        #caseTimelineNotes.collapsed:not(:empty) { display: -webkit-box !important; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+        #caseTimelineNotes { cursor: pointer; }
+        .ctl-swatch { display: inline-block; width: .7em; height: .7em; border-radius: 2px; margin-right: .35em; vertical-align: baseline; }
+        mark.case-timeline-hit { background-color: rgba(251, 191, 36, .35); color: inherit; padding: 0 1px; border-radius: 2px; }
+        @media (max-height: 700px) {
+            .case-timeline-chart-box { height: 150px; }
+        }
+        /* A tapped outline button keeps its :hover fill on a touchscreen until the next tap
+           elsewhere, so the Zoom Out button that replaces Zoom In under the finger looked
+           pressed. Only the toggled-on state (.active) is filled there. */
+        @media (pointer: coarse) {
+            #repTimelinePane .btn-outline-light:hover:not(.active),
+            #repTimelinePane .btn-outline-secondary:hover:not(.active),
+            #repTimelinePane .btn-outline-info:hover:not(.active) { background-color: transparent; color: var(--bs-btn-color); }
+        }
         pre.log-window {
             background-color: #040508; color: #4ade80; height: 135px; overflow-y: auto; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 0.82rem; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px;
         }

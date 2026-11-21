@@ -17512,7 +17512,11 @@ const CASE_TIMELINE_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May
 async function loadCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
     if (!body || !activeCase) return;
-    body.innerHTML = '<tr><td colspan="6" class="text-subtle p-2">Building timeline...</td></tr>';
+    body.innerHTML = '<tr><td colspan="4" class="text-subtle p-2"><span class="spinner-border spinner-border-sm me-2" role="status"></span>Building timeline...</td></tr>';
+    const summaryEl = document.getElementById('caseTimelineSummary');
+    if (summaryEl) summaryEl.textContent = '';
+    const moreEl = document.getElementById('caseTimelineMore');
+    if (moreEl) moreEl.style.display = 'none';
     // Dropped up front, not merely replaced on success (2026-09-15): these
     // were only reassigned on a good response, so a failed load left the
     // PREVIOUS case's rows in place - and exportCaseTimelineCsv() names its
@@ -17525,11 +17529,16 @@ async function loadCaseTimeline() {
     caseTimelineYearFilter = '__all__';
     caseTimelineMonthFilter = '__all__';
     caseTimelineContactFilter = '__all__';
+    caseTimelineZoomStack = [];
+    // The search box is kept across a rebuild of the SAME case (re-opening the
+    // tab) but cleared on a case switch, like the category checkboxes.
+    const searchInput = document.getElementById('caseTimelineSearchInput');
+    if (searchInput && caseTimelineCategoryFiltersCase !== (activeCase.case_folder || null)) searchInput.value = '';
     try {
         const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
         const data = await res.json();
         if (!data.success) {
-            body.innerHTML = `<tr><td colspan="6" class="text-danger p-2">${escapeHtmlForPopup(data.error || 'Request failed.')}</td></tr>`;
+            body.innerHTML = `<tr><td colspan="4" class="text-danger p-2">${escapeHtmlForPopup(data.error || 'Request failed.')}</td></tr>`;
             return;
         }
         caseTimelineCache = data;
@@ -17539,7 +17548,7 @@ async function loadCaseTimeline() {
         populateCaseTimelineContactFilter(data.contacts || []);
         renderCaseTimeline();
     } catch (err) {
-        body.innerHTML = '<tr><td colspan="6" class="text-danger p-2">Request failed.</td></tr>';
+        body.innerHTML = '<tr><td colspan="4" class="text-danger p-2">Request failed.</td></tr>';
     }
 }
 
@@ -17676,13 +17685,15 @@ function populateCaseTimelineMonthFilter() {
 }
 
 function onCaseTimelineYearChange() {
-    caseTimelineBucketFilter = null; // a bucket drilled into under the old year/month scope would just show 0 rows under the new one
+    caseTimelineBucketFilter = null;
+    caseTimelineZoomStack = []; // year/month and zoom both set the chart's range - the newer choice wins // a bucket drilled into under the old year/month scope would just show 0 rows under the new one
     populateCaseTimelineMonthFilter();
     renderCaseTimeline();
 }
 
 function onCaseTimelineMonthChange() {
     caseTimelineBucketFilter = null;
+    caseTimelineZoomStack = [];
     renderCaseTimeline();
 }
 
@@ -17746,7 +17757,12 @@ function renderCaseTimelineChart(rows) {
     canvas.style.display = '';
 
     const timestamps = rows.map((e) => e.timestamp);
-    const granularity = pickTimelineGranularity(Math.min(...timestamps), Math.max(...timestamps));
+    // A loop, not Math.min(...timestamps): spreading 6,000+ arguments is
+    // slower and, at larger caps, a stack-size RangeError.
+    let minTs = Infinity, maxTs = -Infinity;
+    for (const t of timestamps) { if (t < minTs) minTs = t; if (t > maxTs) maxTs = t; }
+    const granularity = pickTimelineGranularity(minTs, maxTs);
+    caseTimelineGranularity = granularity;
 
     const bucketMap = new Map(); // bucket-start epoch ms -> {start, end, label, counts:{source:n}, suspiciousCount}
     rows.forEach((e) => {
@@ -17795,10 +17811,17 @@ function renderCaseTimelineChart(rows) {
     }
 
     const labels = caseTimelineBuckets.map((b) => b.label);
+    // The bar the table is filtered to stays full colour and the rest dim,
+    // so the chart shows which period the table below is showing.
+    const sel = caseTimelineBucketFilter;
+    const isSelected = (b) => !sel || b.start.getTime() / 1000 === sel.start;
     const datasets = CASE_TIMELINE_SOURCES.map((src) => ({
         label: CASE_TIMELINE_SOURCE_LABEL[src],
         data: caseTimelineBuckets.map((b) => b.counts[src] || 0),
-        backgroundColor: CASE_TIMELINE_SOURCE_COLOR[src],
+        backgroundColor: caseTimelineBuckets.map((b) => CASE_TIMELINE_SOURCE_COLOR[src] + (isSelected(b) ? '' : '40')),
+        // Thin bars are hard to hit with a finger - let the click land on the
+        // whole category slot, not just the drawn bar.
+        categoryPercentage: 1.0, barPercentage: 0.85,
     }));
 
     if (caseTimelineChart) {
@@ -17820,12 +17843,19 @@ function renderCaseTimelineChart(rows) {
             responsive: true,
             maintainAspectRatio: false,
             animation: false,
+            // Any tap inside a bar's column selects it, not only a tap on the
+            // drawn bar itself - a 2px-tall bar is otherwise untappable.
+            interaction: { mode: 'index', intersect: false },
+            onHover: (evt, elements) => { if (evt.native && evt.native.target) evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
             scales: {
                 x: { stacked: true, ticks: { color: '#94a3b8', maxRotation: 0, autoSkip: true }, grid: { display: false } },
                 y: { stacked: true, beginAtZero: true, ticks: { color: '#94a3b8', precision: 0 }, grid: { color: 'rgba(255,255,255,0.06)' } },
             },
             plugins: {
-                legend: { labels: { color: '#cbd5e1', boxWidth: 12, font: { size: 11 } } },
+                // The legend is the colour swatch on each source checkbox above
+                // the chart (2026-11-21): on the 600px kiosk a Chart.js legend
+                // row cost a third of the plot height.
+                legend: { display: false },
                 // The truncation warning belongs ON the chart, not only in a
                 // text line below it (2026-09-15). For a truncated case these
                 // bar heights are partly a function of which rows survived the
@@ -17855,7 +17885,10 @@ function renderCaseTimelineChart(rows) {
                 if (!elements.length) return;
                 const bucket = caseTimelineBuckets[elements[0].index];
                 if (!bucket) return;
-                caseTimelineBucketFilter = { start: bucket.start.getTime() / 1000, end: bucket.end.getTime() / 1000, label: bucket.label };
+                const start = bucket.start.getTime() / 1000;
+                // Tapping the selected bar again clears the selection.
+                caseTimelineBucketFilter = (caseTimelineBucketFilter && caseTimelineBucketFilter.start === start)
+                    ? null : { start, end: bucket.end.getTime() / 1000, label: bucket.label };
                 renderCaseTimeline();
             },
         },
@@ -17925,6 +17958,11 @@ function _caseTimelineActiveFilterSummary() {
             parts.push(`${label}: ${opt ? opt.textContent : el.value}`);
         }
     });
+    const searchEl = document.getElementById('caseTimelineSearchInput');
+    if (searchEl && searchEl.value.trim()) parts.push(`Search: "${searchEl.value.trim()}"`);
+    if (caseTimelineZoomStack.length) {
+        parts.push(`Zoomed to: ${caseTimelineZoomStack.map((z) => z.label).join(' > ')}`);
+    }
     if (caseTimelineBucketFilter) {
         parts.push(`Time bucket: ${caseTimelineBucketFilter.label}`);
     }
@@ -17949,10 +17987,292 @@ function setCaseTimelineCategoryFilter(categories) {
     renderCaseTimeline();
 }
 
+// --- Paged rendering, search, sort, zoom (2026-11-21) ---
+// The table used to build every matching row at once: a full 6,000-row case
+// was ~66,000 DOM nodes, rebuilt from scratch on every checkbox click - about
+// 0.9s on a desktop and several seconds on the Pi 4. Rows are now appended a
+// page at a time (more as the table is scrolled, or via Show More), so a
+// filter change touches CASE_TIMELINE_PAGE_SIZE rows. caseTimelineFilteredRows
+// still holds EVERY matching row, so the CSV export is unaffected by paging.
+const CASE_TIMELINE_PAGE_SIZE = 200;
+let caseTimelineRenderedCount = 0;
+let caseTimelineSortAsc = false;            // backend order is newest-first
+let caseTimelineSearchTerms = [];           // lower-cased, AND-ed
+let caseTimelineSearchTimer = null;
+let caseTimelineZoomStack = [];             // [{start, end, label}] - chart zoom breadcrumb, innermost last
+let caseTimelineGranularity = null;         // the chart's current bucket size
+const caseTimelineHaystack = new WeakMap(); // event -> lower-cased searchable text, built lazily
+
+function _caseTimelineActivityLabel(e) {
+    return e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
+                               : (FILE_VIEWS_WEB_ARTIFACT_LABELS[e.activity] || e.activity);
+}
+
+function _caseTimelineHay(e) {
+    let hay = caseTimelineHaystack.get(e);
+    if (hay === undefined) {
+        hay = [
+            _caseTimelineActivityLabel(e), e.activity, e.detail, e.evidence_id, e.category,
+            e.content_preview, ...(e.counterparts || []).map((k) => caseTimelineContactLabel[k] || k),
+            ...(e.counterparts || []),
+        ].filter(Boolean).join('\n').toLowerCase();
+        caseTimelineHaystack.set(e, hay);
+    }
+    return hay;
+}
+
+// Local wall-clock time as YYYY-MM-DD HH:MM:SS. Unambiguous (no 11/12 vs
+// 12/11), sorts as text, and is 19 characters instead of the locale string's
+// 23, which is what lets the Detail column keep its width at 1024x600. The
+// header still names the browser zone; the cell's tooltip carries UTC.
+function _caseTimelineFormatTs(epochSeconds) {
+    const d = new Date(epochSeconds * 1000);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// Appends `text` to `parent`, wrapping each search-term hit in <mark>. Text
+// nodes only - the evidence text is untrusted.
+// With pathBreaks, a <wbr> follows each '/' or '\\' so a long path wraps at a
+// directory boundary rather than mid-name. <wbr> is not copied with the text,
+// so a path copied out of the table is unchanged.
+function _caseTimelineAppendText(parent, text, pathBreaks) {
+    if (!pathBreaks) { parent.appendChild(document.createTextNode(text)); return; }
+    text.split(/(?<=[\/\\])/).forEach((part, i) => {
+        if (i) parent.appendChild(document.createElement('wbr'));
+        parent.appendChild(document.createTextNode(part));
+    });
+}
+
+function _caseTimelineAppendHighlighted(parent, text, pathBreaks) {
+    if (!text) return;
+    const lower = text.toLowerCase();
+    const hits = [];
+    caseTimelineSearchTerms.forEach((t) => {
+        let i = lower.indexOf(t);
+        while (t && i !== -1) { hits.push([i, i + t.length]); i = lower.indexOf(t, i + t.length); }
+    });
+    if (!hits.length) { _caseTimelineAppendText(parent, text, pathBreaks); return; }
+    hits.sort((a, b) => a[0] - b[0]);
+    let pos = 0;
+    hits.forEach(([s, e]) => {
+        if (e <= pos) return;
+        s = Math.max(s, pos);
+        if (s > pos) _caseTimelineAppendText(parent, text.slice(pos, s), pathBreaks);
+        const m = document.createElement('mark');
+        m.className = 'case-timeline-hit';
+        m.textContent = text.slice(s, e);
+        parent.appendChild(m);
+        pos = e;
+    });
+    if (pos < text.length) _caseTimelineAppendText(parent, text.slice(pos), pathBreaks);
+}
+
+function onCaseTimelineSearchInput() {
+    clearTimeout(caseTimelineSearchTimer);
+    caseTimelineSearchTimer = setTimeout(() => renderCaseTimeline(), 200);
+}
+
+function toggleCaseTimelineSort() {
+    caseTimelineSortAsc = !caseTimelineSortAsc;
+    _caseTimelineUpdateSortButton();
+    renderCaseTimeline();
+}
+
+function _caseTimelineUpdateSortButton() {
+    const btn = document.getElementById('caseTimelineSortBtn');
+    if (!btn) return;
+    btn.innerHTML = caseTimelineSortAsc
+        ? '<i class="bi bi-sort-up me-1"></i>Oldest first'
+        : '<i class="bi bi-sort-down me-1"></i>Newest first';
+}
+
+function resetCaseTimelineFilters() {
+    const search = document.getElementById('caseTimelineSearchInput');
+    if (search) search.value = '';
+    document.querySelectorAll('.case-timeline-source-check, .case-timeline-category-check').forEach((el) => { el.checked = true; });
+    ['caseTimelineEvidenceSelect', 'caseTimelineYearSelect', 'caseTimelineContactSelect'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = '__all__';
+    });
+    populateCaseTimelineMonthFilter();
+    caseTimelineBucketFilter = null;
+    caseTimelineZoomStack = [];
+    caseTimelineSortAsc = false;
+    _caseTimelineUpdateSortButton();
+    renderCaseTimeline();
+}
+
+// Zoom re-plots the chart over the selected bar's period at the next finer
+// bucket size (month -> week -> day -> hour); the table follows. Clicking a
+// bar on its own still only narrows the table, so every bar stays clickable.
+function zoomIntoCaseTimelineBucket() {
+    if (!caseTimelineBucketFilter) return;
+    caseTimelineZoomStack.push(caseTimelineBucketFilter);
+    caseTimelineBucketFilter = null;
+    renderCaseTimeline();
+}
+
+function zoomOutCaseTimeline() {
+    caseTimelineZoomStack.pop();
+    caseTimelineBucketFilter = null;
+    renderCaseTimeline();
+}
+
+function _caseTimelineShow(el, show) {
+    if (!el) return;
+    el.classList.toggle('d-none', !show);
+    el.classList.toggle('d-flex', show);
+}
+
+function _buildCaseTimelineRows(e) {
+    const tr = document.createElement('tr');
+    if (e.suspicious) {
+        // Inline translucent red, not .table-danger - a light-mode utility
+        // class over .table-dark has bitten this project before.
+        tr.style.backgroundColor = 'rgba(220, 53, 69, 0.18)';
+    }
+
+    const tsTd = document.createElement('td');
+    tsTd.className = 'text-nowrap font-monospace';
+    tsTd.textContent = _caseTimelineFormatTs(e.timestamp);
+    tsTd.title = new Date(e.timestamp * 1000).toISOString().replace('.000Z', 'Z') + ' (UTC)';
+
+    // Type: source + category + flags. The category badge is skipped when it
+    // would only repeat the source ("Filesystem Filesystem" on every MACB row).
+    const typeTd = document.createElement('td');
+    typeTd.className = 'ctl-type';
+    const addBadge = (cls, text, title) => {
+        const b = document.createElement('span');
+        b.className = `badge ${cls}`;
+        b.textContent = text;
+        if (title) b.title = title;
+        typeTd.appendChild(b);
+    };
+    const srcLabel = CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source;
+    addBadge(CASE_TIMELINE_SOURCE_BADGE[e.source] || 'bg-secondary', srcLabel);
+    if (e.category && e.category !== 'Filesystem') addBadge(CASE_TIMELINE_CATEGORY_BADGE[e.category] || 'bg-secondary', e.category);
+    if (e.deleted) addBadge('bg-danger', 'Deleted');
+    // A mobile-pull 'M' can be a genuine device-captured mtime rather than
+    // the copy-time fallback (2026-08-29) - this badge is the only on-screen
+    // way to tell the two apart.
+    if (e.real_device_timestamp) addBadge('bg-success', 'Device Time', 'Captured directly from the device via adb shell right after the pull - not the file\'s copy-time.');
+
+    const actTd = document.createElement('td');
+    const activityLabel = _caseTimelineActivityLabel(e) || '';
+    _caseTimelineAppendHighlighted(actTd, e.suspicious ? `⚠ ${activityLabel}` : activityLabel);
+
+    const detailTd = document.createElement('td');
+    if (e.evidence_id) {
+        const ev = document.createElement('div');
+        ev.className = 'ctl-sub';
+        _caseTimelineAppendHighlighted(ev, e.evidence_id);
+        detailTd.appendChild(ev);
+    }
+    const main = document.createElement('div');
+    if (e.source === 'macb') main.className = 'font-monospace'; // paths read best fixed-width; message text does not
+    _caseTimelineAppendHighlighted(main, e.detail || '', e.source === 'macb');
+    detailTd.appendChild(main);
+
+    let previewRow = null;
+    const hasContacts = e.counterparts && e.counterparts.length;
+    if (hasContacts || e.content_preview) {
+        const meta = document.createElement('div');
+        meta.className = 'ctl-sub d-flex flex-wrap align-items-center gap-2 mt-1';
+        if (hasContacts) {
+            const c = document.createElement('span');
+            c.innerHTML = '<i class="bi bi-person me-1"></i>';
+            _caseTimelineAppendHighlighted(c, e.counterparts.map((k) => caseTimelineContactLabel[k] || k).join(', '));
+            meta.appendChild(c);
+        }
+        // e.content_preview: real message/email/note text (2026-09-07),
+        // collapsed into its own row until asked for.
+        if (e.content_preview) {
+            previewRow = document.createElement('tr');
+            previewRow.style.display = 'none';
+            const pTd = document.createElement('td');
+            pTd.colSpan = 4;
+            pTd.className = 'ctl-preview';
+            _caseTimelineAppendHighlighted(pTd, e.content_preview); // untrusted evidence content - text nodes only
+            previewRow.appendChild(pTd);
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-xs btn-outline-secondary';
+            btn.title = 'Show this event\'s recovered message/email/note text';
+            btn.innerHTML = '<i class="bi bi-chat-left-text me-1"></i>Message';
+            btn.setAttribute('aria-expanded', 'false');
+            btn.onclick = () => {
+                const open = previewRow.style.display === 'none';
+                previewRow.style.display = open ? 'table-row' : 'none';
+                btn.setAttribute('aria-expanded', String(open));
+                btn.classList.toggle('active', open);
+            };
+            meta.appendChild(btn);
+        }
+        detailTd.appendChild(meta);
+    }
+
+    tr.appendChild(tsTd);
+    tr.appendChild(typeTd);
+    tr.appendChild(actTd);
+    tr.appendChild(detailTd);
+    return previewRow ? [tr, previewRow] : [tr];
+}
+
+function appendCaseTimelinePage() {
+    const body = document.getElementById('caseTimelineBody');
+    if (!body) return;
+    const rows = caseTimelineFilteredRows;
+    const end = Math.min(rows.length, caseTimelineRenderedCount + CASE_TIMELINE_PAGE_SIZE);
+    const frag = document.createDocumentFragment();
+    for (let i = caseTimelineRenderedCount; i < end; i++) {
+        _buildCaseTimelineRows(rows[i]).forEach((r) => frag.appendChild(r));
+    }
+    body.appendChild(frag);
+    caseTimelineRenderedCount = end;
+    _caseTimelineUpdateSummary();
+}
+
+function _caseTimelineUpdateSummary() {
+    const total = caseTimelineFilteredRows.length;
+    const loaded = caseTimelineCache ? caseTimelineCache.events.length : 0;
+    const summary = document.getElementById('caseTimelineSummary');
+    if (summary) {
+        summary.textContent = loaded === 0 ? '' : total === 0 ? `0 of ${loaded.toLocaleString()} events match`
+            : `Showing ${caseTimelineRenderedCount.toLocaleString()} of ${total.toLocaleString()} matching`
+              + (total === loaded ? ' events' : ` (${loaded.toLocaleString()} loaded)`);
+    }
+    const more = document.getElementById('caseTimelineMore');
+    if (more) {
+        const remaining = total - caseTimelineRenderedCount;
+        more.style.display = remaining > 0 ? '' : 'none';
+        const label = more.querySelector('.timeline-more-label');
+        if (label) label.textContent = `Show ${Math.min(remaining, CASE_TIMELINE_PAGE_SIZE).toLocaleString()} more (${remaining.toLocaleString()} left)`;
+    }
+}
+
+let caseTimelineScrollBound = false;
+function _bindCaseTimelineScroll() {
+    if (caseTimelineScrollBound) return;
+    const scroller = document.getElementById('caseTimelineScroll');
+    if (!scroller) return;
+    caseTimelineScrollBound = true;
+    scroller.addEventListener('scroll', () => {
+        if (caseTimelineRenderedCount < caseTimelineFilteredRows.length
+            && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 300) {
+            appendCaseTimelinePage();
+        }
+    }, { passive: true });
+}
+
 function renderCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
     const notesEl = document.getElementById('caseTimelineNotes');
     if (!body || !caseTimelineCache) return;
+    _bindCaseTimelineScroll();
+    document.querySelectorAll('.ctl-swatch[data-source]').forEach((el) => {
+        el.style.backgroundColor = CASE_TIMELINE_SOURCE_COLOR[el.dataset.source] || '#6c757d';
+    });
 
     const enabledSources = new Set(
         [...document.querySelectorAll('.case-timeline-source-check:checked')].map((el) => el.value)
@@ -17968,6 +18288,10 @@ function renderCaseTimeline() {
     caseTimelineMonthFilter = (monthSel && !monthSel.disabled) ? monthSel.value : '__all__';
     const contactSel = document.getElementById('caseTimelineContactSelect');
     caseTimelineContactFilter = contactSel ? contactSel.value : '__all__';
+    const searchEl = document.getElementById('caseTimelineSearchInput');
+    // Space-separated words must all match; "a quoted phrase" matches as written.
+    caseTimelineSearchTerms = [...((searchEl && searchEl.value) || '').toLowerCase().matchAll(/"([^"]+)"|(\S+)/g)]
+        .map((m) => (m[1] || m[2] || '').replace(/"/g, '')).filter(Boolean);
 
     let rows = caseTimelineCache.events.filter((e) => enabledSources.has(e.source) && enabledCategories.has(e.category));
     if (caseTimelineEvidenceFilter !== '__all__') {
@@ -17984,32 +18308,40 @@ function renderCaseTimeline() {
             rows = rows.filter((e) => new Date(e.timestamp * 1000).getMonth() === m);
         }
     }
-    // Feeding the year/month-narrowed rows into the chart is what actually "condenses"
-    // the view - pickTimelineGranularity() (in renderCaseTimelineChart()) picks its bucket
-    // size from whatever span it's handed, so a full year renders as weekly bars and a
-    // single month renders as daily ones, with zero changes needed to that logic itself.
-    renderCaseTimelineChart(rows); // chart reflects source + evidence-item + year/month filters, never the bucket-click drill-down below (so every bucket stays clickable)
+    if (caseTimelineSearchTerms.length) {
+        rows = rows.filter((e) => { const hay = _caseTimelineHay(e); return caseTimelineSearchTerms.every((t) => hay.includes(t)); });
+    }
+    const zoom = caseTimelineZoomStack[caseTimelineZoomStack.length - 1];
+    if (zoom) rows = rows.filter((e) => e.timestamp >= zoom.start && e.timestamp < zoom.end);
+    // The chart gets everything except the bar-click drill-down below, so
+    // every bar stays clickable; pickTimelineGranularity() re-buckets from
+    // whatever span it is handed, which is what makes year/month and zoom
+    // "condense" the view.
+    renderCaseTimelineChart(rows);
+
+    const zoomIndicator = document.getElementById('caseTimelineZoomIndicator');
+    _caseTimelineShow(zoomIndicator, !!zoom);
+    if (zoom && zoomIndicator) {
+        zoomIndicator.querySelector('.timeline-zoom-label').textContent = caseTimelineZoomStack.map((z) => z.label).join(' › ');
+    }
 
     const filterIndicator = document.getElementById('caseTimelineFilterIndicator');
     if (caseTimelineBucketFilter) {
         rows = rows.filter((e) => e.timestamp >= caseTimelineBucketFilter.start && e.timestamp < caseTimelineBucketFilter.end);
-        if (filterIndicator) {
-            filterIndicator.style.display = '';
-            filterIndicator.querySelector('.timeline-filter-label').textContent = caseTimelineBucketFilter.label;
-        }
-    } else if (filterIndicator) {
-        filterIndicator.style.display = 'none';
+        if (filterIndicator) filterIndicator.querySelector('.timeline-filter-label').textContent = caseTimelineBucketFilter.label;
     }
+    _caseTimelineShow(filterIndicator, !!caseTimelineBucketFilter);
+    const zoomInBtn = document.getElementById('caseTimelineZoomInBtn');
+    // An hour bar is already the finest bucket - zooming would plot one bar.
+    if (zoomInBtn) zoomInBtn.style.display = caseTimelineGranularity === 'hour' ? 'none' : '';
 
-    // Name the zone the Timestamp column is in (2026-09-15). Every row is
-    // rendered with toLocaleString(), i.e. in the VIEWER's browser zone, while
-    // the exported report renders the same values in the STATION's zone - so
-    // the kiosk and a remote analyst's laptop showed different wall-clock
-    // times for the same event, with a bare "Timestamp" header on both.
+    // Name the zone the Timestamp column is in (2026-09-15) - the kiosk and
+    // a remote analyst's laptop render the same value in different zones.
     const tzLabelEl = document.getElementById('caseTimelineTzLabel');
     if (tzLabelEl) tzLabelEl.textContent = `(${_browserTimeZoneLabel()})`;
 
-    caseTimelineFilteredRows = rows; // whatever's currently visible in the table - CSV export reads this directly, no separate filter pass
+    if (caseTimelineSortAsc) rows.reverse(); // rows is always a fresh array from .filter() above
+    caseTimelineFilteredRows = rows; // every matching row - CSV export reads this, paging only limits what is drawn
 
     if (notesEl) {
         const noteLines = [...(caseTimelineCache.notes || [])];
@@ -18018,113 +18350,18 @@ function renderCaseTimeline() {
         notesEl.style.display = noteLines.length ? 'block' : 'none';
     }
 
+    body.innerHTML = '';
+    caseTimelineRenderedCount = 0;
+    const scroller = document.getElementById('caseTimelineScroll');
+    if (scroller) scroller.scrollTop = 0;
     if (rows.length === 0) {
-        body.innerHTML = '<tr><td colspan="7" class="text-subtle p-2">No timeline entries match the current filters.</td></tr>';
+        body.innerHTML = caseTimelineCache.events.length
+            ? '<tr><td colspan="4" class="text-subtle p-2">No timeline entries match the current filters.</td></tr>'
+            : '<tr><td colspan="4" class="text-subtle p-2">This case has no timeline events yet - they appear once an acquisition, mobile pull or artifact parse writes into the case.</td></tr>';
+        _caseTimelineUpdateSummary();
         return;
     }
-
-    body.innerHTML = '';
-    rows.forEach((e) => {
-        const tr = document.createElement('tr');
-        if (e.suspicious) {
-            // Inline style, not a Bootstrap .table-danger class - this app's
-            // tables are already .table-dark, and layering a light-mode
-            // utility class on top of that has bitten this project before
-            // (see CLAUDE.md's repeated ".d-flex !important" gotcha for the
-            // same class of Bootstrap-vs-custom-dark-theme conflict). A
-            // plain translucent red composites correctly over any theme.
-            tr.style.backgroundColor = 'rgba(220, 53, 69, 0.18)';
-        }
-
-        const tsTd = document.createElement('td');
-        tsTd.className = 'text-nowrap';
-        tsTd.textContent = new Date(e.timestamp * 1000).toLocaleString();
-
-        const srcTd = document.createElement('td');
-        const badge = document.createElement('span');
-        badge.className = `badge ${CASE_TIMELINE_SOURCE_BADGE[e.source] || 'bg-secondary'}`;
-        badge.textContent = CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source;
-        srcTd.appendChild(badge);
-        if (e.deleted) {
-            const delBadge = document.createElement('span');
-            delBadge.className = 'badge bg-danger ms-1';
-            delBadge.textContent = 'Deleted';
-            srcTd.appendChild(delBadge);
-        }
-        // 2026-08-29: a mobile-pull-sourced 'M' event can now be a genuine,
-        // captured-from-the-device modification time (an Android pull run
-        // after this shipped) rather than the copy-time fallback every
-        // folder-based entry used before it - this badge is the only place
-        // an examiner looking at the interactive table (as opposed to an
-        // exported report, which already labels this per-row) can tell the
-        // two apart.
-        if (e.real_device_timestamp) {
-            const devBadge = document.createElement('span');
-            devBadge.className = 'badge bg-success ms-1';
-            devBadge.title = 'Captured directly from the device via adb shell right after the pull - not the file\'s copy-time.';
-            devBadge.textContent = 'Device Time';
-            srcTd.appendChild(devBadge);
-        }
-
-        const catTd = document.createElement('td');
-        const catBadge = document.createElement('span');
-        catBadge.className = `badge ${CASE_TIMELINE_CATEGORY_BADGE[e.category] || 'bg-secondary'}`;
-        catBadge.textContent = e.category || '';
-        catTd.appendChild(catBadge);
-
-        const actTd = document.createElement('td');
-        const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
-                                                    : (FILE_VIEWS_WEB_ARTIFACT_LABELS[e.activity] || e.activity);
-        actTd.textContent = e.suspicious ? `⚠ ${activityLabel || ''}` : (activityLabel || '');
-
-        const detailTd = document.createElement('td');
-        detailTd.textContent = e.evidence_id ? `[${e.evidence_id}] ${e.detail || ''}` : (e.detail || '');
-
-        const contactTd = document.createElement('td');
-        contactTd.textContent = (e.counterparts && e.counterparts.length)
-            ? e.counterparts.map((k) => caseTimelineContactLabel[k] || k).join(', ')
-            : '--';
-
-        // e.content_preview (2026-09-07) is real message/email/note text the
-        // backend already computed via _comm_content_preview() but this table
-        // never rendered - a MACB/registry/browser row (the vast majority)
-        // always carries null here and gets a plain "--", never a phantom
-        // toggle button. Mirrors _buildContactCorrelationPreviewRow()'s own
-        // established collapsed-detail-row pattern on Pattern of Life exactly
-        // - a separate hidden <tr> toggled by a small icon button, never a
-        // second column crammed with the raw text itself.
-        const previewTd = document.createElement('td');
-        let previewRow = null;
-        if (e.content_preview) {
-            previewRow = document.createElement('tr');
-            previewRow.style.display = 'none';
-            const previewDetailTd = document.createElement('td');
-            previewDetailTd.colSpan = 7;
-            previewDetailTd.className = 'bg-app-dark small text-light';
-            previewDetailTd.textContent = e.content_preview; // untrusted evidence content - text node only
-            previewRow.appendChild(previewDetailTd);
-
-            const previewBtn = document.createElement('button');
-            previewBtn.type = 'button';
-            previewBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
-            previewBtn.title = 'Show this event\'s recovered message/email/note text';
-            previewBtn.innerHTML = '<i class="bi bi-chat-left-text"></i>';
-            previewBtn.onclick = () => { previewRow.style.display = previewRow.style.display === 'none' ? 'table-row' : 'none'; };
-            previewTd.appendChild(previewBtn);
-        } else {
-            previewTd.textContent = '--';
-        }
-
-        tr.appendChild(tsTd);
-        tr.appendChild(srcTd);
-        tr.appendChild(catTd);
-        tr.appendChild(actTd);
-        tr.appendChild(detailTd);
-        tr.appendChild(contactTd);
-        tr.appendChild(previewTd);
-        body.appendChild(tr);
-        if (previewRow) body.appendChild(previewRow);
-    });
+    appendCaseTimelinePage();
 }
 
 function exportCaseTimelineCsv() {
