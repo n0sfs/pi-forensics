@@ -52,6 +52,13 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **Hash Manifest, YARA Rule Sweep and Recover Deleted Files run in the background, with progress
+  and Stop.** Each used to hold one request for up to 10 minutes with nothing on screen, and stopped
+  at 5,000 files (1,000 for recovery). They now show "N of M files" above the file listing, take the
+  station's one job slot (so nothing else starts beside them), and Stop ends them after the current
+  file. A stopped run's report or manifest is kept and marked INCOMPLETE. Limits for these runs are
+  now 1,000,000 files (50,000 recovered files, still within the 2 GiB recovery budget). A stopped
+  Triage Scan's report is now marked incomplete too.
 - **The touchscreen no longer restarts its browser while you're using it.** The 30-minute self-heal
   restart now waits until the screen has had no touch or key press for 10 minutes. Typed Reporting
   text is also saved in the browser every few seconds and put back after any restart, crash or power
