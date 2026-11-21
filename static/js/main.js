@@ -15884,6 +15884,10 @@ async function loadCaseReportingSettings() {
         if (polDefEl) polDefEl.checked = Object.prototype.hasOwnProperty.call(sections, 'pattern_of_life') ? !!sections.pattern_of_life : false;
         const signoffDefEl = document.getElementById('defSecSignoff');
         if (signoffDefEl) signoffDefEl.checked = !!sections.signoff;
+        const keyFindingsDefEl = document.getElementById('defSecKeyFindings');
+        if (keyFindingsDefEl) keyFindingsDefEl.checked = !!sections.key_findings;
+        const glossaryDefEl = document.getElementById('defSecGlossary');
+        if (glossaryDefEl) glossaryDefEl.checked = !!sections.glossary;
         setChecked('defSecAuditTrail', sections, 'audit_trail');
         setChecked('defFieldTelemetry', jobFields, 'telemetry');
         setChecked('defFieldParams', jobFields, 'params');
@@ -16067,6 +16071,8 @@ async function saveCaseReportingSettings() {
         analysis_results: document.getElementById("defSecAnalysisResults")?.checked ?? false,
         pattern_of_life: document.getElementById("defSecPatternOfLife")?.checked ?? false,
         signoff: document.getElementById("defSecSignoff")?.checked ?? false,
+        key_findings: document.getElementById("defSecKeyFindings")?.checked ?? false,
+        glossary: document.getElementById("defSecGlossary")?.checked ?? false,
         audit_trail: document.getElementById("defSecAuditTrail")?.checked ?? true,
     };
     const jobFields = {
@@ -19386,6 +19392,8 @@ async function prepareExportPane() {
             setIfKnown('expSecAnalysisResults', sections, 'analysis_results');
             setIfKnown('expSecPatternOfLife', sections, 'pattern_of_life');
             setIfKnown('expSecSignoff', sections, 'signoff');
+            setIfKnown('expSecKeyFindings', sections, 'key_findings');
+            setIfKnown('expSecGlossary', sections, 'glossary');
             setIfKnown('expSecAuditTrail', sections, 'audit_trail');
             setIfKnown('expFieldTelemetry', jobFields, 'telemetry');
             setIfKnown('expFieldParams', jobFields, 'params');
@@ -19881,6 +19889,8 @@ function gatherExportRequestBody() {
             analysis_results: !!document.getElementById("expSecAnalysisResults")?.checked,
             pattern_of_life: !!document.getElementById("expSecPatternOfLife")?.checked,
             signoff: !!document.getElementById("expSecSignoff")?.checked,
+            key_findings: !!document.getElementById("expSecKeyFindings")?.checked,
+            glossary: !!document.getElementById("expSecGlossary")?.checked,
             audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
         };
         job_fields = {

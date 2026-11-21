@@ -5588,6 +5588,132 @@ REPORT_TEMPLATES = {
 #                        that isn't something a dropdown can meaningfully
 #                        rewire, so remapping is deliberately scoped to just
 #                        these 7 rather than offered everywhere.
+# --- Key Findings Summary and Glossary (2026-11-21, Eric's report extras) ---
+# Key Findings Summary is a one-glance roll-up of what the case holds, built
+# only from data the report already carries (events, hash verification state,
+# the analysis index, exhibits) - never a judgement. Glossary explains the
+# technical terms these reports use, for a non-technical reader.
+
+REPORT_GLOSSARY = [
+    ("Acquisition", "Making a copy of a device or its files for examination, without changing the original."),
+    ("Chain of custody", "The record of who handled the evidence, when, and what was done with it."),
+    ("Forensic image", "A complete, bit-for-bit copy of a storage device, including deleted and unused space."),
+    ("Hash (SHA-256, MD5)", "A fixed-length fingerprint calculated from data. Changing even one bit of the data "
+                            "gives a completely different hash, so matching hashes show the copy is unchanged."),
+    ("Verification", "Recalculating an evidence file's hash later and comparing it with the hash recorded at "
+                     "acquisition. A match shows the file has not changed since."),
+    ("Write blocker", "Hardware or software that stops anything being written to the source device while it is "
+                      "copied, so the original evidence is not altered."),
+    ("Logical acquisition", "A copy of selected files and folders, rather than of the whole device."),
+    ("Indicator of compromise (IOC)", "A sign that a system was attacked or misused, such as a known malicious "
+                                      "file hash, web address or IP address."),
+    ("Keyword hit", "A place where a searched-for word, pattern or indicator was found in the evidence."),
+    ("YARA rule", "A pattern description used to find files that match known malware or other content of interest."),
+    ("Parsed artifact", "A record extracted from evidence by a parser, such as a message, call, web visit or "
+                        "location point."),
+    ("File carving", "Recovering files from raw data by recognising their contents, without relying on the file system."),
+    ("MACB timestamps", "A file's Modified, Accessed, Changed (metadata) and Born (created) times."),
+    ("Exhibit", "An item attached to and referred to in this report."),
+]
+
+
+def _key_findings_rows(events, hash_status_by_event, findings, exhibit_count):
+    """[(label, value, is_problem)] for the Key Findings Summary."""
+    events = events or []
+    findings = findings or {}
+    incomplete = sum(1 for e in events
+                     if str(e.get('acquisition_status') or 'UNKNOWN').upper() != 'COMPLETED')
+    items = f"{len(events)} item(s) acquired"
+    if incomplete:
+        items += f", {incomplete} incomplete"
+    integrity, integrity_problem = _hash_summary(events, hash_status_by_event)
+    rows = [("Evidence items", items, bool(incomplete)),
+            ("Integrity", integrity, integrity_problem)]
+    if not findings.get('indexed'):
+        rows.append(("Analysis", "No analysis tool has been run against this case.", False))
+    else:
+        flagged = findings.get('flagged_total') or 0
+        rows.append(("Flagged by examiner", f"{flagged} item(s)", False))
+        hits = findings.get('keyword_hits') or []
+        hit_total = sum(h.get('count') or 0 for h in hits)
+        hit_text = f"{hit_total} distinct match(es)"
+        if hits:
+            hit_text += " - " + ", ".join(f"{h.get('label') or h.get('category')}: {h.get('count')}" for h in hits[:6])
+            if len(hits) > 6:
+                hit_text += f", and {len(hits) - 6} more categories"
+        rows.append(("Keyword & indicator hits", hit_text, False))
+        arts = findings.get('parsed_artifacts') or []
+        art_total = sum(a.get('count') or 0 for a in arts)
+        art_text = f"{art_total} record(s)"
+        if arts:
+            art_text += " - " + ", ".join(f"{a.get('artifact_type')}: {a.get('count')}" for a in arts[:6])
+            if len(arts) > 6:
+                art_text += f", and {len(arts) - 6} more types"
+        rows.append(("Parsed artifacts", art_text, False))
+    rows.append(("Exhibits", f"{exhibit_count} attached", False))
+    return rows
+
+
+def _draw_pdf_key_findings(c, y, events, hash_status_by_event, findings, exhibit_count, title="Key Findings Summary"):
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 18
+    for label, value, problem in _key_findings_rows(events, hash_status_by_event, findings, exhibit_count):
+        if y < 72:
+            c.showPage()
+            y = 750
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(50, y, label)
+        if problem:
+            c.setFillColorRGB(0.75, 0.0, 0.05)
+        y = _draw_pdf_wrapped_text(c, y, value, x=190, width_chars=70, size=9, leading=12)
+        c.setFillColorRGB(0, 0, 0)
+        y -= 4
+    return y - 6
+
+
+def _html_key_findings(events, hash_status_by_event, findings, exhibit_count, anchor_id=None, title="Key Findings Summary"):
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>{esc(title)}</h2><table>']
+    for label, value, problem in _key_findings_rows(events, hash_status_by_event, findings, exhibit_count):
+        cls = ' class="hash-mismatch"' if problem else ''
+        parts.append(f'<tr><th>{esc(label)}</th><td{cls}>{esc(value)}</td></tr>')
+    parts.append('</table>')
+    return ''.join(parts)
+
+
+def _draw_pdf_glossary(c, y, title="Glossary"):
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 18
+    for term, definition in REPORT_GLOSSARY:
+        if y < 84:
+            c.showPage()
+            y = 750
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(50, y, term)
+        y -= 12
+        y = _draw_pdf_wrapped_text(c, y, definition, x=62, width_chars=100, size=8.5, leading=11)
+        y -= 4
+    return y - 6
+
+
+def _html_glossary(anchor_id=None, title="Glossary"):
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    rows = ''.join(f'<dt>{esc(t)}</dt><dd>{esc(d)}</dd>' for t, d in REPORT_GLOSSARY)
+    return f'<h2{id_attr}>{esc(title)}</h2><dl class="glossary">{rows}</dl>'
+
+
 REPORT_SECTION_BLOCKS = [
     {"key": "case_info", "default_title": "Case Information",
      "in_legacy_default": True, "requires_events": False, "force_page_break": True, "remappable": False},
@@ -5595,6 +5721,9 @@ REPORT_SECTION_BLOCKS = [
      "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": True},
     {"key": "objectives", "default_title": "Objectives",
      "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": True},
+    # Opt-in roll-up of the case (2026-11-21) - see _key_findings_rows().
+    {"key": "key_findings", "default_title": "Key Findings Summary",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
     {"key": "evidence_inventory", "default_title": "Evidence Inventory",
      "in_legacy_default": True, "requires_events": True, "force_page_break": False, "remappable": False},
     {"key": "acquisition_method", "default_title": "Acquisition Method",
@@ -5681,6 +5810,9 @@ REPORT_SECTION_BLOCKS = [
     # and Police templates always end with one; the Standard template had
     # none, so its reports could not be signed as exported. Opt-in, last,
     # and OFF when a caller omits it (LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED).
+    # Opt-in plain-language definitions of the report's terms (2026-11-21).
+    {"key": "glossary", "default_title": "Glossary",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
     {"key": "signoff", "default_title": "Sign-off & Signatures",
      "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
 ]
@@ -5757,12 +5889,12 @@ FEATURE_MODULES = {
 # avoid. Its own <input> starting unchecked is what keeps it off in practice.
 # Decided 2026-11-20 (tasks.md D16): keep it that way; pinned by
 # tests/test_geolocation_legacy_default.py.
-LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED = {"analysis_results", "pattern_of_life", "signoff"}
+LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED = {"analysis_results", "pattern_of_life", "signoff", "key_findings", "glossary"}
 # The same rule for a custom template saved without one of these keys
 # (_custom_report_template_from_payload): an opt-in block a caller never sent
 # is filled in disabled, not enabled. Only blocks added from 2026-10-03 on -
 # widening it would change what re-saving an existing template produces.
-CUSTOM_TEMPLATE_BLOCKS_OFF_WHEN_OMITTED = {"signoff"}
+CUSTOM_TEMPLATE_BLOCKS_OFF_WHEN_OMITTED = {"signoff", "key_findings", "glossary"}
 
 def _expand_legacy_sections_dict(sections_dict):
     """Converts the plain sections:{key: bool} dict (today's Export-modal
@@ -5926,6 +6058,9 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "pattern_of_life": lambda y, title, field: _draw_pdf_pattern_of_life_block(c, y, case_folder, title=title, attachment_files=attachment_files),
         "custody_log": lambda y, title, field: _draw_pdf_custody_log_block(c, y, custody_log or [], title=title, exhibit_numbers=exhibit_numbers),
         "signoff": lambda y, title, field: _draw_pdf_signoff(c, y, header.get('examiner'), title=title),
+        "key_findings": lambda y, title, field: _draw_pdf_key_findings(c, y, events, hash_status_by_event, analysis_findings,
+                                                                         len(urls or []) + len(files or []), title=title),
+        "glossary": lambda y, title, field: _draw_pdf_glossary(c, y, title=title),
     }
 
     for i, entry in enumerate(resolved_sections):
@@ -6954,6 +7089,7 @@ def _html_report_style_block():
         '.mono{font-family:"Courier New",monospace;}'
         '.hash-ok{color:#0a7d2c;font-weight:bold;}'
         '.hash-mismatch{color:#b00020;font-weight:bold;}'
+        'dl.glossary dt{font-weight:bold;margin-top:8px;}dl.glossary dd{margin:2px 0 0 16px;}'
         '.hash-warn{color:#8a5a00;font-weight:bold;}'
         '.hash-muted{color:#666;}'
         '.attach-item{margin-top:1em;padding:.7em;border:1px solid #ddd;border-radius:6px;}'
@@ -7181,6 +7317,9 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "pattern_of_life": lambda anchor, title, field: _html_pattern_of_life_block(case_folder, title=title, anchor_id=anchor, attachment_files=attachment_files),
         "custody_log": lambda anchor, title, field: _html_custody_log_block(custody_log or [], anchor_id=anchor, title=title, exhibit_numbers=exhibit_numbers),
         "signoff": lambda anchor, title, field: _html_signoff(header.get('examiner'), anchor_id=anchor, title=title),
+        "key_findings": lambda anchor, title, field: _html_key_findings(events, hash_status_by_event, analysis_findings,
+                                                                          len(urls or []) + len(files or []), anchor_id=anchor, title=title),
+        "glossary": lambda anchor, title, field: _html_glossary(anchor_id=anchor, title=title),
     }
 
     for entry in resolved_sections:
@@ -7829,7 +7968,7 @@ def export_report():
     # and of the fixed templates DFIR always does (2026-11-21); Police and
     # CASE/UCO keep their own documented structures without it.
     analysis_findings = None
-    if template == 'dfir' or (resolved_sections is not None and any(e['key'] == 'analysis_results' for e in resolved_sections)):
+    if template == 'dfir' or (resolved_sections is not None and any(e['key'] in ('analysis_results', 'key_findings') for e in resolved_sections)):
         analysis_findings = collect_case_analysis_findings(case_folder)
 
     # preview=True renders the exact same document a real export would
