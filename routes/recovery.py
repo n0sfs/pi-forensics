@@ -18,6 +18,7 @@ import threading
 
 from flask import Blueprint, jsonify, request
 
+from core.write_block import source_write_block_problem
 from core.priv import priv_argv
 from core.auth import requires_auth, requires_permission
 from core.paths import (safe_path, log_chain_of_custody, is_valid_block_device, sanitize_case_slug,
@@ -712,7 +713,9 @@ def _recovery_destination_problem(dest_path, source):
     if is_valid_block_device(source) and destination_is_on_source_device(dest_path, source):
         return (f"The destination {dest_path} is on {source} itself - recovered files can never be written "
                 f"onto the drive being recovered from. Choose a destination on different storage.")
-    return None
+    # A source drive whose write blocker is off or unconfirmed (2026-11-20);
+    # image-file sources are not checked.
+    return source_write_block_problem(source)
 
 
 # --- File Carving / Recovery (PhotoRec) ---

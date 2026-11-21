@@ -30,7 +30,7 @@
     };
 })();
 
-let isWriteBlockActive = true;
+let isWriteBlockActive = null; // true / false / null = not known (no drive, drive gone, check failed)
 let throughputChart = null;
 const maxGraphPoints = 30;
 const graphData = Array(maxGraphPoints).fill(0);
@@ -22008,7 +22008,9 @@ function getActiveTargetDrive() {
         const recoveryDrive = document.getElementById('recoverySourceDrive')?.value;
         if (recoveryDrive) return recoveryDrive;
     }
-    return document.getElementById("driveSelect")?.value || "/dev/sda";
+    // No /dev/sda fallback (2026-11-20): with nothing selected the badge says
+    // so, instead of showing whatever drive happens to be sda.
+    return document.getElementById("driveSelect")?.value || '';
 }
 
 // Writes to both the navbar's telemetry element (desktop-only, hidden
@@ -22077,18 +22079,27 @@ async function fetchSystemInfo() {
         }
 
         isWriteBlockActive = data.write_blocker_active;
-        const wbBadgeBtn = document.getElementById("wbBadgeBtn");
-        if (wbBadgeBtn) {
-            wbBadgeBtn.title = `${activeDrive} - go to Settings > Drive Management to change this`;
-            if (isWriteBlockActive) {
-                wbBadgeBtn.className = "btn btn-sm btn-success fw-bold";
-                wbBadgeBtn.innerHTML = '<i class="bi bi-lock-fill me-1"></i>Write Blocker: On';
-            } else {
-                wbBadgeBtn.className = "btn btn-sm btn-danger fw-bold";
-                wbBadgeBtn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Write Blocker: Off';
-            }
-        }
+        renderWriteBlockBadge(activeDrive, data.write_blocker_active, data.write_blocker_state);
     } catch (err) {}
+}
+
+// The badge shows only what the kernel reported for the selected source drive
+// (2026-11-20). It used to read On for no drive, a missing drive or a failed check.
+const WRITE_BLOCK_BADGE_STATES = {
+    on: { cls: 'btn-success', icon: 'bi-lock-fill', text: 'Write Blocker: On', why: 'read-only' },
+    off: { cls: 'btn-danger', icon: 'bi-unlock-fill', text: 'Write Blocker: Off', why: 'WRITABLE - Start is refused until protection is back on' },
+    unknown: { cls: 'btn-warning', icon: 'bi-question-circle-fill', text: 'Write Blocker: Unknown', why: 'the read-only check failed - Start is refused until it reads as protected' },
+    missing: { cls: 'btn-warning', icon: 'bi-question-circle-fill', text: 'Write Blocker: Drive gone', why: 'this drive is no longer connected' },
+    no_drive: { cls: 'btn-secondary', icon: 'bi-hdd', text: 'Write Blocker: No source', why: 'Select a source drive to see its state' },
+};
+function renderWriteBlockBadge(drive, active, state) {
+    const btn = document.getElementById("wbBadgeBtn");
+    if (!btn) return;
+    const key = state || (active === true ? 'on' : active === false ? 'off' : 'unknown');
+    const look = WRITE_BLOCK_BADGE_STATES[key] || WRITE_BLOCK_BADGE_STATES.unknown;
+    btn.className = `btn btn-sm ${look.cls} fw-bold`;
+    btn.innerHTML = `<i class="bi ${look.icon} me-1"></i>${look.text}`;
+    btn.title = `${drive ? drive + ': ' : ''}${look.why}. Settings > Drive Management changes this.`;
 }
 
 // The top-right badge is now a link, not a direct toggle - switches to
@@ -22623,12 +22634,15 @@ async function refreshDriveManagementStatus() {
     try {
         const res = await fetch(`/api/system_info?drive=${encodeURIComponent(drive)}`);
         const data = await res.json();
-        if (data.write_blocker_active) {
+        if (data.write_blocker_active === true) {
             badge.className = 'badge bg-success';
             badge.textContent = 'PROTECTED (Read-Only)';
-        } else {
+        } else if (data.write_blocker_active === false) {
             badge.className = 'badge bg-danger';
             badge.textContent = 'UNLOCKED (Read-Write)';
+        } else {
+            badge.className = 'badge bg-warning text-dark';
+            badge.textContent = data.write_blocker_state === 'missing' ? 'DRIVE NOT CONNECTED' : 'UNKNOWN (check failed)';
         }
     } catch (err) {
         badge.className = 'badge bg-secondary';
@@ -22646,7 +22660,10 @@ async function toggleWriteBlockForSelectedDrive() {
         // drive Acquisition currently has selected, not necessarily this one.
         const statusRes = await fetch(`/api/system_info?drive=${encodeURIComponent(drive)}`);
         const statusData = await statusRes.json();
-        const newEnableState = !statusData.write_blocker_active;
+        // Unknown is not "off": toggling from a guess could unlock a drive that was protected.
+        // Re-locking is always safe, so an unknown state offers Protect.
+        const newEnableState = statusData.write_blocker_active !== true;
+        if (statusData.write_blocker_state === 'missing') return showToast(`${drive} is no longer connected.`, 'warning');
 
         // Turning protection OFF is the dangerous direction: one tap on the wrong drive used to
         // make evidence writable with no question asked (2026-10-09).
