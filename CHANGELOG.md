@@ -132,6 +132,9 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **Rooted-Android physical acquisition lists partitions by name again.** The partition-name lookup
+  reached the phone as a bare `ls`, so the picker showed raw block names (sda34) instead of userdata,
+  system and so on.
 - **Geolocation export and the Apple export import say when photos couldn't be read.** exiftool lists an
   unreadable photo (permissions, I/O error) with only its file name and no error text, so it was counted
   as "scanned, no GPS". Those photos are now counted separately and named in the result, the job log and
