@@ -367,9 +367,27 @@ def requires_auth(f):
         # FORENSIC_KIOSK_AUTH_BYPASS=0 to disable this and require login
         # locally too.
         if KIOSK_AUTH_BYPASS_ENABLED and is_local_kiosk_request():
-            # Kiosk requests never carry a Basic Auth header, so there's no
-            # real username to attribute - use a fixed sentinel rather than
-            # leaving chain-of-custody entries with no user at all.
+            # A real signed-in session wins at the touchscreen too (Eric's
+            # decision 2026-11-20, 10-09 item 2A): Switch User there used to do
+            # nothing, because this bypass ran first and every action - custody
+            # entries, the case examiner, the exported report - was
+            # "local-kiosk". The idle timeout applies to that session as it
+            # does remotely; once it lapses (or after Logout) the touchscreen
+            # falls back to the shared kiosk identity below, never to a login
+            # wall.
+            kiosk_session_user = session.get('username')
+            if kiosk_session_user:
+                last_activity = session.get('last_activity')
+                now = time.time()
+                if (session_still_valid() and not (last_activity is not None
+                        and (now - last_activity) > SESSION_IDLE_TIMEOUT_SECONDS)):
+                    session['last_activity'] = now
+                    g.forensic_user = kiosk_session_user
+                    return f(*args, **kwargs)
+                session.clear()
+            # No session: kiosk requests carry no credentials, so attribute
+            # them to a fixed sentinel rather than leaving chain-of-custody
+            # entries with no user at all.
             g.forensic_user = 'local-kiosk'
             return f(*args, **kwargs)
 

@@ -25,7 +25,7 @@ import os
 import json
 import time
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 
 from core.errors import friendly_error
 from core.auth import requires_auth, requires_permission
@@ -66,6 +66,13 @@ def create_case():
     examiner = req.get('examiner', '').strip()
     notes = req.get('notes', '').strip()
     parent_dir = safe_path(req.get('parent_dir', EVIDENCE_ROOT).strip())
+    # At the shared kiosk identity there is no account name to take, so the
+    # examiner types theirs - and "local-kiosk" is never accepted as one
+    # (Eric's decision 2026-11-20, 10-09 item 2A: it used to land in the case
+    # and the exported report). A signed-in account keeps the auto-filled name.
+    if getattr(g, 'forensic_user', None) == 'local-kiosk' and (not examiner or examiner.lower() == 'local-kiosk'):
+        return jsonify({"success": False, "error": "Enter the examiner's name (or sign in with Switch User)."}), 400
+    examiner = examiner[:120]
 
     if not parent_dir or not os.path.isdir(parent_dir):
         return jsonify({"success": False, "error": "Parent location is not a valid directory in the permitted evidence directory."}), 400

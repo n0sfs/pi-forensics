@@ -170,7 +170,10 @@ document.addEventListener('change', (ev) => {
 // whatever was typed). Switching or clearing the ACTIVE CASE is different -
 // that's about to overwrite every field this flag tracks with different
 // data - see confirmDiscardUnsavedReportingChanges() below.
+let skipLeavePagePrompt = false;  // set by the kiosk idle sign-out, after saving the draft
 window.addEventListener('beforeunload', (ev) => {
+    saveReportingDraftNow();
+    if (skipLeavePagePrompt) return;
     if (!reportHasUnsavedChanges && !reportingDraftsPending()) return;
     ev.preventDefault();
     ev.returnValue = '';
@@ -195,6 +198,115 @@ function clearReportingDrafts() {
     const files = document.getElementById('newCaseNoteFiles');
     if (files) files.value = '';
 }
+// Draft autosave for typed Reporting text (Eric's decision 2026-11-20, 10-09
+// item 1A). The kiosk browser can be restarted under the examiner (its
+// watchdog, a crash, a power cut), and the narrative/Case Details text lived
+// only in the page. Each case's typed text is kept in this browser's
+// localStorage every few seconds and offered back - applied, not just
+// offered, since that's the point - the next time the case loads. Three-way
+// per field: a draft value only goes back into a field the server hasn't
+// changed since the draft was typed; a field changed on both sides keeps the
+// saved value, and the toast says so. Exhibit checkboxes are not drafted.
+const REPORT_DRAFT_STORE_PREFIX = 'pif_report_draft::';
+const REPORT_DRAFT_INTERVAL_MS = 4000;
+const REPORT_DRAFT_MAX_AGE_MS = 14 * 24 * 3600 * 1000;
+let reportDraftBase = null;      // field values as last loaded/saved for the active case
+let reportDraftBaseCase = null;
+let reportDraftLastStored = null;
+let reportDraftTimer = null;
+let reportDraftRestoredAt = 0;
+
+function _reportDraftFieldIds() {
+    const ids = [];
+    document.querySelectorAll('#repNarrativePane textarea[id], #repNarrativePane input[id]').forEach(el => {
+        if (el.type === 'checkbox' || el.type === 'radio' || el.type === 'file' || el.type === 'hidden') return;
+        ids.push(el.id);
+    });
+    return ids.concat(REPORT_DRAFT_FIELD_IDS);
+}
+function _collectReportDraftFields() {
+    const fields = {};
+    _reportDraftFieldIds().forEach(id => { const el = document.getElementById(id); if (el) fields[id] = el.value; });
+    return fields;
+}
+function _reportDraftKey(caseFolder) { return REPORT_DRAFT_STORE_PREFIX + caseFolder; }
+function _readReportDraft(caseFolder) {
+    try { return JSON.parse(localStorage.getItem(_reportDraftKey(caseFolder)) || 'null'); } catch (e) { return null; }
+}
+function _removeReportDraft(caseFolder) {
+    try { localStorage.removeItem(_reportDraftKey(caseFolder)); } catch (e) { /* storage unavailable */ }
+    reportDraftLastStored = null;
+}
+// Called when the page shows exactly what the server has (a fresh load or a
+// successful save): that becomes the base drafts are compared against.
+function resetReportDraftBase(dropStored) {
+    reportDraftBaseCase = activeCase ? activeCase.case_folder : null;
+    reportDraftBase = reportDraftBaseCase ? _collectReportDraftFields() : null;
+    if (dropStored && reportDraftBaseCase) _removeReportDraft(reportDraftBaseCase);
+}
+function saveReportingDraftNow() {
+    if (!activeCase || !reportDraftBase || reportDraftBaseCase !== activeCase.case_folder) return;
+    if (typeof isReportLocked === 'function' && isReportLocked()) return;
+    const fields = _collectReportDraftFields();
+    const changed = {};
+    for (const [id, value] of Object.entries(fields)) {
+        if ((reportDraftBase[id] ?? '') !== value) changed[id] = value;
+    }
+    const serialized = JSON.stringify(changed);
+    if (serialized === reportDraftLastStored) return;
+    try {
+        if (!Object.keys(changed).length) {
+            localStorage.removeItem(_reportDraftKey(activeCase.case_folder));
+        } else {
+            const base = {};
+            Object.keys(changed).forEach(id => { base[id] = reportDraftBase[id] ?? ''; });
+            localStorage.setItem(_reportDraftKey(activeCase.case_folder), JSON.stringify({
+                saved_at: Date.now(), case_number: activeCase.case_number, fields: changed, base,
+            }));
+        }
+        reportDraftLastStored = serialized;
+    } catch (e) { /* storage full or blocked - the page still works, just without the safety net */ }
+}
+function startReportDraftAutosave() {
+    if (reportDraftTimer !== null) return;
+    reportDraftTimer = setInterval(saveReportingDraftNow, REPORT_DRAFT_INTERVAL_MS);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) saveReportingDraftNow(); });
+    window.addEventListener('pagehide', saveReportingDraftNow);
+}
+// After a load repainted the fields from the server: put any newer typed text
+// back. Returns true when something was restored.
+function restoreReportDraftIfAny() {
+    if (!activeCase) return false;
+    const draft = _readReportDraft(activeCase.case_folder);
+    if (!draft || !draft.fields) return false;
+    if (!draft.saved_at || Date.now() - draft.saved_at > REPORT_DRAFT_MAX_AGE_MS || isReportLocked()) {
+        _removeReportDraft(activeCase.case_folder);
+        return false;
+    }
+    let restored = 0, conflicts = 0;
+    for (const [id, value] of Object.entries(draft.fields)) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const serverNow = (reportDraftBase && id in reportDraftBase) ? reportDraftBase[id] : el.value;
+        const typedOver = (draft.base || {})[id] ?? '';
+        if (serverNow === value) continue;            // already saved
+        if (serverNow !== typedOver) { conflicts++; continue; } // saved elsewhere since - keep the saved text
+        el.value = value;
+        restored++;
+    }
+    if (!restored) {
+        _removeReportDraft(activeCase.case_folder);
+        if (conflicts) showToast(`An autosaved draft for this case (${new Date(draft.saved_at).toLocaleString()}) was not restored: those fields were saved since.`, 'warning', 12000);
+        return false;
+    }
+    if (Object.keys(draft.fields).some(id => !REPORT_DRAFT_FIELD_IDS.includes(id))) markReportingDirty();
+    reportDraftLastStored = null;
+    reportDraftRestoredAt = Date.now();
+    showToast(`Restored ${restored} unsaved field(s) typed ${new Date(draft.saved_at).toLocaleString()}. Save Report Changes to keep them.`
+        + (conflicts ? ` ${conflicts} field(s) were saved since and kept as saved.` : ''), 'info', 15000);
+    return true;
+}
+
 async function confirmDiscardUnsavedReportingChanges() {
     if (!reportHasUnsavedChanges && !reportingDraftsPending()) return true;
     return await appConfirm({
@@ -16205,6 +16317,11 @@ function rerenderReportEditors() {
 // conflict. Clearing the loaded record too means nothing can be saved until
 // the next case has actually loaded.
 function discardReportingEdits() {
+    // An explicit discard (the examiner confirmed it) also drops the autosaved
+    // draft, or the next load would put the discarded text straight back.
+    if (reportDraftBaseCase) _removeReportDraft(reportDraftBaseCase);
+    reportDraftBase = null;
+    reportDraftBaseCase = null;
     clearReportingDirty();
     currentReportPath = null;
     currentLoadedReportData = null;
@@ -16483,8 +16600,15 @@ async function loadCaseForEditing() {
             skippedForUnsavedEdits = true;
         }
 
-        if (skippedForUnsavedEdits) {
+        // Not after a draft restore a moment ago: page load runs this twice,
+        // and the "edits" the second run preserved are the restored draft.
+        if (skippedForUnsavedEdits && Date.now() - reportDraftRestoredAt > 5000) {
             showToast("A background update refreshed this case's Notes/Custody Log/Jobs - your own unsaved Report Narrative and Files & Artifacts edits were preserved. Save when ready.", 'info');
+        }
+        if (!skippedForUnsavedEdits) {
+            resetReportDraftBase(false);
+            restoreReportDraftIfAny();
+            startReportDraftAutosave();
         }
 
         const previewEl = document.getElementById("jsonPreview");
@@ -19085,6 +19209,7 @@ async function saveReportMetadata() {
                 previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
             }
             clearReportingDirty();
+            resetReportDraftBase(true);
             showToast("Report JSON saved successfully!", 'success');
             return true;
         } else if (res.status === 409 && data.conflict) {
@@ -19105,6 +19230,7 @@ async function saveReportMetadata() {
                 // repainting the very fields this reload is meant to
                 // refresh, silently no-opping the confirmed discard.
                 clearReportingDirty();
+                if (activeCase) _removeReportDraft(activeCase.case_folder);
                 await loadCaseForEditing();
             }
         } else {
@@ -20839,7 +20965,17 @@ function openCaseManagerModal() {
     // in (readonly field, see #newCaseExaminer), so a case's examiner of
     // record always matches its real chain-of-custody attribution.
     const examinerEl = document.getElementById("newCaseExaminer");
-    if (examinerEl) examinerEl.value = currentUsername || '';
+    if (examinerEl) {
+        // At the shared kiosk identity there's no account name to use, so the
+        // examiner types theirs (2026-11-20) - "local-kiosk" used to become the
+        // case's examiner of record and appear in the exported report.
+        const kioskIdentity = currentUsername === 'local-kiosk';
+        examinerEl.readOnly = !kioskIdentity;
+        examinerEl.value = kioskIdentity ? '' : (currentUsername || '');
+        examinerEl.placeholder = kioskIdentity ? "Examiner's name (required)" : 'Examiner (you)';
+        examinerEl.title = kioskIdentity ? 'Type your name, or sign in with Switch User to use your account'
+            : 'Auto-filled from your logged-in account';
+    }
     // Default the new case's location to wherever the LAST case was created
     // rather than the bare evidence root (2026-09-16). On a station whose real
     // storage is a mounted share under /mnt, the markup default put a new
@@ -20866,6 +21002,11 @@ async function createCase() {
 
     if (!caseNumber) {
         if (statusEl) { statusEl.textContent = 'Case number is required.'; statusEl.className = 'small mt-2 text-danger'; }
+        return;
+    }
+    if (currentUsername === 'local-kiosk' && (!examiner || examiner.toLowerCase() === 'local-kiosk')) {
+        if (statusEl) { statusEl.textContent = "Enter the examiner's name (or sign in with Switch User)."; statusEl.className = 'small mt-2 text-danger'; }
+        document.getElementById("newCaseExaminer")?.focus();
         return;
     }
 
@@ -24964,6 +25105,12 @@ async function fetchWhoami() {
         applyUserMgmtPermissionGating();
         applySidebarPermissionGating();
         applySettingsPermissionGating();
+        startKioskSessionIdleWatch();
+        startKioskActivityHeartbeat();
+        if (window.IS_LOCAL_KIOSK && new URLSearchParams(location.search).get('signed_out') === 'idle') {
+            history.replaceState(null, '', '/');
+            showToast('The signed-in examiner was signed out after 15 minutes without a touch. The touchscreen is back on the shared kiosk account.', 'info', 12000);
+        }
     } catch (err) { /* non-fatal - indicator just stays hidden */ }
 }
 
@@ -25113,7 +25260,52 @@ async function logout() {
     try {
         await fetch('/logout', { method: 'POST' });
     } catch (err) { /* best-effort - navigating to /login below still ends the visible session either way */ }
-    location.href = '/login';
+    // At the touchscreen, signing out returns to the shared kiosk identity
+    // rather than a login wall (2026-11-20).
+    location.href = window.IS_LOCAL_KIOSK ? '/' : '/login';
+}
+
+// A named account signed in at the touchscreen is signed out after
+// KIOSK_SESSION_IDLE_MS without a touch or key press, so the next person at
+// the station isn't working - and recorded in the Custody Log - as them
+// (2026-11-20). The app's own 2 s status polls keep the server-side session
+// fresh, so only real input counts here.
+const KIOSK_SESSION_IDLE_MS = 15 * 60 * 1000;
+let kioskSessionIdleTimer = null;
+// Touchscreen activity heartbeat (2026-11-20). install.py's kiosk watchdog
+// restarts Chromium every 30 minutes to recover from a stuck fullscreen, but
+// now only once the screen has had no input for 10 minutes - this tells it
+// when the last real input was. At most one request a minute; any session
+// (signed in or the kiosk's own identity) counts.
+const KIOSK_ACTIVITY_PING_MS = 60 * 1000;
+let kioskActivityLastPing = 0;
+let kioskActivityWatchStarted = false;
+function startKioskActivityHeartbeat() {
+    if (!window.IS_LOCAL_KIOSK || kioskActivityWatchStarted) return;
+    kioskActivityWatchStarted = true;
+    const ping = () => {
+        const now = Date.now();
+        if (now - kioskActivityLastPing < KIOSK_ACTIVITY_PING_MS) return;
+        kioskActivityLastPing = now;
+        fetch('/api/kiosk/activity', { method: 'POST' }).catch(() => { /* watchdog falls back to restarting when idle */ });
+    };
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(ev => document.addEventListener(ev, ping, { passive: true, capture: true }));
+    ping();
+}
+
+function startKioskSessionIdleWatch() {
+    if (!window.IS_LOCAL_KIOSK || !currentUsername || currentUsername === 'local-kiosk' || kioskSessionIdleTimer !== null) return;
+    const arm = () => {
+        clearTimeout(kioskSessionIdleTimer);
+        kioskSessionIdleTimer = setTimeout(async () => {
+            saveReportingDraftNow();   // typed text comes back on the next load
+            skipLeavePagePrompt = true;
+            try { await fetch('/logout', { method: 'POST' }); } catch (e) { /* reload below still drops the session view */ }
+            location.href = '/?signed_out=idle';
+        }, KIOSK_SESSION_IDLE_MS);
+    };
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(ev => document.addEventListener(ev, arm, { passive: true, capture: true }));
+    arm();
 }
 
 function applyUserMgmtPermissionGating() {
