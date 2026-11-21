@@ -78,6 +78,15 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **The Mobile tab has a "Before you start" checklist.** It covers iOS, Android and SIM. Steps the
+  station can see (device detected, trusted or USB-debugging authorized, destination inside the active
+  case) are ticked live. The rest (network isolation, screen kept awake, a known backup password or
+  PIN) are marked for you to check yourself.
+- **Clearer drive-health and refusal messages.** Reallocated and pending sector counts the drive
+  doesn't report now show N/A instead of 0. A non-zero count shows in amber, and the badge reads
+  "PASSED (SECTOR WARNINGS)". A failing or worn drive gets a message recommending ddrescue. When Start
+  is refused because the source isn't write-protected, the message says "Not started" with the
+  steps to fix it, and stays up for 20 seconds instead of 8.
 - **The Reporting tabs are grouped.** The first row holds the case and analysis views (Overview, Case
   Activity, Pattern of Life, Geolocation, Evidence Timeline). The second row holds the write-up (Report
   Narrative, Case Notes & Custody Log, Files & Artifacts), with Export on its own at the far right. It

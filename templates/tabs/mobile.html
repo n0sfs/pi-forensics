@@ -8,6 +8,13 @@
                                             <div id="mobileDeviceModeIntro" class="small text-subtle mb-2">
                                                 Only devices already unlocked and trusted (iOS "Trust This Computer?") or USB-debugging-authorized (Android RSA prompt) will show as usable. Approve the prompt on the device itself first - this tool does not bypass lockscreens or pairing.
                                             </div>
+                                            <!-- Before-you-start checklist (2026-11-21, UI batch 5). Steps the
+                                                 station can see are ticked live from the device list; the rest
+                                                 are marked "check yourself". Filled by renderMobilePrereqChecklist(). -->
+                                            <details id="mobilePrereqChecklist" class="mb-2 p-2 border border-secondary rounded-2" ontoggle="renderMobilePrereqChecklist()">
+                                                <summary class="small fw-bold text-bright" style="cursor:pointer;"><i class="bi bi-list-check me-1"></i>Before you start: <span id="mobilePrereqSummary">checklist</span></summary>
+                                                <ul id="mobilePrereqList" class="list-unstyled small mb-0 mt-2"></ul>
+                                            </details>
                                             <div class="row g-2 align-items-center mb-2">
                                                 <div class="col-md-8">
                                                     <select id="mobileDeviceMode" class="form-select form-select-sm" onchange="updateMobileDeviceMode()">
@@ -284,7 +291,7 @@
                                             </div>
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder2-open me-1"></i>Destination Directory</div>
                                             <div class="input-group input-group-sm">
-                                                <input type="text" id="mobileDest" class="form-control" value="/mnt">
+                                                <input type="text" id="mobileDest" class="form-control" value="/mnt" oninput="renderMobilePrereqChecklist()" onchange="renderMobilePrereqChecklist()">
                                                 <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'mobileDest')">
                                                     <i class="bi bi-folder2-open me-1"></i>Browse
                                                 </button>
