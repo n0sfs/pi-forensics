@@ -168,26 +168,16 @@ class TestExecutionWorkerImageTriageScan:
         assert args[1]["files_scanned"] == 0
 
     def test_a_stop_during_the_scanning_pass_is_never_falsely_marked_completed_or_failed(self, tmp_path):
-        # The outer per-filesystem loop checks snapshot_job() once before
-        # ever entering the per-entry walk - it must read Running there or
-        # the scan breaks before reaching the walk at all (a different,
-        # earlier Stop point than what this test means to exercise). A
-        # small stateful counter lets the first call through as Running and
-        # every call after it as Stopped, landing the Stop genuinely inside
-        # the per-entry walk loop instead.
-        calls = {"n": 0}
-
-        def snapshot_side_effect():
-            calls["n"] += 1
-            return {"status": "Running"} if calls["n"] == 1 else {"status": "Stopped"}
-
-        job, dest_dir, image_path, mock_log, mock_index_conn = self._run(
-            tmp_path, walk_entries=[_entry("a.txt")],
-            snapshot_side_effect=snapshot_side_effect,
-        )
+        # The per-entry walk asks job_stop_requested() (2026-11-20 - it also
+        # sees a newer job taking the slot, which "Stopped" alone did not).
+        with mock.patch.object(image_browser, "job_stop_requested", return_value=True):
+            job, dest_dir, image_path, mock_log, mock_index_conn = self._run(
+                tmp_path, walk_entries=[_entry("a.txt")],
+            )
         assert job["status"] != "Completed Successfully"
         assert job["status"] != "Failed"
         assert "Scan stopped by user" in job["log"]
+        assert mock_log.call_args[0][1]["truncated"] is True   # the report says it is incomplete
         # The report file and the chain-of-custody entry are still written
         # even on a Stop - never silently skipped.
         mock_log.assert_called_once()
