@@ -3118,11 +3118,11 @@ def quick_triage_scan():
 # comment previously claimed mvt-android's check-backup "expects a decrypted
 # .ab extraction" - wrong, confirmed via MVT's own real official docs
 # (docs.mvt.re/en/latest/android/backup/): check-backup takes the raw .ab
-# FILE directly (with --backup-password for an encrypted one) as its
+# FILE directly (password via MVT_ANDROID_BACKUP_PASSWORD for an encrypted one) as its
 # recommended, primary path; ABE-based manual pre-extraction is only listed
 # as a fallback "if issues occur". Fixed here by accepting a real .ab file as
 # a target (alongside the existing directory-target mode, unchanged) and
-# passing --backup-password through when supplied.
+# passing the password through mvt's environment variable when supplied.
 def _run_mvt_scan_body(target_path, dest_dir, platform, backup_password=None):
     """The actual mvt-ios/mvt-android subprocess call, extracted verbatim
     out of run_mvt_scan() (Phase 3 of Linux Artifacts + Auto Analyze,
@@ -3153,13 +3153,18 @@ def _run_mvt_scan_body(target_path, dest_dir, platform, backup_password=None):
     output_dir = os.path.join(dest_dir, f"{base_name}_mvt_{platform}_scan")
     os.makedirs(output_dir, exist_ok=True)
 
-    cmd = [mvt_bin, 'check-backup', '--output', output_dir]
+    # The backup password goes to mvt through its own environment variable,
+    # never argv: a command-line argument is readable by every local user in
+    # `ps` / /proc/<pid>/cmdline for as long as the scan runs. Only
+    # mvt-android's check-backup takes a password; mvt-ios check-backup has
+    # no such option (an encrypted iOS backup needs decrypt-backup first).
+    cmd = [mvt_bin, 'check-backup', '--output', output_dir, target_path]
+    env = None
     if backup_password:
-        cmd += ['--backup-password', backup_password]
-    cmd.append(target_path)
+        env = dict(os.environ, MVT_ANDROID_BACKUP_PASSWORD=backup_password)
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env=env)
         output = ((res.stdout or "") + (("\n" + res.stderr) if res.stderr else "")).strip() or "[no output]"
         return {"success": True, "platform": platform, "output_dir": output_dir, "output": output}
     except subprocess.TimeoutExpired:
@@ -3192,6 +3197,8 @@ def run_mvt_scan():
         return jsonify({"success": False, "error": "Path not found, outside the permitted evidence directory, or not a valid MVT scan target (a directory, or - for Android - a real .ab backup file)."}), 400
     if platform not in ('ios', 'android'):
         return jsonify({"success": False, "error": "platform must be 'ios' or 'android'."}), 400
+    if backup_password and platform != 'android':
+        return jsonify({"success": False, "error": "A backup password applies to an Android .ab backup only. Decrypt an encrypted iOS backup first, then scan the decrypted folder."}), 400
 
     # allow_same_as_source only for the single-.ab-file target (found in a
     # review pass alongside the identical bugreport-parse bug): the

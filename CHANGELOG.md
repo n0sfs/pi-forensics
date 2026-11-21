@@ -33,6 +33,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Security
 
+- **An Android backup password is no longer visible to other programs on the station.** MVT scans
+  passed it on the command line, where any local user could read it while the scan ran; it now goes
+  through MVT's own environment variable. A password sent with an iOS scan is refused with a clear
+  message instead of failing inside MVT, which has no such option for iOS backups.
 - **The Write Blocker badge shows only what the drive actually reports, and Start refuses an
   unprotected source.** With no source selected it used to show the state of whatever drive was
   `/dev/sda`, and it read "On" when the check failed or the drive was unplugged. It now says No
