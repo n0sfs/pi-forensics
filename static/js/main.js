@@ -18769,6 +18769,14 @@ async function loadChainOfCustodyLog(force = true) {
     const container = document.getElementById("cocLogContainer");
     if (!container) return;
     if (!force && container.scrollTop > 20) return;
+    if (userKnownToLack('settings')) {
+        container.innerHTML = '';
+        const msg = document.createElement('span');
+        msg.className = 'text-subtle';
+        msg.textContent = "Your account's group doesn't have Settings access, which the station audit log needs.";
+        container.appendChild(msg);
+        return;
+    }
 
     if (force) container.innerHTML = '<span class="text-subtle">Loading...</span>';
 
@@ -25186,6 +25194,15 @@ let currentUsername = null;
 let currentUserRole = null;
 let currentUserPermissions = {};
 
+// True only once /api/whoami has answered and the account lacks every named
+// permission - lets background loaders skip a request the server would 403
+// (2026-11-21: an analyst's page load logged 3 "Failed to load resource" 403s).
+// Before whoami answers it returns false, so the server stays the gate.
+function userKnownToLack(...permKeys) {
+    if (currentUserRole === null) return false;
+    return !permKeys.some(k => !!currentUserPermissions[k]);
+}
+
 // Maps each gated sidebar <li> to the permission key that must be true for
 // it to stay visible - see PERMISSION_KEYS in app.py, the single source of
 // truth this mapping has to stay in sync with by hand (there's no API call
@@ -25602,6 +25619,16 @@ let userGroupModalInstance = null;
 async function loadUserGroups() {
     const container = document.getElementById("userGroupsListContainer");
     const groupSelect = document.getElementById("newUserGroupId");
+    if (userKnownToLack('manage_users')) {
+        if (container) {
+            container.innerHTML = '';
+            const span = document.createElement('span');
+            span.className = 'text-subtle';
+            span.textContent = "Your account's group doesn't have User & Group Management access.";
+            container.appendChild(span);
+        }
+        return;
+    }
     if (container) container.innerHTML = '<span class="text-subtle">Loading groups...</span>';
 
     try {
@@ -26474,6 +26501,7 @@ async function waitForServiceThenReload() {
 let updateAvailableNotificationShown = false; // only pop the actionable toast once per page load - repeat checks just keep the Settings badge current
 
 async function checkForAppUpdate(manual) {
+    if (userKnownToLack('settings')) return; // the route needs 'settings' - skip the request instead of eating a 403
     const btn = document.getElementById('btnCheckUpdate');
     if (manual && btn) btn.disabled = true;
     try {

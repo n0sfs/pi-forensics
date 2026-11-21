@@ -177,6 +177,7 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
   "Keep running".
 
 ### Fixed
+- Non-admin page loads no longer fire 3 background requests the server always refused (update check, station audit log, user groups); the panels show the access message directly.
 
 - **Re-running the installer no longer asks for a dashboard password it won't use, or falsely warns
   that the password is still the default.** When the account already exists, the installer keeps
