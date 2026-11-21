@@ -23074,9 +23074,19 @@ function onAcquisitionDriveChange() {
 let smartCheckToken = 0;
 function resetDriveTelemetryPanel() {
     ['lblModel', 'lblMediaType', 'lblCapacity', 'lblSerial', 'lblTemp', 'lblReallocated', 'lblPending', 'lblPowerHours']
-        .forEach(id => { const el = document.getElementById(id); if (el) el.innerText = '--'; });
+        .forEach(id => { const el = document.getElementById(id); if (el) { el.innerText = '--'; el.style.removeProperty('color'); } });
     const badge = document.getElementById("lblHealthBadge");
     if (badge) { badge.className = "badge bg-secondary"; badge.textContent = "UNCHECKED"; }
+}
+
+function setSmartCounter(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const known = value !== undefined && value !== null && value !== '';
+    el.innerText = known ? value : 'N/A';
+    // .telemetry-grid-val's colour is !important, so this has to be too.
+    if (known && Number(value) > 0) el.style.setProperty('color', '#ffc107', 'important');
+    else el.style.removeProperty('color');
 }
 
 async function checkSmartTelemetry() {
@@ -23114,9 +23124,22 @@ async function checkSmartTelemetry() {
                     : 'UNAVAILABLE (drive or USB adapter does not report SMART)';
             }
             if (document.getElementById("lblTemp")) document.getElementById("lblTemp").innerText = data.temperature ? `${data.temperature} °C` : "N/A";
-            if (document.getElementById("lblReallocated")) document.getElementById("lblReallocated").innerText = data.reallocated_sectors !== undefined ? data.reallocated_sectors : "0";
-            if (document.getElementById("lblPending")) document.getElementById("lblPending").innerText = data.pending_sectors !== undefined ? data.pending_sectors : "0";
+            // "N/A" when the drive doesn't report a counter (2026-11-21): it used
+            // to print "0", a clean result nobody measured. A non-zero count is
+            // shown in amber even when the overall verdict is PASSED.
+            setSmartCounter("lblReallocated", data.reallocated_sectors);
+            setSmartCounter("lblPending", data.pending_sectors);
             if (document.getElementById("lblPowerHours")) document.getElementById("lblPowerHours").innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : "N/A";
+            const badSectors = (Number(data.reallocated_sectors) || 0) + (Number(data.pending_sectors) || 0);
+            if (data.healthy === false) {
+                showToast(`${targetDrive} reports a SMART failure. Image it once with ddrescue (it skips bad areas first and keeps a map so it can resume), and avoid browsing or re-reading it before that.`, 'danger', 20000);
+            } else if (badSectors > 0) {
+                if (healthBadge && data.healthy === true) {
+                    healthBadge.className = "badge bg-warning text-dark";
+                    healthBadge.textContent = 'PASSED (SECTOR WARNINGS)';
+                }
+                showToast(`${targetDrive} passes SMART but has ${badSectors} reallocated or pending sector(s). Prefer ddrescue for this drive, so unreadable areas don't stall the copy.`, 'warning', 15000);
+            }
         } else {
             // Distinguish "the check itself failed" from "never checked yet"
             // (found in a review pass) - smart_check() was deliberately
@@ -23901,6 +23924,11 @@ async function startAcquisition() {
             // mirror that transition in fetchProgress() so the UI doesn't
             // keep offering "Lock / Cleanup" for a mount that's already gone.
             if (useUnlockedSource) encVolMountConsumedByJob = true;
+        } else if (data.write_blocker_off) {
+            // A deliberate refusal with steps to follow, not a crash - say so,
+            // and keep it up long enough to act on.
+            showToast(`Not started - source not write-protected.\n${data.error}`, 'warning', 20000);
+            if (startBtn) startBtn.disabled = false;
         } else {
             showToast(`Start failed: ${data.error}`, 'danger');
             if (startBtn) startBtn.disabled = false;
@@ -24469,7 +24497,76 @@ function updateMobileDeviceMode() {
     // a SIM/UICC card is read through a card reader, nothing to trust/pair.
     if (modeIntro) modeIntro.style.display = mode === 'sim' ? 'none' : '';
 
+    renderMobilePrereqChecklist();
     refreshMobileStartButtonState();
+}
+
+// Before-you-start checklist for the Mobile tab (2026-11-21, UI batch 5).
+// state: true = the station can see it's done, false = it can see it isn't,
+// null = the examiner has to check it on the device.
+function mobilePrereqSteps(mode) {
+    const dest = (document.getElementById("mobileDest")?.value || '').trim().replace(/\/+$/, '');
+    const caseFolder = (activeCase?.case_folder || '').replace(/\/+$/, '');
+    const destOk = !!caseFolder && (dest === caseFolder || dest.startsWith(caseFolder + '/'));
+    if (mode === 'ios') {
+        const udid = document.getElementById("mobileIosSelect")?.value;
+        const dev = mobileIosDevices.find(d => d.udid === udid);
+        return [
+            { label: 'Device connected by USB and detected (tap Refresh)', state: !!dev },
+            { label: 'Device unlocked and "Trust This Computer?" accepted with the passcode', state: dev ? !!dev.trusted : false },
+            { label: 'Network isolated (Airplane Mode or a Faraday bag) so the device cannot be wiped remotely', state: null },
+            { label: 'If backup encryption is already on, you know that password', state: null },
+            { label: 'Destination set to a case folder on the evidence drive', state: destOk },
+        ];
+    }
+    if (mode === 'android') {
+        const serial = document.getElementById("mobileAndroidSelect")?.value;
+        const dev = mobileAndroidDevices.find(d => d.serial === serial);
+        return [
+            { label: 'Developer options and USB debugging turned on (Settings > About phone > tap Build number 7 times)', state: dev ? true : null },
+            { label: 'Device connected by USB and detected (tap Refresh)', state: !!dev },
+            { label: 'USB debugging prompt approved on the device ("Always allow")', state: dev ? !!dev.authorized : false },
+            { label: 'Screen kept unlocked and awake for the whole acquisition', state: null },
+            { label: 'Network isolated (Airplane Mode or a Faraday bag) so the device cannot be wiped remotely', state: null },
+            { label: 'Destination set to a case folder on the evidence drive', state: destOk },
+        ];
+    }
+    return [
+        { label: 'PC/SC card reader connected (tap Detect Readers)', state: null },
+        { label: 'SIM card seated in the reader', state: null },
+        { label: 'PIN known if the card is PIN-locked (three wrong PINs lock it; never guess)', state: null },
+    ];
+}
+
+function renderMobilePrereqChecklist() {
+    const list = document.getElementById("mobilePrereqList");
+    if (!list) return;
+    const mode = document.getElementById("mobileDeviceMode")?.value || 'ios';
+    const steps = mobilePrereqSteps(mode);
+    const icons = { true: ['bi-check-circle-fill', 'text-success', 'Done'],
+                    false: ['bi-x-circle', 'text-warning', 'Not yet'],
+                    null: ['bi-circle', 'text-subtle', 'Check this yourself'] };
+    list.replaceChildren(...steps.map(step => {
+        const [icon, color, title] = icons[step.state];
+        const li = document.createElement('li');
+        li.className = 'd-flex align-items-start gap-2 mb-1';
+        const i = document.createElement('i');
+        i.className = `bi ${icon} ${color} flex-shrink-0`;
+        i.title = title;
+        i.setAttribute('aria-label', title);
+        const span = document.createElement('span');
+        span.textContent = step.label;
+        li.append(i, span);
+        return li;
+    }));
+    const done = steps.filter(s => s.state === true).length;
+    const missing = steps.filter(s => s.state === false).length;
+    const summary = document.getElementById("mobilePrereqSummary");
+    if (summary) {
+        summary.textContent = done === 0 && !missing ? `${steps.length} to check`
+            : `${done}/${steps.length} done` + (missing ? `, ${missing} needed` : '');
+        summary.className = missing ? 'text-warning' : 'text-success';
+    }
 }
 
 function onMobileIosSelect() {
@@ -24493,6 +24590,7 @@ function onMobileIosSelect() {
     const pairBtn = document.getElementById("btnPairIosDevice");
     if (pairBtn) pairBtn.style.display = (dev && !dev.trusted) ? '' : 'none';
 
+    renderMobilePrereqChecklist();
     refreshMobileStartButtonState();
 }
 
@@ -24646,6 +24744,7 @@ function onMobileAndroidSelect() {
     const whatsappStatus = document.getElementById("mobileWhatsappKeyStatus");
     if (whatsappStatus) whatsappStatus.textContent = '';
 
+    renderMobilePrereqChecklist();
     refreshMobileStartButtonState();
     refreshCompanionUnifiedButtonState();
 }
