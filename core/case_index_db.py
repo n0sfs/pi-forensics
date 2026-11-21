@@ -21,7 +21,7 @@ from flask import g
 from core.paths import (safe_path, case_consolidated_path, classify_case_role, is_bulk_tool_output_dir,
                         acquisition_output_location, path_is_within, CASE_STATUSES_READ_ONLY,
                         case_status_blocking_new_work)
-from core.config import get_keyword_lists
+from core.config import get_keyword_lists, get_privacy_tool_apps
 from core.case_file import case_write_lock, _read_case_file, _write_case_file
 import core.config as config
 
@@ -3828,7 +3828,33 @@ PRIVACY_TOOL_PACKAGES = {
     "com.duckduckgo.mobile.android": ("DuckDuckGo Browser", "privacy_browser"),
     "com.brave.browser": ("Brave Browser", "privacy_browser"),
     "org.mozilla.focus": ("Firefox Focus", "privacy_browser"),
+    # iOS bundle ids (2026-11-21), for iLEAPP-parsed app inventories. An id
+    # that turns out wrong can only miss a match, never cause a false one.
+    "com.miketigas.OnionBrowser": ("Onion Browser", "tor"),
+    "ch.protonmail.vpn": ("Proton VPN", "vpn"),
+    "net.mullvad.MullvadVPN": ("Mullvad VPN", "vpn"),
+    "com.wireguard.ios": ("WireGuard", "vpn"),
+    "net.openvpn.connect.app": ("OpenVPN Connect", "vpn"),
+    "com.nordvpn.NordVPN": ("NordVPN", "vpn"),
+    "com.expressvpn.ExpressVPN": ("ExpressVPN", "vpn"),
+    "com.brave.ios.browser": ("Brave Browser", "privacy_browser"),
+    "com.duckduckgo.mobile.ios": ("DuckDuckGo Browser", "privacy_browser"),
+    "org.mozilla.ios.Focus": ("Firefox Focus", "privacy_browser"),
 }
+
+
+def privacy_tool_packages():
+    """Built-in PRIVACY_TOOL_PACKAGES plus the station's own additions
+    (Settings > Case & Reporting > Privacy-Tool Apps). A built-in entry wins
+    over a station entry with the same id."""
+    packages = {}
+    try:
+        for app in get_privacy_tool_apps():
+            packages[app['id']] = (app.get('label') or app['id'], app['category'])
+    except Exception:
+        pass
+    packages.update(PRIVACY_TOOL_PACKAGES)
+    return packages
 
 PRIVACY_TOOL_ONION_MAX_ROWS = 200
 
@@ -3881,6 +3907,7 @@ def detect_privacy_tools(case_folder):
     conn = _case_index_open_readonly(case_folder)
     if not conn:
         return result
+    known_packages = privacy_tool_packages()
     try:
         result["artifacts_present"] = bool(
             conn.execute("SELECT 1 FROM parsed_artifacts LIMIT 1").fetchone())
@@ -3895,7 +3922,7 @@ def detect_privacy_tools(case_folder):
             except (TypeError, ValueError):
                 extra = {}
             package = extra.get("package") or title
-            spec = PRIVACY_TOOL_PACKAGES.get(package)
+            spec = known_packages.get(package)
             if not spec:
                 continue
             label, category = spec
@@ -3936,7 +3963,7 @@ def detect_privacy_tools(case_folder):
             candidates = [title] + [str(v).strip() for v in row.values() if v]
             spec, package = None, None
             for candidate in candidates:
-                spec = PRIVACY_TOOL_PACKAGES.get(candidate)
+                spec = known_packages.get(candidate)
                 if spec:
                     package = candidate
                     break

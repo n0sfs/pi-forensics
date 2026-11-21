@@ -61,7 +61,7 @@ from core.config import (
     load_runtime_config, save_runtime_config, legacy_password_ok,
     serializes_config_writes, config_write_lock, get_last_logins, CONFIG_RESTORE_MAX_BYTES,
     _get_or_create_mount_key, _encrypt_secret, _decrypt_secret,
-    get_app_version, BUNDLED_KEYWORD_LISTS_DIR,
+    get_app_version, BUNDLED_KEYWORD_LISTS_DIR, PRIVACY_TOOL_CATEGORIES,
 )
 from core.jobs import job_lock, current_job, update_job, snapshot_job
 from core.case_index_db import check_regex_pattern_for_redos
@@ -1172,6 +1172,64 @@ def _parse_url_list_text(text):
     if not urls:
         return None, "No valid URLs found in the pasted text."
     return urls, None
+
+
+PRIVACY_TOOL_APPS_MAX = 500
+_PRIVACY_TOOL_APP_ID_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{2,199}$')
+
+
+def _parse_privacy_tool_apps_text(text):
+    """'id | label | category' per line -> ([{id, label, category}], None) or
+    (None, error naming the first bad line). Blank lines and #-comments are
+    skipped; label defaults to the id, category to vpn."""
+    apps, seen = [], set()
+    for n, raw in enumerate((text or '').splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = [p.strip() for p in line.split('|')]
+        app_id = parts[0]
+        label = parts[1] if len(parts) > 1 and parts[1] else app_id
+        category = (parts[2] if len(parts) > 2 and parts[2] else 'vpn').lower()
+        if len(parts) > 3 or not _PRIVACY_TOOL_APP_ID_RE.match(app_id):
+            return None, f"Line {n}: expected 'package.or.bundle.id | Label | category', got '{line[:80]}'."
+        if category not in PRIVACY_TOOL_CATEGORIES:
+            return None, f"Line {n}: category must be one of {', '.join(PRIVACY_TOOL_CATEGORIES)}."
+        if len(label) > 80:
+            return None, f"Line {n}: label is longer than 80 characters."
+        if app_id in seen:
+            continue
+        seen.add(app_id)
+        apps.append({"id": app_id, "label": label, "category": category})
+    if len(apps) > PRIVACY_TOOL_APPS_MAX:
+        return None, f"Too many entries - max {PRIVACY_TOOL_APPS_MAX}."
+    return apps, None
+
+
+@settings_bp.route('/api/settings/privacy_tool_apps', methods=['GET', 'POST'])
+@requires_auth
+@serializes_config_writes
+def privacy_tool_apps():
+    """The station's additions to the built-in VPN/Tor/anonymity app list
+    that Pattern of Life's privacy-tools panel matches installed apps
+    against (2026-11-21). GET also returns the built-in list, read-only."""
+    from core.case_index_db import PRIVACY_TOOL_PACKAGES
+    cfg = load_runtime_config()
+    if request.method == 'GET':
+        builtin = [{"id": k, "label": v[0], "category": v[1]} for k, v in PRIVACY_TOOL_PACKAGES.items()]
+        return jsonify({"success": True, "apps": cfg.get('privacy_tool_apps', []), "builtin": builtin,
+                        "categories": list(PRIVACY_TOOL_CATEGORIES)})
+
+    perms = get_current_user_permissions()
+    if not perms.get('settings', False):
+        return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
+    apps, error = _parse_privacy_tool_apps_text((request.get_json() or {}).get('apps_text') or '')
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+    cfg['privacy_tool_apps'] = apps
+    save_runtime_config(cfg)
+    log_chain_of_custody("privacy_tool_apps_updated", {"count": len(apps)})
+    return jsonify({"success": True, "apps": apps})
 
 
 @settings_bp.route('/api/settings/url_lists', methods=['GET', 'POST'])

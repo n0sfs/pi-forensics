@@ -3135,3 +3135,19 @@ def test_ensure_examiner_recorded_leaves_a_corrupt_case_file_untouched(tmp_path,
     case_index_db.ensure_examiner_recorded(case_dir, "alice")
     with open(marker) as f:
         assert f.read() == "{not json"
+
+
+def test_detect_privacy_tools_uses_station_added_apps(case_folder, monkeypatch):
+    # Settings > Case & Reporting > Privacy-Tool Apps (2026-11-21): a station
+    # entry is matched like a built-in, and can't relabel a built-in.
+    monkeypatch.setattr(case_index_db, "get_privacy_tool_apps", lambda: [
+        {"id": "com.example.corpvpn", "label": "Corp VPN", "category": "vpn"},
+        {"id": "org.torproject.android", "label": "Renamed", "category": "vpn"},
+    ])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "apps"),
+        [_installed_app_record("com.example.corpvpn"), _installed_app_record("org.torproject.android")])
+    result = case_index_db.detect_privacy_tools(case_folder)
+    found = {e["package"]: (e["label"], e["category"]) for e in result["user_installed"]}
+    assert found == {"com.example.corpvpn": ("Corp VPN", "vpn"),
+                     "org.torproject.android": ("Orbot (Tor proxy)", "tor")}

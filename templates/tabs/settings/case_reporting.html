@@ -146,7 +146,7 @@
                                      otherwise unchanged. -->
                                 <div class="accordion-item bg-dark border-secondary">
                                     <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secAnalysisLists" data-search-keywords="keyword hash yara url malwarebazaar urlhaus ioc indicator rule malware known-bad known-good"><i class="bi bi-search me-2"></i>Analysis &amp; IOC Lists</button>
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secAnalysisLists" data-search-keywords="keyword hash yara url malwarebazaar urlhaus ioc indicator rule malware known-bad known-good vpn tor privacy anonymity apps"><i class="bi bi-search me-2"></i>Analysis &amp; IOC Lists</button>
                                     </h2>
                                     <div id="secAnalysisLists" class="accordion-collapse collapse">
                                         <div class="accordion-body">
@@ -186,6 +186,15 @@
                                             </div>
                                             <button class="btn btn-sm btn-outline-info fw-bold me-1" onclick="openCreateUrlListModal()"><i class="bi bi-plus-lg me-1"></i>New List</button>
                                             <button id="btnRefreshUrlhaus" class="btn btn-sm btn-outline-info fw-bold" onclick="refreshUrlhausList()"><i class="bi bi-cloud-download me-1"></i>Import/Refresh URLhaus Recent</button>
+
+                                            <hr class="border-secondary">
+                                            <div class="small text-info fw-bold mb-1">Privacy-Tool Apps (VPN / Tor)</div>
+                                            <div class="small text-subtle mb-2">Pattern of Life lists installed apps that match this list as VPN, Tor or anonymity tools. <span id="privacyToolBuiltinCount">The built-in list</span> is always used. Add your own here, one per line: <span class="font-monospace">package.or.bundle.id | Label | category</span>, where category is vpn, tor, anonymity_network or privacy_browser.</div>
+                                            <textarea id="privacyToolAppsText" class="form-control form-control-sm font-monospace mb-1" rows="4" placeholder="com.example.vpn | Example VPN | vpn"></textarea>
+                                            <div class="d-flex align-items-center gap-2 mb-2">
+                                                <button class="btn btn-sm btn-outline-info fw-bold" onclick="savePrivacyToolApps()"><i class="bi bi-save me-1"></i>Save List</button>
+                                                <span id="privacyToolAppsStatus" class="small text-subtle"></span>
+                                            </div>
 
                                             <hr class="border-secondary">
                                             <div class="small text-info fw-bold mb-1">YARA Rulesets</div>
