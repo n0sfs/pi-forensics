@@ -44,6 +44,7 @@ import shutil
 import stat
 import zipfile
 import fnmatch
+import contextvars
 # defusedxml, not the bare stdlib xml.etree.ElementTree - _parse_kml_placemarks()
 # below parses KML files that may be hand-edited or third-party (not
 # necessarily ones this app generated itself), and defusedxml is a drop-in
@@ -78,6 +79,7 @@ from core.jobs import (mark_job_slot_claimed, _read_case_file, _write_case_file,
                        snapshot_job, CaseFileUnreadable, case_write_lock, serialize_case_writes,
                        is_case_record_path)
 from core.case_file import refuses_read_only_case
+from core.redaction import Redactor, RedactionError, REDACTION_MARK
 from core.case_index_db import (
     _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact,
     _case_index_open_readonly, list_case_folders, correlate_contacts,
@@ -5422,6 +5424,29 @@ def _pdf_fits_builtin_font(text):
         return False
 
 
+# Set for the duration of one redacted export (core/redaction.py): every
+# string the PDF canvas draws passes through it.
+_ACTIVE_REDACTOR = contextvars.ContextVar('pif_report_redactor', default=None)
+
+
+def _redact_report_inputs(redactor, header, events, case_notes, audit_entries, captions, custody_log, analysis_findings):
+    """Case data with every display string redacted before the report is
+    built. Events keep their file paths (the builders read images and
+    timelines from them); only their descriptive fields are redacted here,
+    and whatever is drawn from the rest is caught at the canvas/HTML stage."""
+    header = redactor.deep(header)
+    header['redacted_copy'] = True
+    red_events = []
+    for e in events:
+        e = dict(e)
+        for key in ('case_metadata', 'source_drive_telemetry'):
+            if isinstance(e.get(key), dict):
+                e[key] = redactor.deep(e[key])
+        red_events.append(e)
+    return (header, red_events, redactor.deep(case_notes), redactor.deep(audit_entries),
+            redactor.deep(captions or {}), redactor.deep(custody_log), redactor.deep(analysis_findings))
+
+
 def _numbered_canvas_class(header=None):
     """Returns a reportlab Canvas subclass shared by every report-template PDF
     builder: it stamps each page's footer and draws non-cp1252 text in a
@@ -5440,6 +5465,8 @@ def _numbered_canvas_class(header=None):
     generated = time.strftime('%Y-%m-%d %H:%M:%S %z')
     footer_left = (f"Case {case_number} - generated {generated}" if case_number and case_number != 'N/A'
                    else f"Generated {generated}")
+    if (header or {}).get('redacted_copy'):
+        footer_left = "REDACTED COPY - " + footer_left
 
     class _NumberedCanvas(canvas.Canvas):
         def __init__(self, *args, **kwargs):
@@ -5451,6 +5478,9 @@ def _numbered_canvas_class(header=None):
 
         def _draw_text(self, method, x, y, text, *args, **kwargs):
             text = '' if text is None else str(text)
+            redactor = _ACTIVE_REDACTOR.get()
+            if redactor is not None:
+                text = redactor(text)
             if _pdf_fits_builtin_font(text):
                 return method(self, x, y, text, *args, **kwargs)
             builtin, size = self._fontname, self._fontsize
@@ -7980,6 +8010,16 @@ def export_report():
     # geolocation data) is identical for both modes.
     preview = bool(req.get('preview'))
 
+    # Redaction at export (2026-11-21) - see core/redaction.py.
+    try:
+        redactor = Redactor.from_request(req.get('redaction'))
+    except RedactionError as e:
+        return jsonify({"error": str(e)}), 400
+    if redactor:
+        header, events, case_notes, audit_entries, captions, custody_log, analysis_findings = _redact_report_inputs(
+            redactor, header, events, case_notes, audit_entries, captions, custody_log, analysis_findings)
+    redactor_token = _ACTIVE_REDACTOR.set(redactor)
+
     try:
         pdf_buf = io.BytesIO() if fmt == 'pdf' else None
         html_content = None
@@ -8022,6 +8062,12 @@ def export_report():
                                         case_folder=case_folder, include_timeline_previews=include_timeline_previews, attachment_files=attachments.get('files', []),
                                         hash_status_by_event=hash_status_by_event, analysis_findings=analysis_findings)
 
+        if fmt == 'html' and redactor:
+            html_content = redactor.html_document(html_content).replace(
+                '<body>', '<body><div class="hash-mismatch" style="border:2px solid #b00020;padding:6px 10px;'
+                          'margin-bottom:12px;">REDACTED COPY - names, numbers and other details have been '
+                          'replaced with ' + REDACTION_MARK + '. Embedded images are not redacted.</div>', 1)
+
         if fmt == 'html':
             content_bytes = html_content.encode('utf-8')
             mimetype = 'text/html; charset=utf-8'
@@ -8033,6 +8079,8 @@ def export_report():
             resp = Response(content_bytes, mimetype=mimetype)
             if report_notice:
                 resp.headers['X-Report-Notice'] = report_notice
+            if redactor:
+                resp.headers['X-Report-Redactions'] = str(redactor.count)
             return resp
 
         # Versioned, never overwritten (2026-09-27 review): every export used
@@ -8042,11 +8090,16 @@ def export_report():
         # download is served from the same in-memory bytes that were hashed,
         # so two overlapping exports can't hand one request the other's file.
         out_path, digest = _save_versioned_export(report_file, case_folder, content_bytes,
-                                                  '.html' if fmt == 'html' else '.pdf')
+                                                  '.html' if fmt == 'html' else '.pdf',
+                                                  name_suffix='_REDACTED' if redactor else '')
         # The file and the digest that was issued, so the custody log alone can
-        # say which report (and which hash) went out when.
-        log_chain_of_custody("report_exported", {"case_folder": case_folder, "format": fmt,
-                                                 "template": template_value, "file": out_path, "sha256": digest})
+        # say which report (and which hash) went out when. A redacted export
+        # records how it was redacted, never the terms themselves.
+        custody = {"case_folder": case_folder, "format": fmt,
+                   "template": template_value, "file": out_path, "sha256": digest}
+        if redactor:
+            custody["redaction"] = redactor.summary()
+        log_chain_of_custody("report_exported", custody)
 
         resp = send_file(io.BytesIO(content_bytes), as_attachment=True,
                          download_name=os.path.basename(out_path), mimetype=mimetype)
@@ -8056,6 +8109,10 @@ def export_report():
         resp.headers['X-Report-Filename'] = os.path.basename(out_path)
         if report_notice:
             resp.headers['X-Report-Notice'] = report_notice
+        if redactor:
+            resp.headers['X-Report-Redactions'] = str(redactor.count)
         return resp
     except Exception as e:
         return jsonify({"error": f"Report export failed: {friendly_error(e)}"}), 500
+    finally:
+        _ACTIVE_REDACTOR.reset(redactor_token)

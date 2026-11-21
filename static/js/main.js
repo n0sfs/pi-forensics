@@ -19340,6 +19340,8 @@ function onExportFormatChange() {
 
     if (templateGroup) templateGroup.style.display = isRawFormat ? 'none' : '';
     if (optionsRow) optionsRow.style.display = isRawFormat ? 'none' : '';
+    const redactionGroup = document.getElementById("exportRedactionGroup");
+    if (redactionGroup) redactionGroup.style.display = isRawFormat ? 'none' : '';
     if (jsonGroup) jsonGroup.style.display = isJson ? 'block' : 'none';
     // The Refresh Preview button only ever renders PDF/HTML - json/csv have
     // their own live/on-download previews instead. Switching format always
@@ -19787,6 +19789,12 @@ async function runExportReportInner() {
 
     const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
 
+    // Redaction only exists for PDF/HTML - never hand over an unredacted raw
+    // export while the redaction options are filled in (2026-11-21).
+    if ((format === 'json' || format === 'csv') && gatherExportRedaction()) {
+        return showToast('Redaction applies to PDF and HTML exports only. Choose PDF or HTML, or clear "Redact before export" to export raw data.', 'warning', 12000);
+    }
+
     // Raw JSON never touches /api/export_report - it's the case file read
     // FRESH FROM DISK (2026-09-15), not the in-memory currentLoadedReportData.
     //
@@ -19874,6 +19882,8 @@ async function runExportReportInner() {
                     ? `Exported ${savedName}. A copy stays on the station in this case's folder, with ${savedName}.sha256 beside it (the SHA-256 of the file's bytes): ${reportHash}. Your browser also downloaded a copy under the same name.`
                     : (reportHash ? `Export complete. SHA256: ${reportHash}` : 'Export complete.');
                 statusEl.className = 'small text-success';
+                const redactions = res.headers.get('X-Report-Redactions');
+                if (redactions !== null) statusEl.textContent += ` Redacted copy: ${redactions} replacement(s).`;
                 if (reportNotice) {
                     statusEl.textContent += ` Note: ${reportNotice}`;
                     statusEl.className = 'small text-warning';
@@ -19949,7 +19959,34 @@ function gatherExportRequestBody() {
         (cb.dataset.kind === 'url' ? attachment_selection.urls : attachment_selection.files).push(cb.dataset.value);
     });
 
-    return { format, template, sections, job_fields, event_ids, attachment_selection };
+    return { format, template, sections, job_fields, event_ids, attachment_selection, redaction: gatherExportRedaction() };
+}
+
+// null when nothing is to be redacted (2026-11-21, see core/redaction.py).
+function gatherExportRedaction() {
+    const terms = (document.getElementById("expRedactTerms")?.value || '')
+        .split('\n').map(t => t.trim()).filter(Boolean);
+    const spec = {
+        terms,
+        emails: !!document.getElementById("expRedactEmails")?.checked,
+        phones: !!document.getElementById("expRedactPhones")?.checked,
+        cards: !!document.getElementById("expRedactCards")?.checked,
+    };
+    return (terms.length || spec.emails || spec.phones || spec.cards) ? spec : null;
+}
+
+function updateExportRedactionSummary() {
+    const el = document.getElementById("exportRedactionSummary");
+    if (!el) return;
+    const spec = gatherExportRedaction();
+    if (!spec) { el.textContent = '(off)'; el.className = 'text-subtle fw-normal'; return; }
+    const parts = [];
+    if (spec.terms.length) parts.push(`${spec.terms.length} term${spec.terms.length === 1 ? '' : 's'}`);
+    if (spec.emails) parts.push('emails');
+    if (spec.phones) parts.push('phones');
+    if (spec.cards) parts.push('cards');
+    el.textContent = `(on: ${parts.join(', ')})`;
+    el.className = 'text-warning fw-normal';
 }
 
 // Object URL for the currently-displayed PDF preview, if any - tracked so
@@ -20031,15 +20068,17 @@ async function refreshExportPreview() {
         // pending it used to say "Preview updated." as if it showed them.
         if (statusEl) {
             const notice = res.headers.get('X-Report-Notice');
+            const redactions = res.headers.get('X-Report-Redactions');
             if (reportHasUnsavedChanges || notice) {
                 statusEl.textContent = [
                     'Preview updated.',
+                    redactions !== null ? `Redacted: ${redactions} replacement(s).` : '',
                     reportHasUnsavedChanges ? 'It shows the last save - your unsaved edits are not in it; Save first to include them.' : '',
                     notice || '',
                 ].filter(Boolean).join(' ');
                 statusEl.className = 'small text-warning';
             } else {
-                statusEl.textContent = 'Preview updated.';
+                statusEl.textContent = redactions !== null ? `Preview updated. Redacted: ${redactions} replacement(s).` : 'Preview updated.';
                 statusEl.className = 'small text-success';
             }
         }

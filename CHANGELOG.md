@@ -72,6 +72,7 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
   line.
 
 ### Added
+- Report export: optional redaction for PDF/HTML ("Redact before export" in Reporting > Export). Masks listed names/terms plus emails, phone numbers and Luhn-valid card numbers as `[REDACTED]` while keeping hashes, IPs and dates. Output is marked REDACTED COPY (banner + PDF footer), saved with a `_REDACTED` suffix, and the custody entry records only the replacement count, never the terms. JSON/CSV exports are refused while redaction is set.
 
 - **You can extend the VPN/Tor app list.** Pattern of Life's privacy-tools panel matches installed
   apps against a built-in list, now 35 apps including 10 iOS bundle ids for iLEAPP inventories.
