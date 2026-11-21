@@ -1139,26 +1139,43 @@ udev_path = "/etc/udev/rules.d/99-usb-read-only.rules"
 # boot disk (mmcblk0 on an SD-booted Pi; NVMe on a Pi 5 booting from it),
 # and setro on the running root disk must never happen - so they go through
 # a helper that skips whichever disk holds /, /boot or /boot/firmware.
-udev_setro_helper = "/usr/local/sbin/pif-udev-setro"
-with open(udev_setro_helper, "w") as f:
-    f.write('''#!/bin/sh
+# The boot disk is found from the mounted filesystems' device numbers
+# (mountpoint -d + /sys/dev/block), not from findmnt's SOURCE: on a Pi booted
+# without an initramfs / is mounted as "/dev/root", which lsblk can't resolve,
+# and udev's coldplug runs before /boot/firmware is mounted - so the old
+# SOURCE-based check matched nothing and set the station's own SD card
+# (mmcblk0) read-only at every boot (seen on nospi4, 2026-11-21). If the disk
+# holding / can't be identified at all, the helper does nothing: the drive
+# then shows its real (writable) state, and acquisition refuses to start from
+# it, which is the safe failure.
+UDEV_SETRO_HELPER_SCRIPT = '''#!/bin/sh
 # Installed by pi-forensics install.py. Called by udev with a kernel device
 # name (sdb, nvme0n1, mmcblk1p1...). Forces it read-only unless it is, or is
 # a partition of, the disk holding this system's /, /boot or /boot/firmware.
+PATH="${PIF_TEST_PATH:-/usr/sbin:/usr/bin:/sbin:/bin}"
+SYS="${PIF_TEST_SYSFS:-/sys}"
 dev="$1"
 case "$dev" in ""|*/*) exit 0 ;; esac
+root_found=0
 for mp in / /boot /boot/firmware; do
-    src=$(/usr/bin/findmnt -n -o SOURCE "$mp" 2>/dev/null) || continue
-    disk=$(/usr/bin/lsblk -no PKNAME "$src" 2>/dev/null | head -n1)
-    [ -n "$disk" ] || disk=$(basename "$src")
+    majmin=$(mountpoint -d "$mp" 2>/dev/null) || continue
+    node=$(readlink -f "$SYS/dev/block/$majmin" 2>/dev/null) || continue
+    [ -n "$node" ] && [ -d "$node" ] || continue
+    [ -e "$node/partition" ] && node=$(dirname "$node")
+    disk=$(basename "$node")
+    [ "$mp" = / ] && root_found=1
     case "$dev" in "$disk"|"$disk"[0-9]*|"$disk"p[0-9]*) exit 0 ;; esac
 done
-exec /usr/sbin/blockdev --setro "/dev/$dev"
-''')
+[ "$root_found" = 1 ] || exit 0
+exec blockdev --setro "/dev/$dev"
+'''
+udev_setro_helper = "/usr/local/sbin/pif-udev-setro"
+with open(udev_setro_helper, "w") as f:
+    f.write(UDEV_SETRO_HELPER_SCRIPT)
 os.chmod(udev_setro_helper, 0o755)
 udev_content = (
-    'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z]", RUN+="/usr/sbin/blockdev --setro /dev/%k"\n'
-    'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", RUN+="/usr/sbin/blockdev --setro /dev/%k"\n'
+    f'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z]", RUN+="{udev_setro_helper} %k"\n'
+    f'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", RUN+="{udev_setro_helper} %k"\n'
     f'ACTION=="add", SUBSYSTEM=="block", KERNEL=="nvme[0-9]*n[0-9]*", RUN+="{udev_setro_helper} %k"\n'
     f'ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk[0-9]*", RUN+="{udev_setro_helper} %k"\n'
 )
@@ -1166,6 +1183,36 @@ with open(udev_path, "w") as f:
     f.write(udev_content)
 subprocess.run(["udevadm", "control", "--reload-rules"], check=True)
 subprocess.run(["udevadm", "trigger"], check=True)
+subprocess.run(["udevadm", "settle"], check=False)
+
+
+def _station_boot_disk():
+    """Kernel name of the disk holding / (mmcblk0, sda, nvme0n1), or None."""
+    try:
+        st_dev = os.stat("/").st_dev
+        node = os.path.realpath(f"/sys/dev/block/{os.major(st_dev)}:{os.minor(st_dev)}")
+        if os.path.exists(os.path.join(node, "partition")):
+            node = os.path.dirname(node)
+        return os.path.basename(node) if os.path.isdir(node) else None
+    except OSError:
+        return None
+
+
+# An earlier rule (any sd* disk, and the SOURCE-based helper above) could
+# leave the station's own boot disk flagged read-only; clear that flag on it
+# and its partitions only. Evidence drives are never touched here.
+_boot_disk = _station_boot_disk()
+if _boot_disk:
+    _boot_sys = f"/sys/block/{_boot_disk}"
+    for _name in [_boot_disk] + sorted(n for n in os.listdir(_boot_sys) if n.startswith(_boot_disk)):
+        try:
+            with open(os.path.join(_boot_sys, "" if _name == _boot_disk else _name, "ro")) as _f:
+                _is_ro = _f.read().strip() == "1"
+        except OSError:
+            continue
+        if _is_ro:
+            print(f"    - Station boot disk /dev/{_name} was flagged read-only; clearing it.")
+            subprocess.run(["blockdev", "--setrw", f"/dev/{_name}"], check=False)
 
 # 5a. Enable FUSE allow_other for SFTP network mounting
 # sshfs mounts run as root (via sudo, see app.py's mount_network()), but

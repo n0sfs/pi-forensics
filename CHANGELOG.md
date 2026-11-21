@@ -33,6 +33,13 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Security
 
+- **The station's own SD card is no longer set read-only at boot, and a USB-booted station's boot
+  disk is protected too.** The write-block rule for SD/eMMC and NVMe media couldn't recognise the
+  boot disk on a Pi that mounts its root as "/dev/root", so it flagged the station's own SD card
+  read-only every boot. It now finds the boot disk from the mounted filesystems themselves, every
+  USB, SD and NVMe disk and partition goes through the same check, and if the boot disk can't be
+  identified nothing is changed (Start then refuses the unprotected source). Re-running the
+  installer clears a stale read-only flag on the boot disk.
 - **An Android backup password is no longer visible to other programs on the station.** MVT scans
   passed it on the command line, where any local user could read it while the scan ran; it now goes
   through MVT's own environment variable. A password sent with an iOS scan is refused with a clear
