@@ -33,6 +33,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Security
 
+- **The login cookie is marked Secure over HTTPS.** Through the station's TLS front end, the session
+  cookie was sent without the Secure flag. A browser could then also send it over plain HTTP to the
+  same address, before the redirect to HTTPS. It now carries Secure on every HTTPS request. The
+  touchscreen kiosk, which uses plain HTTP on the station itself, is unchanged.
 - **The station's own SD card is no longer set read-only at boot, and a USB-booted station's boot
   disk is protected too.** The write-block rule for SD/eMMC and NVMe media couldn't recognise the
   boot disk on a Pi that mounts its root as "/dev/root", so it flagged the station's own SD card
