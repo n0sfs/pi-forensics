@@ -177,6 +177,15 @@ def end_suppress_active_false():
     global _suppress_active_false
     _suppress_active_false = False
 
+def job_stop_requested():
+    """For pure-Python job workers (no subprocess for Stop to kill): True once
+    the examiner pressed Stop, or a newer job has taken the slot. Checked
+    between files, so a stopped walk ends within one file instead of running
+    on beside the next job (stop_imaging() releases the slot at once)."""
+    with job_lock:
+        return current_job.get('status') == 'Stopped' or _is_stale_worker_thread()
+
+
 def snapshot_job():
     """Return a consistent point-in-time copy of current_job for reading."""
     with job_lock:

@@ -9732,6 +9732,9 @@ let explorerImageMode = false;
 // entry here whenever another in-image tool becomes a real job.
 const IMAGE_JOB_COMPLETION_MESSAGES = {
     image_triage_scan: (status) => `Filesystem-aware triage scan finished: ${status}\n\nCheck the case folder for the generated *_triage_scan_report.txt file.`,
+    image_hash_manifest: (status, data) => imageToolJobFinishedMessage('Hash Manifest', status, data, '*_hash_manifest_sha256.txt'),
+    image_yara_sweep: (status, data) => imageToolJobFinishedMessage('YARA Rule Sweep', status, data, '*_yara_sweep.txt'),
+    image_recover_deleted: (status, data) => imageToolJobFinishedMessage('Recover Deleted Files', status, data, '*_recovered_deleted folder'),
     image_geolocation_kml: (status) => `Geolocation scan finished: ${status}\n\nCheck the case folder for the generated *_geolocation_export.kml file (only written if GPS-tagged photos were found).`,
     image_conversion: (status) => `Image conversion finished: ${status}\n\nSee the report event's "Hash Verified" field for whether the independently-computed source/output hashes matched.`,
     memory_forensics_scan: (status) => `Memory forensics scan finished: ${status}\n\nClick a *_vol3_<plugin>.json file next to the image in File Explorer to view its results.`,
@@ -9751,6 +9754,16 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     apple_export_import: (status) => `Apple Data & Privacy export import finished: ${status}\n\nSee File Views > Parsed Artifacts for Contacts/Calendars/Reminders and other imported data, and Reporting > Geolocation for any GPS-tagged photos found.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
+
+// Hash Manifest / YARA Sweep / Recover Deleted became background jobs (2026-11-20): the counts
+// that used to come back in the request's own toast now come from the job's summary.
+function imageToolJobFinishedMessage(label, status, data, outputHint) {
+    const summary = (data && data.summary) || '';
+    if (/^stopped/i.test(String(status))) {
+        return `${label} stopped. Whatever it finished before Stop is in the case folder (${outputHint}), marked as incomplete.`;
+    }
+    return `${label} finished: ${status}` + (summary ? `\n\n${summary}` : `\n\nSee the case folder for the ${outputHint}.`);
+}
 
 // What a job's final status means for the examiner (2026-10-09): every finish toast used to be
 // a blue 'info' that vanished in 4.5 s, a failed 6-hour image included.
@@ -9795,6 +9808,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     foremost: 'navBadgeRecovery', scalpel: 'navBadgeRecovery', triage_scan: 'navBadgeRecovery',
     // File Explorer (in-image background jobs, reached via right-click/toolbar there)
     image_geolocation_kml: 'navBadgeExplorer', image_triage_scan: 'navBadgeExplorer',
+    image_hash_manifest: 'navBadgeExplorer', image_yara_sweep: 'navBadgeExplorer', image_recover_deleted: 'navBadgeExplorer',
     memory_forensics_scan: 'navBadgeExplorer', mquire_scan: 'navBadgeExplorer', image_conversion: 'navBadgeExplorer',
     auto_analyze_image: 'navBadgeExplorer', leapp_scan: 'navBadgeExplorer', takeout_import: 'navBadgeExplorer',
     apple_export_import: 'navBadgeExplorer',
@@ -11109,46 +11123,38 @@ async function runImageHashManifest() {
     // D2: automatically cross-references against every saved SHA256 hash
     // list (matching this action's own hardcoded algorithm below) - opt-
     // out, not opt-in, same reasoning the single-file Check Against Hash
-    // Lists action uses: this button has no options prompt at all today,
-    // so requiring a new modal just to pick lists would be a bigger UI
-    // change than this one action's own established fire-and-forget shape.
+    // Lists action uses.
     const allLists = await fetchHashLists();
     const hashListIds = allLists.filter(l => l.algorithm === 'sha256').map(l => l.id);
+    await startImageToolJob('Hash Manifest', '/api/image/hash_manifest',
+        { image_path: explorerImagePath, destination_dir: destinationDir, algorithm: 'sha256', hash_list_ids: hashListIds });
+}
+
+// Hash Manifest, YARA Sweep and Recover Deleted run as the station's background job (2026-11-20):
+// #explorerJobProgress shows files done / total with a Stop button, and the finish toast
+// (IMAGE_JOB_COMPLETION_MESSAGES) carries the counts.
+async function startImageToolJob(label, url, body) {
     try {
-        const res = await fetch('/api/image/hash_manifest', {
+        const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir, algorithm: 'sha256', hash_list_ids: hashListIds })
+            body: JSON.stringify(body)
         });
         const data = await res.json();
         if (!data.success) {
-            showToast(`Hash manifest failed: ${data.error}`, 'danger');
+            showToast(`Could not start ${label}: ${data.error}`, 'danger');
             return;
         }
-        let msg = `Hashed ${data.files_hashed} file(s) inside the image.\nManifest written to:\n${data.manifest_path}`;
-        if (data.files_errored > 0) {
-            msg += `\n\n${data.files_errored} file(s) could not be read and were skipped.`;
-        }
-        if (data.truncated) {
-            msg += `\n\nNote: this image has more files than could be hashed in one pass - results are partial.`;
-        }
-        if (hashListIds.length > 0) {
-            msg += data.hash_list_match_count > 0
-                ? `\n\n${data.hash_list_match_count} file(s) matched a saved hash list - see the manifest for details.`
-                : `\n\nChecked against ${hashListIds.length} saved SHA256 hash list(s) - no matches.`;
-        }
-        showToast(msg, data.hash_list_match_count > 0 ? 'warning' : 'success');
+        showToast(`${label} started - progress and Stop are above the file listing.`, 'info', 5000);
+        fetchProgress();
     } catch (err) {
-        console.error('Hash manifest failed:', err);
-        showToast('Hash manifest failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
+        showToast(`Could not start ${label}: the request did not complete.`, 'danger');
     }
 }
 
 async function runImageYaraSweep() {
-    // Mirrors runImageHashManifest()'s exact fire-and-forget shape
-    // immediately above - no options modal, auto-selects every ruleset
-    // currently configured on the station (the same "opt-out, not opt-in"
-    // reasoning that button's own comment already gives for hash lists).
+    // No options modal - auto-selects every ruleset configured on the
+    // station (the same "opt-out, not opt-in" reasoning as hash lists).
     if (!explorerImagePath) return;
     const rulesets = await fetchYaraRulesets();
     if (rulesets.length === 0) {
@@ -11156,29 +11162,10 @@ async function runImageYaraSweep() {
         return;
     }
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
-    const rulesetIds = rulesets.map(rs => rs.id);
-    try {
-        const res = await fetch('/api/image/yara_sweep', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir, ruleset_ids: rulesetIds, case_folder: activeCase ? activeCase.case_folder : null })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(`YARA sweep failed: ${data.error}`, 'danger');
-            return;
-        }
-        let msg = `Scanned ${data.files_scanned} file(s) inside the image against ${rulesetIds.length} ruleset(s).\nReport written to:\n${data.report_path}`;
-        if (data.files_errored > 0) msg += `\n\n${data.files_errored} file(s) could not be read and were skipped.`;
-        if (data.truncated) msg += `\n\nNote: this image has more files than could be scanned in one pass - results are partial.`;
-        msg += data.matched_file_count > 0
-            ? `\n\n${data.matched_file_count} file(s) matched a rule - see the report for details.`
-            : `\n\nNo matches.`;
-        showToast(msg, data.matched_file_count > 0 ? 'warning' : 'success');
-    } catch (err) {
-        console.error('YARA sweep failed:', err);
-        showToast('YARA sweep failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
-    }
+    await startImageToolJob('YARA Rule Sweep', '/api/image/yara_sweep', {
+        image_path: explorerImagePath, destination_dir: destinationDir, ruleset_ids: rulesets.map(rs => rs.id),
+        case_folder: activeCase ? activeCase.case_folder : null,
+    });
 }
 
 async function runImageBrowserArtifactsParse() {
@@ -11328,52 +11315,9 @@ async function startImageTriageScan() {
 async function runImageRecoverDeleted() {
     if (!explorerImagePath) return;
     const imagePath = explorerImagePath;
-    if (!await appConfirm({ title: 'Recover deleted files from this image?', message: 'Recovery odds vary by filesystem type - NTFS/FAT usually work well, ext filesystems often do not, since data is frequently already gone by the time a file shows as deleted. A recovered file may also be partially overwritten if its space was reused - verify hashes where it matters.', confirmText: 'Recover files', danger: false })) return;
-
+    if (!await appConfirm({ title: 'Recover deleted files from this image?', message: 'Recovery odds vary by filesystem type - NTFS/FAT usually work well, ext filesystems often do not, since data is frequently already gone by the time a file shows as deleted. A recovered file may also be partially overwritten if its space was reused - verify hashes where it matters. It runs as a background job you can stop from the progress bar.', confirmText: 'Recover files', danger: false })) return;
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
-    try {
-        const res = await fetch('/api/image/recover_deleted', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_path: imagePath, destination_dir: destinationDir })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(`Recovery failed: ${data.error}`, 'danger');
-            return;
-        }
-        let msg;
-        const recoverGaps = scanCoverageGaps(data);
-        if (data.files_recovered === 0) {
-            msg = 'No recoverable deleted files were found (with an intact directory entry) in this image'
-                + (recoverGaps.gaps.length ? ' - in the part of it that was searched.' : '.');
-        } else {
-            const mb = (data.total_bytes / (1024 * 1024)).toFixed(1);
-            msg = `Recovered ${data.files_recovered} file(s), ${mb} MiB total.\nOriginal names/folder structure preserved under:\n${data.output_dir}`;
-        }
-        if (data.files_skipped_too_large > 0) {
-            msg += `\n\n${data.files_skipped_too_large} file(s) were skipped for being too large or exceeding the total-size budget.`;
-        }
-        if (data.files_skipped_empty > 0) {
-            msg += `\n\n${data.files_skipped_empty} file(s) were skipped as empty/unrecoverable.`;
-        }
-        if (data.files_errored > 0) {
-            msg += `\n\n${data.files_errored} file(s) could not be read and were skipped.`;
-        }
-        if (data.files_incomplete > 0) {
-            msg += `\n\n${data.files_incomplete} file(s) could only be read in part and were NOT kept - a partial file is not the recovered file.`;
-        }
-        if (recoverGaps.gaps.length) {
-            msg += `\n\nNot everything was searched: ${recoverGaps.gaps.join('; ')}.`;
-        }
-        if (recoverGaps.notes.length) {
-            msg += `\n\n${recoverGaps.notes.join('. ')}.`;
-        }
-        showToast(msg, recoverGaps.gaps.length || data.files_incomplete > 0 ? 'warning' : 'success');
-    } catch (err) {
-        console.error('Recover deleted files failed:', err);
-        showToast('Recover deleted files failed: ' + (err.message || 'the request did not complete') + '. The server may still be working - check the case folder before retrying.', 'danger', 15000);
-    }
+    await startImageToolJob('Recover Deleted Files', '/api/image/recover_deleted', { image_path: imagePath, destination_dir: destinationDir });
 }
 
 // --- Case Attachments Gallery (Reporting > Files) ---
@@ -24315,10 +24259,12 @@ async function stopAcquisition() {
     if (!await appConfirm({
         title: job ? `Stop the running ${job.format} job?` : 'Stop the running job?',
         message: (job && job.pct !== null ? `It is about ${job.pct.toFixed(0)}% done.\n\n` : '')
-            + 'The running tool is stopped now. Anything it already wrote is kept but is INCOMPLETE - it is not a verified result. '
+            + (job && job.analysis
+                ? 'It stops after the file it is on. What it finished is kept in the case folder, marked INCOMPLETE. The evidence image is not changed.'
+                : 'The running tool is stopped now. Anything it already wrote is kept but is INCOMPLETE - it is not a verified result. '
             + 'Starting it again with the same Evidence ID is refused while that partial output exists - use a new Evidence ID.\n\n'
             + 'A phone extraction still restores the device afterwards (default SMS app, permissions, collector app): '
-            + 'leave the phone connected until the log shows the restore has finished.',
+            + 'leave the phone connected until the log shows the restore has finished.'),
         confirmText: 'Stop job', cancelText: 'Keep running',
     })) return;
     try {
@@ -26504,6 +26450,11 @@ async function fetchNetworkInterfaces() {
 
 let progressPolledOnce = false;
 let currentJobSnapshot = { active: false, format: '', pct: null }; // what Stop is about to stop
+// In-image analysis jobs that stop between files and keep a marked-incomplete result (2026-11-20).
+const IN_IMAGE_ANALYSIS_JOB_NAMES = {
+    image_hash_manifest: 'Hash Manifest', image_yara_sweep: 'YARA Rule Sweep',
+    image_recover_deleted: 'Recover Deleted Files', image_triage_scan: 'Triage Scan',
+};
 function jobProgressPhrase(job) {
     return job && job.pct !== null && job.pct !== undefined ? ` - about ${job.pct.toFixed(0)}% done` : '';
 }
@@ -26512,7 +26463,9 @@ async function fetchProgress() {
         const res = await fetch('/api/progress');
         const data = await res.json();
         // pct is null for a tool with no known total (a carve) - "about 0% done" would be a lie.
-        currentJobSnapshot = { active: !!data.active, format: String(data.format || '').replace(/_/g, ' '),
+        currentJobSnapshot = { active: !!data.active,
+                               format: IN_IMAGE_ANALYSIS_JOB_NAMES[data.format] || String(data.format || '').replace(/_/g, ' '),
+                               analysis: !!IN_IMAGE_ANALYSIS_JOB_NAMES[data.format],
                                pct: data.total_bytes > 0 ? (data.progress_percent || 0) : null };
 
         const currentSpeed = data.speed_mbps || 0;
@@ -26578,6 +26531,10 @@ async function fetchProgress() {
         if (document.getElementById("explorerImageTriageBtn")) document.getElementById("explorerImageTriageBtn").disabled = data.active;
         if (document.getElementById("explorerImageGeoBtn")) document.getElementById("explorerImageGeoBtn").disabled = data.active;
         if (document.getElementById("explorerImageVssBtn")) document.getElementById("explorerImageVssBtn").disabled = data.active;
+        ['explorerImageHashBtn', 'explorerImageYaraBtn', 'explorerImageRecoverBtn'].forEach(id => {
+            const btn = document.getElementById(id);
+            if (btn) btn.disabled = data.active;
+        });
 
         // Case-wide "Verify All Evidence" (A4) - same one-shared-job mirror pattern as the
         // Mobile/Explorer blocks above, scoped to its own format so it never shows stale
@@ -26667,7 +26624,7 @@ async function fetchProgress() {
             || ((status) => genericJobFinishedMessage(data.format, status));
         if (lastImageJobActiveByFormat[data.format] && !data.active) {
             const finishType = jobStatusToastType(data.status);
-            showToast(completionMsgFn(data.status), finishType, finishType === 'danger' ? 30000 : (finishType === 'warning' ? 15000 : 10000));
+            showToast(completionMsgFn(data.status, data), finishType, finishType === 'danger' ? 30000 : (finishType === 'warning' ? 15000 : 10000));
             scheduleAcqPrecheck(); // the finished job's output now occupies its Evidence ID
         }
         lastImageJobActiveByFormat[data.format] = data.active;
@@ -26911,8 +26868,7 @@ function initHelpTooltips() {
 (function guardLongFileExplorerActions() {
     const LONG_ACTIONS = {
         runSelectedHashdeep: 'Hash Directory Tree', runSelectedGeolocationExport: 'Geolocation export',
-        runLeappGeolocationExport: 'LEAPP location export', runImageHashManifest: 'Hash manifest',
-        runImageYaraSweep: 'YARA sweep', runImageRecoverDeleted: 'Recover deleted files',
+        runLeappGeolocationExport: 'LEAPP location export',
     };
     Object.entries(LONG_ACTIONS).forEach(([fnName, label]) => {
         const original = window[fnName];
