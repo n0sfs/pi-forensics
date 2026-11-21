@@ -52,6 +52,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **Deleting acquired evidence in an open case needs its name typed.** An acquired image and its sidecars
+  (.log, .sha256, E01 segments), a phone pull or a container folder, or a folder holding one of them, now
+  asks you to type its name before Delete is enabled. The server enforces it too, and the Custody Log entry
+  names the evidence item. Ordinary files keep the one-tap confirm.
 - **Bootstrap 5.3.0, Bootstrap Icons 1.10.0 and Chart.js 4.4.1 are served from the station.** They loaded
   from a public CDN (Chart.js unpinned), so an offline station or isolated lab LAN got an unstyled
   page. Versions are listed in static/vendor/VERSIONS.md, and a test keeps third-party URLs out of the page.
