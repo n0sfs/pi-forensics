@@ -4133,6 +4133,31 @@ def _hash_summary(events, hash_status_by_event):
     return line, problem
 
 
+def _pdf_fit(value, max_width, font, size):
+    """value as one PDF cell line no wider than max_width points, cut with
+    an ellipsis when it has to be."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    text = ' '.join(str(value if value is not None else 'N/A').split())
+    if stringWidth(text, font, size) <= max_width:
+        return text
+    while text and stringWidth(text + '\u2026', font, size) > max_width:
+        text = text[:-1]
+    return text.rstrip() + '\u2026'
+
+
+_INVENTORY_SOURCE_LABELS = {
+    'logical_acquisition': 'Folders (logical)',
+    'image_conversion': 'Image file',
+    'live_collection_import': 'Live collection',
+}
+
+
+def _inventory_source_label(event):
+    """Device cell for an event with no source-drive telemetry: say what was
+    acquired instead of N/A."""
+    return _INVENTORY_SOURCE_LABELS.get(event.get('tool'), 'N/A')
+
+
 def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_status_by_event=None):
     if not events:
         return y
@@ -4152,7 +4177,11 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_
     c.setFillColorRGB(0, 0, 0)
     y -= 6
     headers = ["Evidence ID", "Device", "Model", "Serial", "Capacity", "Acquisition Hash", "Verified"]
-    xpos = [50, 125, 200, 265, 325, 370, 470]
+    # Cells are fitted to their column by measured width (2026-11-21): the old
+    # per-column character counts let a hash run straight into "NOT
+    # RE-VERIFIED" and a serial into the capacity. Full hashes print below.
+    xpos = [50, 112, 172, 262, 337, 385, 478]
+    col_right = xpos[1:] + [550]
     c.setFont("Helvetica-Bold", 8)
     for label, x in zip(headers, xpos):
         c.drawString(x, y, label)
@@ -4172,15 +4201,15 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_
         drive = event.get('source_drive_telemetry', {})
         hash_display = _pick_display_hash(hashes)
         row = [
-            _pdf_cell(meta.get('evidence_id', 'N/A'), 14),
-            _pdf_cell(drive.get('device_path', 'N/A'), 16),
-            _pdf_cell(drive.get('vendor_model', 'N/A'), 13),
-            _pdf_cell(drive.get('serial_number', 'N/A'), 12),
+            meta.get('evidence_id', 'N/A'),
+            drive.get('device_path') or _inventory_source_label(event),
+            drive.get('vendor_model', 'N/A'),
+            drive.get('serial_number', 'N/A'),
             _format_capacity(drive.get('capacity_gb', 'N/A')),
-            _pdf_cell(hash_display, 24),
+            hash_display,
         ]
-        for val, x in zip(row, xpos[:6]):
-            c.drawString(x, y, val)
+        for val, x, right in zip(row, xpos[:6], col_right[:6]):
+            c.drawString(x, y, _pdf_fit(val, right - x - 6, "Helvetica", 7.5))
         # Verified column - colored so a MISMATCH/File-Missing status can
         # never be mistaken for a routine value at a glance, matching this
         # app's already-established "a mismatch gets elevated visibility"
@@ -4222,9 +4251,9 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_
         # show a prefix - and it did so silently, with no ellipsis. A reader
         # would copy what looked like a complete hash, run sha256sum, and get
         # a mismatch against evidence that was actually intact. The Standard
-        # and DFIR reports carry a full "Verification Hashes" block elsewhere,
-        # but the Police and CASE-UCO templates call ONLY this function, so
-        # for those two the truncated cell was the only hash in the entire
+        # report carries a full "Verification Hashes" block elsewhere, but the
+        # Police, DFIR and CASE-UCO templates call ONLY this function, so
+        # for those three the truncated cell was the only hash in the entire
         # document. One line per algorithm: two full digests do not fit on
         # one line at this size.
         if hashes:
@@ -4719,7 +4748,7 @@ def _environment_lines(env):
     return lines
 
 
-def _draw_pdf_methodology_tools(c, y, events):
+def _draw_pdf_methodology_tools(c, y, events, title="Forensic Methodology & Tools"):
     """Static description of this app's standard acquisition workflow, plus
     a 'tools used in this case' list derived from the distinct event.tool
     values already recorded per job - zero new data entry, zero live
@@ -4729,7 +4758,7 @@ def _draw_pdf_methodology_tools(c, y, events):
         y = 730
     y -= 15
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Forensic Methodology & Tools")
+    c.drawString(50, y, title)   # CASE/UCO names it "Tools & Configured Tools" in its contents list too
     y -= 18
     c.setFont("Helvetica", 9.5)
     for _para in _build_methodology_text(events):
@@ -5921,7 +5950,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
 
     c.save()
 
-def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
+def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None):
     """Fixed-structure DFIR Incident Report - no sections/job_fields dict,
     since a template's whole point is a defined shape. Reuses the same
     low-level drawing helpers the Standard template uses; only the section
@@ -5953,7 +5982,11 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
     c.setLineWidth(1)
     c.line(50, title_bottom, 550, title_bottom)
 
+    # Evidence Acquired (2026-11-21): the DFIR report never listed the acquired
+    # evidence or its hashes at all - `events` was accepted and unused - so a
+    # report on two imaged drives named neither drive nor any hash.
     entries = ["Case Information", "Executive Summary", "Incident Overview & Scope",
+               "Evidence Acquired & Integrity Hashing",
                "Incident Timeline", "Technical Analysis & Forensic Findings",
                "Indicators of Compromise", "Containment, Eradication & Next Steps"]
     has_exhibits = bool(urls or files)
@@ -5976,6 +6009,15 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
     c.bookmarkPage('overview_scope')
     c.addOutlineEntry("Incident Overview & Scope", 'overview_scope', level=0)
     y = _draw_pdf_narrative_section(c, y, "Incident Overview & Scope", header.get('objectives'))
+
+    c.bookmarkPage('evidence')
+    c.addOutlineEntry("Evidence Acquired & Integrity Hashing", 'evidence', level=0)
+    if events:
+        y = _draw_pdf_evidence_inventory(c, y, events, title="Evidence Acquired & Integrity Hashing",
+                                         hash_status_by_event=hash_status_by_event)
+    else:
+        y = _draw_pdf_narrative_section(c, y, "Evidence Acquired & Integrity Hashing",
+                                        "No acquisitions are recorded in this case.")
 
     c.bookmarkPage('timeline')
     c.addOutlineEntry("Incident Timeline", 'timeline', level=0)
@@ -6201,7 +6243,7 @@ def _build_pdf_report_caseuco(pdf_path, header, events, urls, files, audit_entri
 
     c.bookmarkPage('tools')
     c.addOutlineEntry("Tools & Configured Tools", 'tools', level=0)
-    y = _draw_pdf_methodology_tools(c, y, events)
+    y = _draw_pdf_methodology_tools(c, y, events, title="Tools & Configured Tools")
 
     c.bookmarkPage('geolocation')
     c.addOutlineEntry("Geolocation / Location Evidence", 'geolocation', level=0)
@@ -6597,13 +6639,13 @@ def _html_pattern_of_life_block(case_folder, title="Pattern of Life: Contact Cor
 
     return ''.join(parts)
 
-def _html_methodology_tools(events, anchor_id=None):
+def _html_methodology_tools(events, anchor_id=None, title="Forensic Methodology & Tools"):
     esc = html.escape
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     tools = sorted({str(e.get('tool')).upper() for e in events if e.get('tool')})
     tools_str = ', '.join(tools) if tools else 'No acquisition/recovery tool recorded.'
     return (
-        f'<h2{id_attr}>Forensic Methodology &amp; Tools</h2>'
+        f'<h2{id_attr}>{esc(title)}</h2>'
         + ''.join(f'<p>{esc(_p)}</p>' for _p in _build_methodology_text(events))
         + f'<p><strong>Tools Used in This Case:</strong> {esc(tools_str)}</p>'
         + '<p><strong>Software Environment</strong> <span class="muted">(as installed on this station at export time)</span></p>'
@@ -6692,7 +6734,7 @@ def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id
                     f'<div class="muted">Acquisition: {esc(acq_status)}</div>')
         parts.append(
             f'<tr><td>{esc(str(meta.get("evidence_id", "N/A")))}{acq_html}</td>'
-            f'<td>{esc(str(drive.get("device_path", "N/A")))}</td>'
+            f'<td>{esc(str(drive.get("device_path") or _inventory_source_label(event)))}</td>'
             f'<td>{esc(str(drive.get("vendor_model", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("serial_number", "N/A")))}</td>'
             f'<td>{esc(_format_capacity(drive.get("capacity_gb", "N/A")))}</td>'
@@ -7144,14 +7186,15 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
     parts.append('</body></html>')
     return ''.join(parts)
 
-def _build_html_report_dfir(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
+def _build_html_report_dfir(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None):
     """HTML counterpart to _build_pdf_report_dfir - same fixed section list,
     same reused data sources, see that function's docstring."""
     esc = html.escape
     has_exhibits = bool(urls or files)
     toc_entries = [
         ('sec-case-info', 'Case Information'), ('sec-exec-summary', 'Executive Summary'),
-        ('sec-overview-scope', 'Incident Overview &amp; Scope'), ('sec-timeline', 'Incident Timeline'),
+        ('sec-overview-scope', 'Incident Overview &amp; Scope'),
+        ('sec-evidence', 'Evidence Acquired &amp; Integrity Hashing'), ('sec-timeline', 'Incident Timeline'),
         ('sec-technical-analysis', 'Technical Analysis &amp; Forensic Findings'),
         ('sec-iocs', 'Indicators of Compromise'),
         ('sec-containment', 'Containment, Eradication &amp; Next Steps'),
@@ -7180,6 +7223,11 @@ def _build_html_report_dfir(header, events, urls, files, audit_entries, case_not
 
     parts.append(_html_narrative_block('Executive Summary', header.get('executive_summary'), 'sec-exec-summary'))
     parts.append(_html_narrative_block('Incident Overview & Scope', header.get('objectives'), 'sec-overview-scope'))
+    if events:
+        parts.append(_html_evidence_inventory_table(events, title="Evidence Acquired & Integrity Hashing", anchor_id='sec-evidence',
+                                                    hash_status_by_event=hash_status_by_event))
+    else:
+        parts.append(_html_narrative_block('Evidence Acquired & Integrity Hashing', "No acquisitions are recorded in this case.", 'sec-evidence'))
     parts.append(_html_timeline_table(case_notes, title="Incident Timeline", anchor_id='sec-timeline'))
     parts.append(_html_narrative_block('Technical Analysis & Forensic Findings', header.get('findings_summary'), 'sec-technical-analysis'))
     parts.append(_html_narrative_block('Indicators of Compromise', header.get('iocs'), 'sec-iocs'))
@@ -7316,7 +7364,7 @@ def _build_html_report_caseuco(header, events, urls, files, audit_entries, case_
     parts.append(_html_acquisition_method(events, job_fields))
     parts.append(_html_case_notes_block(case_notes, anchor_id='sec-analysis-findings', title="Analysis & Analytic Results (Case Notes)", exhibit_numbers=exhibit_numbers))
     parts.append(_html_narrative_block('Relevant Findings', header.get('findings_summary'), 'sec-relevant-findings'))
-    parts.append(_html_methodology_tools(events, anchor_id='sec-tools'))
+    parts.append(_html_methodology_tools(events, anchor_id='sec-tools', title='Tools & Configured Tools'))
     parts.append(_html_geolocation_block(geo_data or [], title="Geolocation / Location Evidence", anchor_id='sec-geolocation'))
     parts.append(_html_narrative_block('Conclusion', header.get('conclusion'), 'sec-conclusion'))
     parts.append(_html_narrative_block('Limitations & Data Handling Markings', header.get('limitations'), 'sec-limitations'))
@@ -7790,10 +7838,12 @@ def export_report():
         if template == 'dfir':
             if fmt == 'html':
                 html_content = _build_html_report_dfir(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
-                                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
+                                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers,
+                                                         hash_status_by_event=hash_status_by_event)
             else:
                 _build_pdf_report_dfir(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
-                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
+                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers,
+                                        hash_status_by_event=hash_status_by_event)
         elif template == 'police':
             if fmt == 'html':
                 html_content = _build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,

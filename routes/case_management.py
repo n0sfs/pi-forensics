@@ -236,6 +236,10 @@ def set_case_status():
     try:
         data = _read_case_file(marker_path)
         old_status = data.get('case_status') or 'Open'
+        if old_status == status:
+            # No-op (2026-11-21): this used to rewrite the case file and log
+            # "Open -> Open" to the custody record on every re-save.
+            return jsonify({"success": True, "case_status": status, "unchanged": True})
         data['case_status'] = status
         data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
         # Remember the status a case held right before being archived, so a
