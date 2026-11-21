@@ -42,6 +42,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from core.priv import priv_argv
+from core.write_block import read_write_block_state
 from core.auth import (
     PERMISSION_KEYS, KIOSK_AUTH_BYPASS_ENABLED, is_local_kiosk_request,
     requires_auth, requires_permission, check_auth,
@@ -232,20 +233,17 @@ def system_info():
         "bytes_recv": net_counters.bytes_recv
     }
 
-    target_drive = request.args.get('drive', '/dev/sda')
-    if not target_drive or not is_valid_block_device(target_drive):
-        target_drive = '/dev/sda'
-
-    wb_active = True
-    if os.path.exists(target_drive):
-        try:
-            # Bounded (2026-10-02): this runs every 2 s from every open page; a
-            # hung device used to stall the request - and the poll - forever.
-            res = subprocess.run(priv_argv("blockdev-getro", target_drive, legacy=["sudo", "/usr/sbin/blockdev", "--getro", target_drive]), capture_output=True, text=True, timeout=5)
-            if res.returncode == 0 and res.stdout.strip() == '0':
-                wb_active = False
-        except Exception:
-            pass
+    # No /dev/sda fallback and no "on" by default (2026-11-20): with no
+    # drive selected, a missing drive or a failed check, the answer is
+    # unknown (null) - the badge says so instead of showing protection.
+    target_drive = request.args.get('drive') or ''
+    if not is_valid_block_device(target_drive):
+        wb_active, wb_state, target_drive = None, "no_drive", None
+    elif not os.path.exists(target_drive):
+        wb_active, wb_state = None, "missing"
+    else:
+        wb_active = read_write_block_state(target_drive)
+        wb_state = {True: "on", False: "off", None: "unknown"}[wb_active]
 
     return jsonify({
         "cpu_percent": cpu,
@@ -264,6 +262,7 @@ def system_info():
             "percent_used": root_disk.percent
         },
         "write_blocker_active": wb_active,
+        "write_blocker_state": wb_state,
         "monitored_device": target_drive
     })
 

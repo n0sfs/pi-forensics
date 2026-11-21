@@ -97,6 +97,16 @@ def _pif_priv_not_installed(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _source_drives_read_as_write_blocked(monkeypatch):
+    """Start routes refuse a source whose write blocker is off or can't be
+    confirmed (core/write_block.py, 2026-11-20). Test devices are fake paths
+    with no kernel flag, so they read as protected by default; the write
+    blocker's own tests (tests/test_write_blocker_state.py) override this."""
+    import core.write_block
+    monkeypatch.setattr(core.write_block, "read_write_block_state", lambda device: True)
+
+
+@pytest.fixture(autouse=True)
 def _clear_auth_lockout_state():
     """core.auth's brute-force lockout tracker (auth_fail_tracker) and
     last-login-persist throttle are plain module-level dicts, keyed by
