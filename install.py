@@ -107,8 +107,29 @@ print("\n[?] Web Dashboard Login")
 web_user_input = input("Enter dashboard username [default: 'admin']: ").strip()
 FORENSIC_USER = web_user_input if web_user_input else "admin"
 
+def _existing_account_hash(username, config_path=os.path.join(INSTALL_DIR, "runtime_config.json")):
+    """The stored password hash of `username` if a previous install already
+    created that account, else None. A re-run never changes an existing
+    account's password (see the seeding step below), so it must not ask for
+    one either (2026-11-21: it did, and then warned the password was still
+    the default when the examiner left the unused prompt blank)."""
+    try:
+        with open(config_path) as f:
+            cfg = json.load(f)
+        for u in cfg.get("users", []) if isinstance(cfg, dict) else []:
+            if isinstance(u, dict) and u.get("username") == username:
+                return u.get("password_hash") or ""
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+EXISTING_ADMIN_HASH = _existing_account_hash(FORENSIC_USER)
 FORENSIC_PASS = "forensics"
-while True:
+if EXISTING_ADMIN_HASH is not None:
+    print(f"[*] Dashboard account '{FORENSIC_USER}' already exists - keeping its current password "
+          f"(change it from Settings > User Accounts).")
+while EXISTING_ADMIN_HASH is None:
     pw1 = getpass.getpass("Enter dashboard password (min 8 chars, hidden) "
                            "[leave blank to keep the default 'forensics' - NOT recommended]: ")
     if not pw1:
@@ -122,8 +143,8 @@ while True:
         if confirm_default != "YES":
             print("[*] Not confirmed - please enter a password.")
             continue
-        print("[!] Keeping default password 'forensics'. Change this immediately after "
-              "install via the Advanced Settings tab, or by re-running this installer.")
+        print("[!] Keeping default password 'forensics'. Change it immediately after "
+              "install in Settings > User Accounts.")
         break
     if len(pw1) < 8:
         print("[!] Password must be at least 8 characters. Try again.")
@@ -336,13 +357,20 @@ else:
 print("\n[*] Seeding initial admin account...")
 admin_seeded = False
 venv_python = os.path.join(venv_dir, "bin", "python3")
-hash_res = subprocess.run(
+if EXISTING_ADMIN_HASH is not None:
+    # Nothing to hash: the account stays as it is, and no password may fall
+    # back into the systemd unit below.
+    admin_seeded = True
+    print(f"[*] Admin account '{FORENSIC_USER}' already exists - its password was NOT changed.")
+hash_res = None if EXISTING_ADMIN_HASH is not None else subprocess.run(
     [venv_python, "-c",
      "from werkzeug.security import generate_password_hash; import sys; print(generate_password_hash(sys.argv[1]))",
      FORENSIC_PASS],
     capture_output=True, text=True
 )
-if hash_res.returncode != 0:
+if hash_res is None:
+    pass
+elif hash_res.returncode != 0:
     print(f"[!] Failed to hash the initial admin password: {hash_res.stderr.strip()}")
     print("    Falling back to the legacy FORENSIC_USER/FORENSIC_PASS env-var login for now - "
           "create a real account from the Settings tab once the station is up.")
@@ -1997,10 +2025,25 @@ if not AUTOLOGIN_OK:
         f"sudo raspi-config -> System Options -> Boot / Auto Login -> Desktop Autologin, "
         f"account '{SERVICE_USER}'."
     )
-if FORENSIC_PASS == "forensics":
+def _default_password_in_use():
+    """True only when the dashboard login really is 'forensics': for an
+    existing account, its stored hash is checked with the venv's werkzeug."""
+    if EXISTING_ADMIN_HASH is None:
+        return FORENSIC_PASS == "forensics"
+    if not EXISTING_ADMIN_HASH:
+        return False
+    res = subprocess.run(
+        [venv_python, "-c",
+         "from werkzeug.security import check_password_hash; import sys; "
+         "print(check_password_hash(sys.argv[1], 'forensics'))", EXISTING_ADMIN_HASH],
+        capture_output=True, text=True)
+    return res.returncode == 0 and res.stdout.strip() == "True"
+
+
+if _default_password_in_use():
     remaining_steps.append(
-        "Change the dashboard password - it's still the default 'forensics'. "
-        "Use the Advanced Settings tab, or re-run this installer."
+        f"Change the dashboard password for '{FORENSIC_USER}' - it's still the default 'forensics'. "
+        "Use Settings > User Accounts."
     )
 if not USE_TLS:
     remaining_steps.append("Consider re-running this installer to add TLS, or set it up manually.")
