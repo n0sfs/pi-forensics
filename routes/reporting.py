@@ -5950,7 +5950,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
 
     c.save()
 
-def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None):
+def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None, analysis_findings=None):
     """Fixed-structure DFIR Incident Report - no sections/job_fields dict,
     since a template's whole point is a defined shape. Reuses the same
     low-level drawing helpers the Standard template uses; only the section
@@ -5988,7 +5988,7 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
     entries = ["Case Information", "Executive Summary", "Incident Overview & Scope",
                "Evidence Acquired & Integrity Hashing",
                "Incident Timeline", "Technical Analysis & Forensic Findings",
-               "Indicators of Compromise", "Containment, Eradication & Next Steps"]
+               "Analysis Results", "Indicators of Compromise", "Containment, Eradication & Next Steps"]
     has_exhibits = bool(urls or files)
     if has_exhibits:
         entries.append("Exhibits")
@@ -6026,6 +6026,13 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
     c.bookmarkPage('technical_analysis')
     c.addOutlineEntry("Technical Analysis & Forensic Findings", 'technical_analysis', level=0)
     y = _draw_pdf_narrative_section(c, y, "Technical Analysis & Forensic Findings", header.get('findings_summary'))
+
+    # Analysis Results (2026-11-21, Eric): the tool output - flagged items,
+    # keyword/IOC hits, parsed-artifact counts - behind the narrative above.
+    # The Police template deliberately stays without it.
+    c.bookmarkPage('analysis_results')
+    c.addOutlineEntry("Analysis Results", 'analysis_results', level=0)
+    y = _draw_pdf_analysis_findings(c, y, analysis_findings)
 
     c.bookmarkPage('iocs')
     c.addOutlineEntry("Indicators of Compromise", 'iocs', level=0)
@@ -7186,7 +7193,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
     parts.append('</body></html>')
     return ''.join(parts)
 
-def _build_html_report_dfir(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None):
+def _build_html_report_dfir(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None, analysis_findings=None):
     """HTML counterpart to _build_pdf_report_dfir - same fixed section list,
     same reused data sources, see that function's docstring."""
     esc = html.escape
@@ -7196,6 +7203,7 @@ def _build_html_report_dfir(header, events, urls, files, audit_entries, case_not
         ('sec-overview-scope', 'Incident Overview &amp; Scope'),
         ('sec-evidence', 'Evidence Acquired &amp; Integrity Hashing'), ('sec-timeline', 'Incident Timeline'),
         ('sec-technical-analysis', 'Technical Analysis &amp; Forensic Findings'),
+        ('sec-analysis-results', 'Analysis Results'),
         ('sec-iocs', 'Indicators of Compromise'),
         ('sec-containment', 'Containment, Eradication &amp; Next Steps'),
     ]
@@ -7230,6 +7238,7 @@ def _build_html_report_dfir(header, events, urls, files, audit_entries, case_not
         parts.append(_html_narrative_block('Evidence Acquired & Integrity Hashing', "No acquisitions are recorded in this case.", 'sec-evidence'))
     parts.append(_html_timeline_table(case_notes, title="Incident Timeline", anchor_id='sec-timeline'))
     parts.append(_html_narrative_block('Technical Analysis & Forensic Findings', header.get('findings_summary'), 'sec-technical-analysis'))
+    parts.append(_html_analysis_findings_block(analysis_findings, anchor_id='sec-analysis-results'))
     parts.append(_html_narrative_block('Indicators of Compromise', header.get('iocs'), 'sec-iocs'))
     parts.append(_html_narrative_block('Containment, Eradication & Next Steps', header.get('recommendations_next_steps'), 'sec-containment'))
 
@@ -7816,10 +7825,11 @@ def export_report():
     # Analysis Results section data (2026-09-16) - same "compute once, only
     # when the section is actually selected" pattern as geo_data above, so a
     # case with a large analysis index costs nothing on an export that doesn't
-    # include this section. Only the standard/custom templates have this block;
-    # the three fixed templates keep their own documented structures.
+    # include this section. The standard/custom templates have it when selected,
+    # and of the fixed templates DFIR always does (2026-11-21); Police and
+    # CASE/UCO keep their own documented structures without it.
     analysis_findings = None
-    if resolved_sections is not None and any(e['key'] == 'analysis_results' for e in resolved_sections):
+    if template == 'dfir' or (resolved_sections is not None and any(e['key'] == 'analysis_results' for e in resolved_sections)):
         analysis_findings = collect_case_analysis_findings(case_folder)
 
     # preview=True renders the exact same document a real export would
@@ -7839,11 +7849,11 @@ def export_report():
             if fmt == 'html':
                 html_content = _build_html_report_dfir(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
                                                          tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers,
-                                                         hash_status_by_event=hash_status_by_event)
+                                                         hash_status_by_event=hash_status_by_event, analysis_findings=analysis_findings)
             else:
                 _build_pdf_report_dfir(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers,
-                                        hash_status_by_event=hash_status_by_event)
+                                        hash_status_by_event=hash_status_by_event, analysis_findings=analysis_findings)
         elif template == 'police':
             if fmt == 'html':
                 html_content = _build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,

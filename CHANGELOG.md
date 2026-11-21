@@ -62,6 +62,9 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **DFIR reports include Analysis Results.** After Technical Analysis & Forensic Findings, the DFIR
+  template now lists the examiner's flagged items, keyword/IOC hits and parsed-artifact counts, the
+  same section the Standard template offers. Police reports stay without it.
 - **Hash Manifest, YARA Rule Sweep and Recover Deleted Files run in the background, with progress
   and Stop.** Each used to hold one request for up to 10 minutes with nothing on screen, and stopped
   at 5,000 files (1,000 for recovery). They now show "N of M files" above the file listing, take the
