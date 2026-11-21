@@ -843,7 +843,11 @@ def _enumerate_android_physical_targets(serial):
 
     labels = {}
     try:
-        res = subprocess.run(["adb", "-s", serial, "shell", "su", "-c", "ls -la /dev/block/by-name/"],
+        # One remote command string (2026-11-21): adb shell joins its argv
+        # with plain spaces, so ["su", "-c", "ls -la ..."] arrived on the
+        # phone as `su -c ls -la ...` - su ran a bare `ls` and took -la
+        # itself, and the by-name labels never came back.
+        res = subprocess.run(["adb", "-s", serial, "shell", "su -c 'ls -la /dev/block/by-name/'"],
                               capture_output=True, text=True, timeout=ANDROID_TARGET_PROBE_TIMEOUT)
         if res.returncode == 0:
             labels = _parse_block_by_name_listing(res.stdout)
