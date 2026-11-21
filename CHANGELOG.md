@@ -52,6 +52,11 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **Switch User works at the touchscreen.** A signed-in account now takes precedence over the shared
+  "local-kiosk" identity, so custody entries and the case examiner name the real person, with their own
+  group's permissions. Logout (or 15 minutes without a touch) returns the touchscreen to the shared
+  account instead of a login page. When creating a case on the shared account, you type the examiner's
+  name; "local-kiosk" is no longer accepted as an examiner.
 - **Settings shows what your group can't change instead of failing with a 403.** Without the Settings
   permission, station controls (service, updates, power, diagnostics, network, HTTPS, report and list
   settings) are disabled, with a visible line saying why. The Station Audit Log, which needs that

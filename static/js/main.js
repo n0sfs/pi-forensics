@@ -20839,7 +20839,17 @@ function openCaseManagerModal() {
     // in (readonly field, see #newCaseExaminer), so a case's examiner of
     // record always matches its real chain-of-custody attribution.
     const examinerEl = document.getElementById("newCaseExaminer");
-    if (examinerEl) examinerEl.value = currentUsername || '';
+    if (examinerEl) {
+        // At the shared kiosk identity there's no account name to use, so the
+        // examiner types theirs (2026-11-20) - "local-kiosk" used to become the
+        // case's examiner of record and appear in the exported report.
+        const kioskIdentity = currentUsername === 'local-kiosk';
+        examinerEl.readOnly = !kioskIdentity;
+        examinerEl.value = kioskIdentity ? '' : (currentUsername || '');
+        examinerEl.placeholder = kioskIdentity ? "Examiner's name (required)" : 'Examiner (you)';
+        examinerEl.title = kioskIdentity ? 'Type your name, or sign in with Switch User to use your account'
+            : 'Auto-filled from your logged-in account';
+    }
     // Default the new case's location to wherever the LAST case was created
     // rather than the bare evidence root (2026-09-16). On a station whose real
     // storage is a mounted share under /mnt, the markup default put a new
@@ -20866,6 +20876,11 @@ async function createCase() {
 
     if (!caseNumber) {
         if (statusEl) { statusEl.textContent = 'Case number is required.'; statusEl.className = 'small mt-2 text-danger'; }
+        return;
+    }
+    if (currentUsername === 'local-kiosk' && (!examiner || examiner.toLowerCase() === 'local-kiosk')) {
+        if (statusEl) { statusEl.textContent = "Enter the examiner's name (or sign in with Switch User)."; statusEl.className = 'small mt-2 text-danger'; }
+        document.getElementById("newCaseExaminer")?.focus();
         return;
     }
 
@@ -24964,6 +24979,11 @@ async function fetchWhoami() {
         applyUserMgmtPermissionGating();
         applySidebarPermissionGating();
         applySettingsPermissionGating();
+        startKioskSessionIdleWatch();
+        if (window.IS_LOCAL_KIOSK && new URLSearchParams(location.search).get('signed_out') === 'idle') {
+            history.replaceState(null, '', '/');
+            showToast('The signed-in examiner was signed out after 15 minutes without a touch. The touchscreen is back on the shared kiosk account.', 'info', 12000);
+        }
     } catch (err) { /* non-fatal - indicator just stays hidden */ }
 }
 
@@ -25113,7 +25133,29 @@ async function logout() {
     try {
         await fetch('/logout', { method: 'POST' });
     } catch (err) { /* best-effort - navigating to /login below still ends the visible session either way */ }
-    location.href = '/login';
+    // At the touchscreen, signing out returns to the shared kiosk identity
+    // rather than a login wall (2026-11-20).
+    location.href = window.IS_LOCAL_KIOSK ? '/' : '/login';
+}
+
+// A named account signed in at the touchscreen is signed out after
+// KIOSK_SESSION_IDLE_MS without a touch or key press, so the next person at
+// the station isn't working - and recorded in the Custody Log - as them
+// (2026-11-20). The app's own 2 s status polls keep the server-side session
+// fresh, so only real input counts here.
+const KIOSK_SESSION_IDLE_MS = 15 * 60 * 1000;
+let kioskSessionIdleTimer = null;
+function startKioskSessionIdleWatch() {
+    if (!window.IS_LOCAL_KIOSK || !currentUsername || currentUsername === 'local-kiosk' || kioskSessionIdleTimer !== null) return;
+    const arm = () => {
+        clearTimeout(kioskSessionIdleTimer);
+        kioskSessionIdleTimer = setTimeout(async () => {
+            try { await fetch('/logout', { method: 'POST' }); } catch (e) { /* reload below still drops the session view */ }
+            location.href = '/?signed_out=idle';
+        }, KIOSK_SESSION_IDLE_MS);
+    };
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(ev => document.addEventListener(ev, arm, { passive: true, capture: true }));
+    arm();
 }
 
 function applyUserMgmtPermissionGating() {
