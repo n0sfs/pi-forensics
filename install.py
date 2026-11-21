@@ -1750,15 +1750,29 @@ while true; do
     sleep 3
 done &
 
-# Periodic watchdog: force-restart chromium every 30 minutes even if it's
-# still technically running. This exists specifically for the labwc/
-# Chromium fullscreen bug mentioned above - that failure mode leaves
-# chromium running but visually stuck, which the crash-recovery loop above
-# can't catch on its own since it only reacts to chromium actually exiting.
-# A periodic kill is a blunt but reliable self-heal: the crash-recovery
+# Periodic watchdog: restart chromium every 30 minutes even if it's still
+# technically running. This exists specifically for the labwc/Chromium
+# fullscreen bug mentioned above - that failure mode leaves chromium running
+# but visually stuck, which the crash-recovery loop above can't catch on its
+# own since it only reacts to chromium actually exiting. The crash-recovery
 # loop picks the kill up and relaunches fresh within a few seconds.
+#
+# Only when the touchscreen is idle (2026-11-20): it used to fire on the
+# clock, mid-sentence, and Reporting text typed since the last save was gone.
+# The page touches {INSTALL_DIR}/.kiosk_last_input on real input (once a
+# minute at most - see /api/kiosk/activity); once the restart is due, it waits
+# until that file is 10+ minutes old, re-checking every 5 minutes. A frozen
+# page can't report input, so a genuinely stuck screen is still restarted.
+# Typed Reporting text is also autosaved in the browser and restored after.
 while true; do
     sleep 1800
+    while true; do
+        last_input=$(stat -c %Y "{INSTALL_DIR}/.kiosk_last_input" 2>/dev/null || echo 0)
+        if [ $(( $(date +%s) - last_input )) -ge 600 ]; then
+            break
+        fi
+        sleep 300
+    done
     pkill -9 -f "chromium.*--kiosk" 2>/dev/null || true
 done &
 """
