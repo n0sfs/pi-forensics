@@ -109,3 +109,22 @@ def test_resaving_the_same_status_is_not_logged(client, evidence_root, monkeypat
     assert logged == []
     client.post("/api/cases/set_status", json={"case_folder": folder, "status": "Closed"})
     assert [e for e, _ in logged] == ["case_status_changed"]
+
+
+def test_dfir_has_analysis_results_and_police_does_not(client, evidence_root):
+    _, report = _case(evidence_root)
+    dfir = _export(client, report, "dfir", "html").decode()
+    police = _export(client, report, "police", "html").decode()
+    assert 'id="sec-analysis-results"' in dfir and "No analysis index exists for this case" in dfir
+    assert dfir.index("sec-technical-analysis") < dfir.index("sec-analysis-results") < dfir.index("sec-iocs")
+    assert "Analysis Results" not in police
+
+
+def test_dfir_pdf_draws_analysis_results(client, evidence_root, monkeypatch):
+    _, report = _case(evidence_root)
+    seen = []
+    real = reporting._draw_pdf_analysis_findings
+    monkeypatch.setattr(reporting, "_draw_pdf_analysis_findings",
+                        lambda c, y, findings, title="Analysis Results": (seen.append(findings), real(c, y, findings, title))[1])
+    assert _export(client, report, "dfir", "pdf").startswith(b"%PDF")
+    assert len(seen) == 1 and seen[0]["indexed"] is False
