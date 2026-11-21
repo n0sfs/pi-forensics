@@ -2889,7 +2889,9 @@ def update_operating_system():
 
 @settings_bp.route('/api/system/eject_drive', methods=['POST'])
 @requires_auth
-@requires_permission('settings')
+# Analysts too (Eric, 2026-11-20): unlocking/detaching a destination drive is a
+# normal acquisition step. Unlock is still black-port-only (_unlock_device_for_write).
+@requires_permission('settings', 'acquisition')
 def eject_usb_drive():
     req = request.get_json() or {}
     drive = req.get('drive', '').strip()
