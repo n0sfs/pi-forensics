@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
-from core.paths import raw_image_sidecar, closed_case_refusal, sanitize_case_slug, safe_path, log_chain_of_custody, case_status_blocking_new_work
+from core.paths import raw_image_sidecar, closed_case_refusal, sanitize_case_slug, safe_path, log_chain_of_custody, case_status_blocking_new_work, acquisition_output_location, case_consolidated_path
 from core.config import EVIDENCE_ROOT, INSTALL_DIR
 from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
@@ -1459,11 +1459,10 @@ def start_ios_backup():
     # Android pull output outside the evidence root.
     case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
-    base_name = f"{case_num}_{evidence_id}_ios_backup"
-    job_dest_dir = os.path.join(dest_path, base_name)
-    if os.path.lexists(job_dest_dir):
+    job_dest_dir, base_name, attempt_note, refusal = _claim_mobile_output(dest_path, f"{case_num}_{evidence_id}_ios_backup")
+    if refusal:
         update_job(active=False)
-        return _existing_output_refusal(job_dest_dir)
+        return refusal
 
     try:
         os.makedirs(job_dest_dir, exist_ok=True)
@@ -1474,7 +1473,7 @@ def start_ios_backup():
     update_job(
         format="ios_backup", progress_percent=0.0, speed_mbps=0.0,
         transferred_bytes=0, total_bytes=0, status="Initializing...",
-        log=f"[*] Initializing iOS backup for UDID {udid} -> {job_dest_dir}..."
+        log=(attempt_note + "\n" if attempt_note else "") + f"[*] Initializing iOS backup for UDID {udid} -> {job_dest_dir}..."
     )
 
     report_data = {
@@ -1639,31 +1638,32 @@ def start_android_acquisition():
                                                              "target": target, "destination": output_path})
         return jsonify({"success": True, "message": "Physical Android acquisition started."})
 
+    attempt_note = None
     if mode == 'backup':
-        output_path = os.path.join(dest_path, f"{base_name}.ab")
-        if os.path.lexists(output_path):
+        output_path, base_name, attempt_note, refusal = _claim_mobile_output(dest_path, base_name, '.ab')
+        if refusal:
             update_job(active=False)
-            return _existing_output_refusal(output_path)
+            return refusal
         try:
             os.makedirs(dest_path, exist_ok=True)
         except Exception as e:
             update_job(active=False)
             return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
     elif mode == 'bugreport':
-        output_path = os.path.join(dest_path, f"{base_name}.zip")
-        if os.path.lexists(output_path):
+        output_path, base_name, attempt_note, refusal = _claim_mobile_output(dest_path, base_name, '.zip')
+        if refusal:
             update_job(active=False)
-            return _existing_output_refusal(output_path)
+            return refusal
         try:
             os.makedirs(dest_path, exist_ok=True)
         except Exception as e:
             update_job(active=False)
             return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
     else:
-        output_path = os.path.join(dest_path, base_name)
-        if os.path.lexists(output_path):
+        output_path, base_name, attempt_note, refusal = _claim_mobile_output(dest_path, base_name)
+        if refusal:
             update_job(active=False)
-            return _existing_output_refusal(output_path)
+            return refusal
         try:
             os.makedirs(output_path, exist_ok=True)
         except Exception as e:
@@ -1673,7 +1673,7 @@ def start_android_acquisition():
     update_job(
         format=f"android_{mode}", progress_percent=0.0, speed_mbps=0.0,
         transferred_bytes=0, total_bytes=0, status="Initializing...",
-        log=f"[*] Initializing Android {mode} for {serial} -> {output_path}..."
+        log=(attempt_note + "\n" if attempt_note else "") + f"[*] Initializing Android {mode} for {serial} -> {output_path}..."
     )
 
     report_data = {
@@ -2009,11 +2009,10 @@ def start_mtp_pull():
     # Android pull output outside the evidence root.
     case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
-    base_name = f"{case_num}_{evidence_id}_mtp_pull"
-    output_path = os.path.join(dest_path, base_name)
-    if os.path.lexists(output_path):
+    output_path, base_name, attempt_note, refusal = _claim_mobile_output(dest_path, f"{case_num}_{evidence_id}_mtp_pull")
+    if refusal:
         update_job(active=False)
-        return _existing_output_refusal(output_path)
+        return refusal
     try:
         os.makedirs(output_path, exist_ok=True)
     except Exception as e:
@@ -2023,7 +2022,7 @@ def start_mtp_pull():
     update_job(
         format="mtp_pull", progress_percent=0.0, speed_mbps=0.0,
         transferred_bytes=0, total_bytes=0, status="Initializing...",
-        log=f"[*] Initializing MTP pull (bus {bus}, dev {devnum}) -> {output_path}..."
+        log=(attempt_note + "\n" if attempt_note else "") + f"[*] Initializing MTP pull (bus {bus}, dev {devnum}) -> {output_path}..."
     )
 
     report_data = {
@@ -2072,6 +2071,75 @@ def start_mtp_pull():
 # data type - only the ORCHESTRATION (what installs/grants/queries/
 # cleans up, and in what order) is consolidated here.
 ANDROID_COMPANION_APK_DIR = os.path.join(INSTALL_DIR, "android_companion_tools")
+
+def _completed_acquisition_at(path):
+    """True when `path` is the recorded output of a COMPLETED acquisition in
+    its case (looked up from the case JSON in the folder it sits in)."""
+    marker = case_consolidated_path(os.path.dirname(path))
+    if not marker:
+        return False
+    try:
+        with open(marker, 'r') as f:
+            events = (json.load(f) or {}).get('events') or []
+    except (OSError, ValueError, AttributeError):
+        return True  # can't tell - be safe and treat it as real evidence
+    real = os.path.realpath(path)
+    for event in events:
+        if isinstance(event, dict) and event.get('acquisition_status') == 'COMPLETED':
+            out, _kind = acquisition_output_location(event.get('acquisition_parameters'))
+            if isinstance(out, str) and os.path.realpath(out) == real:
+                return True
+    return False
+
+
+OUTPUT_ATTEMPT_MAX = 50
+
+
+def _claim_mobile_output(dest_path, base_name, ext=''):
+    """Where a phone acquisition writes, given what an earlier attempt left
+    (Eric's decision 2026-11-20, 10-09 item 6A). Returns (output_path,
+    base_name, note, refusal):
+    - nothing there: use it.
+    - an empty folder or 0-byte file (a failed/stopped run): remove it, use it.
+    - a COMPLETED acquisition recorded at that path: refuse - that's a reused
+      Evidence ID, not a retry.
+    - anything else (partial output): keep it untouched as evidence, and
+      write this run to <base>_attempt2, _attempt3...
+    """
+    path = os.path.join(dest_path, base_name + ext)
+    if not os.path.lexists(path):
+        return path, base_name, None, None
+    if _completed_acquisition_at(path):
+        return None, None, None, _existing_output_refusal(path)
+    try:
+        if os.path.islink(path):
+            empty = False
+        elif os.path.isdir(path):
+            empty = not os.listdir(path)
+        else:
+            empty = os.path.getsize(path) == 0
+    except OSError:
+        empty = False
+    if empty:
+        try:
+            if os.path.isdir(path):
+                os.rmdir(path)
+            else:
+                os.remove(path)
+            log_chain_of_custody("empty_failed_output_removed", {"path": path})
+            return path, base_name, f"[*] Removed the empty {os.path.basename(path)} an earlier attempt left behind.", None
+        except OSError:
+            pass  # fall through to a suffixed name
+    for n in range(2, OUTPUT_ATTEMPT_MAX + 1):
+        candidate = f"{base_name}_attempt{n}"
+        cand_path = os.path.join(dest_path, candidate + ext)
+        if not os.path.lexists(cand_path):
+            note = (f"[*] {os.path.basename(path)} holds output from an earlier attempt - kept as it is. "
+                    f"This run writes to {os.path.basename(cand_path)}.")
+            log_chain_of_custody("acquisition_output_suffixed", {"kept": path, "new": cand_path})
+            return cand_path, candidate, note, None
+    return None, None, None, _existing_output_refusal(path)
+
 
 def _existing_output_refusal(path):
     """409 for an output that already exists (2026-09-27 review). Only
