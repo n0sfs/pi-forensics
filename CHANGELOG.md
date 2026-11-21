@@ -64,7 +64,8 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
   station's one job slot (so nothing else starts beside them), and Stop ends them after the current
   file. A stopped run's report or manifest is kept and marked INCOMPLETE. Limits for these runs are
   now 1,000,000 files (50,000 recovered files, still within the 2 GiB recovery budget). A stopped
-  Triage Scan's report is now marked incomplete too.
+  Triage Scan's report is now marked incomplete too, and Triage Scan's own 5,000-file limit is now
+  1,000,000 as well.
 - **The touchscreen no longer restarts its browser while you're using it.** The 30-minute self-heal
   restart now waits until the screen has had no touch or key press for 10 minutes. Typed Reporting
   text is also saved in the browser every few seconds and put back after any restart, crash or power
