@@ -78,6 +78,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **The Reporting tabs are grouped.** The first row holds the case and analysis views (Overview, Case
+  Activity, Pattern of Life, Geolocation, Evidence Timeline). The second row holds the write-up (Report
+  Narrative, Case Notes & Custody Log, Files & Artifacts), with Export on its own at the far right. It
+  takes two rows at every width from 1024 px up, including the kiosk screen.
 - **DFIR reports include Analysis Results.** After Technical Analysis & Forensic Findings, the DFIR
   template now lists the examiner's flagged items, keyword/IOC hits and parsed-artifact counts, the
   same section the Standard template offers. Police reports stay without it.
