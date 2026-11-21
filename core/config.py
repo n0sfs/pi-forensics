@@ -459,6 +459,16 @@ def load_hash_list_sets(hash_list_ids):
 def get_url_lists():
     return load_runtime_config().get('url_lists', [])
 
+# Station additions to the built-in privacy-tool app list (2026-11-21,
+# Settings > Case & Reporting). Each entry: {"id", "label", "category"} - id is
+# an Android package or iOS bundle id, matched exactly like the built-ins in
+# core/case_index_db.py's PRIVACY_TOOL_PACKAGES.
+PRIVACY_TOOL_CATEGORIES = ("tor", "anonymity_network", "vpn", "privacy_browser")
+
+def get_privacy_tool_apps():
+    apps = load_runtime_config().get('privacy_tool_apps', [])
+    return [a for a in apps if isinstance(a, dict) and a.get('id') and a.get('category') in PRIVACY_TOOL_CATEGORIES]
+
 URL_LISTS_DIR = os.path.join(INSTALL_DIR, "url_lists")
 
 def url_list_file_path(list_id):

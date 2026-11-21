@@ -4536,6 +4536,40 @@ let urlListModalInstance = null;
 let urlListModalMode = 'create'; // 'create' | 'edit'
 let urlListModalId = null;
 
+// Station additions to the privacy-tool app list (2026-11-21).
+async function loadPrivacyToolAppsSection() {
+    const textEl = document.getElementById("privacyToolAppsText");
+    if (!textEl) return;
+    try {
+        const res = await fetch('/api/settings/privacy_tool_apps');
+        const data = await res.json();
+        if (!data.success) return;
+        textEl.value = (data.apps || []).map(a => `${a.id} | ${a.label} | ${a.category}`).join('\n');
+        const countEl = document.getElementById("privacyToolBuiltinCount");
+        if (countEl) countEl.textContent = `The built-in list (${(data.builtin || []).length} apps)`;
+        const status = document.getElementById("privacyToolAppsStatus");
+        if (status) status.textContent = `${(data.apps || []).length} added on this station`;
+    } catch (err) { /* section stays as rendered */ }
+}
+
+async function savePrivacyToolApps() {
+    const textEl = document.getElementById("privacyToolAppsText");
+    const status = document.getElementById("privacyToolAppsStatus");
+    try {
+        const res = await fetch('/api/settings/privacy_tool_apps', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apps_text: textEl ? textEl.value : '' })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(data.error || 'Could not save the list.', 'danger'); return; }
+        showToast(`Privacy-tool list saved (${data.apps.length} added on this station).`, 'success');
+        loadPrivacyToolAppsSection();
+    } catch (err) {
+        showToast(`Could not save the list: ${err.message}`, 'danger');
+        if (status) status.textContent = 'Save failed';
+    }
+}
+
 async function loadUrlListsSection() {
     const listEl = document.getElementById('urlListsListContainer');
     if (!listEl) return;
@@ -20764,6 +20798,7 @@ document.getElementById('secAnalysisLists')?.addEventListener('shown.bs.collapse
     loadKeywordListsSection();
     loadHashListsSection();
     loadUrlListsSection();
+    loadPrivacyToolAppsSection();
     loadYaraRulesetsSection();
 });
 

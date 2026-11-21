@@ -69,6 +69,11 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Added
 
+- **You can extend the VPN/Tor app list.** Pattern of Life's privacy-tools panel matches installed
+  apps against a built-in list, now 35 apps including 10 iOS bundle ids for iLEAPP inventories.
+  Settings > Case & Reporting > Analysis & IOC Lists > Privacy-Tool Apps adds the station's own
+  entries, one per line as `id | Label | category`. Bad lines are rejected with their line number,
+  and a station entry can't relabel a built-in one.
 - **Key Findings Summary and Glossary report sections.** Both are optional checkboxes on the
   Standard template (off by default, and in Settings station defaults and custom templates). Key
   Findings Summary rolls up the case in one table: items acquired and any incomplete, integrity
