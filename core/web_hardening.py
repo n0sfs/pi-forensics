@@ -13,13 +13,39 @@ throwaway Flask app - importing app.py starts the station's startup threads
   (core/config.py) instead of a fail-open "no users" or a silent "saved".
 """
 from flask import jsonify, request
+from flask.sessions import SecureCookieSessionInterface
 
 from core.config import (RuntimeConfigUnreadable, RuntimeConfigWriteFailed,
                          REQUEST_BODY_DEFAULT_MAX_BYTES, REQUEST_BODY_ENDPOINT_MAX_BYTES)
 from core.case_file import CaseWriteBusy
 
 
+def _request_came_over_tls():
+    """True when this request reached the app over HTTPS: either directly, or
+    through the station's own nginx front end, which connects from loopback
+    and sets X-Forwarded-Proto. The header is only believed from a loopback
+    peer, the same trust boundary core/auth.py's _effective_client_ip() uses."""
+    if request.is_secure:
+        return True
+    return (request.remote_addr in ('127.0.0.1', '::1')
+            and request.headers.get('X-Forwarded-Proto', '').lower() == 'https')
+
+
+class _TlsAwareSessionInterface(SecureCookieSessionInterface):
+    """Marks the session cookie Secure on HTTPS requests (2026-11-21).
+
+    SESSION_COOKIE_SECURE stays False app-wide because the kiosk talks to
+    http://127.0.0.1:5000 directly and plain-HTTP installs are supported (see
+    app.py). Over TLS the cookie was still sent without Secure, so a browser
+    would also send it on a plain http:// request to the same host - before
+    nginx's redirect to https could happen."""
+
+    def get_cookie_secure(self, app):
+        return bool(super().get_cookie_secure(app)) or _request_came_over_tls()
+
+
 def install_web_hardening(app):
+    app.session_interface = _TlsAwareSessionInterface()
     app.config['MAX_CONTENT_LENGTH'] = REQUEST_BODY_DEFAULT_MAX_BYTES
 
     @app.before_request
