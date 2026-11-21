@@ -41,7 +41,7 @@ from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, 
 import yara
 from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME,
-    begin_suppress_active_false, end_suppress_active_false,
+    begin_suppress_active_false, end_suppress_active_false, job_stop_requested,
 )
 from core.tsk_utils import (
     _tsk_walk, _tsk_resolve_filesystems, _tsk_entry_dict,
@@ -1086,7 +1086,31 @@ def start_image_geolocation_kml():
 IMAGE_HASH_MAX_FILES = 5000
 IMAGE_HASH_MAX_SECONDS = 300
 
-def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
+def _count_image_files(image_path, filesystems, want, cap, should_stop=None):
+    """Metadata-only first pass (no file content read) so a background job
+    can show a real percentage - same approach as the Triage Scan worker.
+    want(entry) picks the entries the real pass will process."""
+    total = 0
+    for fsinfo in filesystems:
+        try:
+            fs = _tsk_open_fs(image_path, fsinfo['offset'])
+        except Exception:
+            continue
+        for entry, _ in _tsk_walk(fs):
+            if want(entry):
+                total += 1
+                if total >= cap:
+                    return total
+            if should_stop and total % 500 == 0 and should_stop():
+                return total
+    return total
+
+
+IMAGE_TOOL_STOPPED_NOTE = "the examiner pressed Stop, so the rest of the image was not processed."
+
+
+def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets, progress=None, should_stop=None,
+                            max_seconds=IMAGE_HASH_MAX_SECONDS, max_files=IMAGE_HASH_MAX_FILES):
     """The actual walk-and-hash work, extracted verbatim out of
     image_hash_manifest() (Phase 2 of Linux Artifacts + Auto Analyze,
     2026-08-25) so Auto Analyze can call it directly, in-process, as one
@@ -1103,8 +1127,16 @@ def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
     if not filesystems:
         return {"success": False, "error": "No recognized filesystem found in this image."}
 
+    want = lambda e: not (e['is_dir'] or e['deleted'] or e['is_virtual'])
+    total_estimate = _count_image_files(image_path, filesystems, want, max_files, should_stop) if progress else 0
+    stopped = False
     start_time = time.time()
-    rows = []  # (hash_hex, size, in-image path)
+    # Manifest rows go to a scratch file as they are hashed, not a list - a
+    # background run may hash hundreds of thousands of files on a 1 GB Pi.
+    try:
+        rows_file = tempfile.TemporaryFile(mode='w+', encoding='utf-8', dir=dest_dir)
+    except OSError as e:
+        return {"success": False, "error": f"Failed to write manifest file: {e}"}
     matches = []  # (hash_hex, path, [list_name, ...])
     files_hashed = 0
     files_errored = 0
@@ -1119,17 +1151,23 @@ def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
         for entry, path in _tsk_walk(fs, stats=walk_stats):
             if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
                 continue
-            if files_hashed >= IMAGE_HASH_MAX_FILES or (time.time() - start_time) > IMAGE_HASH_MAX_SECONDS:
-                coverage.note(f"hashing stopped at its limit ({IMAGE_HASH_MAX_FILES} files or "
-                              f"{IMAGE_HASH_MAX_SECONDS} seconds), so later files are not in the manifest.")
+            if should_stop and should_stop():
+                coverage.note(IMAGE_TOOL_STOPPED_NOTE)
+                stopped = truncated = True
+                break
+            if files_hashed >= max_files or (max_seconds and (time.time() - start_time) > max_seconds):
+                coverage.note(f"hashing stopped at its limit ({max_files} files"
+                              + (f" or {max_seconds} seconds" if max_seconds else "") + "), so later files are not in the manifest.")
                 truncated = True
                 break
+            if progress:
+                progress(files_hashed + files_errored, total_estimate)
             try:
                 tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
                 h = hashlib.new(algo)
                 size = _tsk_stream_file(tsk_file, h.update)
                 digest = h.hexdigest()
-                rows.append((digest, size, path))
+                rows_file.write(f"{digest}  {size}  {path}\n")
                 files_hashed += 1
                 if hash_sets:
                     hit_lists = [s["name"] for s in hash_sets.values() if digest in s["hashes"]]
@@ -1167,28 +1205,169 @@ def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
         lines.append(f"# Checked against hash set(s): {checked_names} ({len(matches)} match(es))")
     lines += [
         "#",
-        f"# {'hash'.ljust(len(rows[0][0]) if rows else 64)}  size(bytes)  path",
+        f"# {'hash'.ljust(hashlib.new(algo).digest_size * 2)}  size(bytes)  path",
     ]
-    for digest, size, path in rows:
-        lines.append(f"{digest}  {size}  {path}")
+    tail = []
     if matches:
-        lines.append("")
-        lines.append("# --- HASH LIST MATCHES ---")
+        tail.append("")
+        tail.append("# --- HASH LIST MATCHES ---")
         for digest, path, hit_lists in matches:
-            lines.append(f"# MATCH  {digest}  {path}  <- {', '.join(hit_lists)}")
+            tail.append(f"# MATCH  {digest}  {path}  <- {', '.join(hit_lists)}")
     try:
-        with open(manifest_path, 'w', encoding='utf-8') as f:
+        with rows_file, open(manifest_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines) + "\n")
+            rows_file.seek(0)
+            shutil.copyfileobj(rows_file, f)
+            if tail:
+                f.write("\n".join(tail) + "\n")
     except Exception as e:
         return {"success": False, "error": f"Failed to write manifest file: {e}"}
     _auto_tag_case_artifact(dest_dir, manifest_path)
 
     return {
         "success": True, "manifest_path": manifest_path, "files_hashed": files_hashed,
-        "files_errored": files_errored, "truncated": truncated, **coverage.as_dict(),
+        "files_errored": files_errored, "truncated": truncated, "stopped": stopped, **coverage.as_dict(),
         "hash_list_match_count": len(matches),
         "hash_list_matches": [{"hash": d, "path": p, "lists": ls} for d, p, ls in matches[:50]],
     }
+
+# --- Hash Manifest / YARA Sweep / Recover Deleted as background jobs ---
+# (Eric's decision 2026-11-20, 10-09 item 7.) Each used to be one request
+# that walked the whole image for up to 5-10 minutes with no progress, no
+# Stop and no job slot - a second tap or another job could run beside it,
+# and a proxy timeout left the examiner guessing. They now claim the shared
+# job slot like Triage Scan, report files-done/total, and stop between files.
+# The wall-clock caps and 5,000-file counts only existed to bound a request;
+# Stop replaces them here (job caps below). Auto Analyze still calls the same
+# bodies in-process with their request-sized caps, unchanged.
+
+# Background runs: no clock, larger file counts (rows stream to disk, matches
+# are small). Recover Deleted keeps its 2 GiB total-bytes budget - that one is
+# about the destination's free space, not the request.
+IMAGE_HASH_JOB_MAX_FILES = 1_000_000
+IMAGE_YARA_JOB_MAX_FILES = 1_000_000
+IMAGE_RECOVER_JOB_MAX_FILES = 50_000
+
+
+def _claim_image_tool_job(fmt, status):
+    with job_lock:
+        if current_job["active"]:
+            return False
+        current_job["active"] = True
+        mark_job_slot_claimed()
+    update_job(format=fmt, progress_percent=0.0, speed_mbps=0.0, transferred_bytes=0, total_bytes=0,
+               status=status, log=f"[*] {status}", summary="")
+    return True
+
+
+def execution_worker_image_tool(label, run, summarize, custody_event, custody_fields, source_ip=None, user=None):
+    """Runs one of the three bodies as the station's job. run(progress,
+    should_stop) -> the body's result dict; summarize(result) -> list of
+    log lines; custody_fields(result) -> the custody record's fields."""
+    log_history = []
+
+    def append_log(msg):
+        log_history.append(msg)
+        update_job(log="\n".join(log_history[-100:]))
+
+    last = [0.0]
+
+    def progress(done, total):
+        now = time.time()
+        if now - last[0] < 0.5:
+            return
+        last[0] = now
+        upd = {"transferred_bytes": done, "total_bytes": total,
+               "status": f"{label}: {done:,} of {total:,} files" if total else f"{label}: {done:,} files"}
+        if total:
+            upd["progress_percent"] = round(min(done / total, 1.0) * 100, 1)
+        update_job(**upd)
+
+    try:
+        update_job(status=f"{label}: counting files in the image...")
+        append_log(f"[*] {label} started.")
+        result = run(progress, job_stop_requested)
+        if not result.get("success"):
+            update_job(status="Failed", summary=result.get("error", ""))
+            append_log(f"[-] {result.get('error')}")
+            return
+        lines = summarize(result)
+        for line in lines:
+            append_log(line)
+        for gap in result.get("search_gaps", []):
+            append_log(f"[!] Not covered: {gap}")
+        if result.get("stopped"):
+            status = "Stopped"
+        elif result.get("truncated"):
+            status = "Completed - not everything was covered (see the log)"
+        else:
+            status = "Completed Successfully"
+        update_job(status=status, progress_percent=100.0 if status != "Stopped" else snapshot_job()["progress_percent"],
+                   summary="\n".join(l.lstrip("[+!*-] ").strip() for l in lines))
+        log_chain_of_custody(custody_event, {**custody_fields(result), "stopped": bool(result.get("stopped"))},
+                             source_ip=source_ip, user=user)
+    except ImageUnreadable as e:
+        update_job(status="Failed", summary=str(e))
+        append_log(f"[-] {e}")
+    except Exception as e:
+        update_job(status="Failed", summary=str(e))
+        append_log(f"[-] Execution Exception: {e}")
+    finally:
+        update_job(active=False)
+
+
+def _start_image_tool_job(fmt, label, run, summarize, custody_event, custody_fields, custody_start):
+    if not _claim_image_tool_job(fmt, f"Starting {label}..."):
+        return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+    # Captured in the request thread - the worker has no request context.
+    requester_ip = _effective_client_ip()
+    requester_user = getattr(g, 'forensic_user', None)
+    thread = threading.Thread(target=execution_worker_image_tool,
+                              args=(label, run, summarize, custody_event, custody_fields, requester_ip, requester_user))
+    thread.daemon = True
+    thread.start()
+    log_chain_of_custody(f"{custody_event}_start", custody_start)
+    return jsonify({"success": True, "message": f"{label} started.", "job": True})
+
+
+def _summarize_hash_manifest(r, list_count):
+    lines = [f"[+] Hashed {r['files_hashed']} file(s). Manifest: {r['manifest_path']}"]
+    if r["files_errored"]:
+        lines.append(f"[!] {r['files_errored']} file(s) could not be read and were skipped.")
+    if list_count:
+        lines.append(f"[!] {r['hash_list_match_count']} file(s) matched a saved hash list - see the manifest."
+                     if r["hash_list_match_count"] else f"[+] Checked against {list_count} saved hash list(s) - no matches.")
+    return lines
+
+
+def _summarize_yara_sweep(r, ruleset_count):
+    lines = [f"[+] Scanned {r['files_scanned']} file(s) against {ruleset_count} ruleset(s). Report: {r['report_path']}"]
+    if r["files_skipped_too_large"]:
+        lines.append(f"[!] {r['files_skipped_too_large']} file(s) over {IMAGE_YARA_MAX_FILE_BYTES // (1024 * 1024)} MiB were skipped.")
+    if r["files_errored"]:
+        lines.append(f"[!] {r['files_errored']} file(s) could not be read and were skipped.")
+    lines.append(f"[!] {r['matched_file_count']} file(s) matched a rule - see the report." if r["matched_file_count"]
+                 else "[+] No matches.")
+    return lines
+
+
+def _summarize_recover_deleted(r):
+    if r["files_recovered"]:
+        lines = [f"[+] Recovered {r['files_recovered']} file(s), {r['total_bytes'] / (1024 * 1024):.1f} MiB, "
+                 f"under {r['output_dir']}"]
+    else:
+        lines = ["[+] No recoverable deleted files (with an intact directory entry) were found"
+                 + (" in the part of the image that was searched." if r["truncated"] else ".")]
+    if r["files_skipped_too_large"]:
+        lines.append(f"[!] {r['files_skipped_too_large']} file(s) skipped for size or the total-size budget.")
+    if r["files_skipped_empty"]:
+        lines.append(f"[!] {r['files_skipped_empty']} file(s) skipped as empty/unrecoverable.")
+    if r["files_errored"]:
+        lines.append(f"[!] {r['files_errored']} file(s) could not be read and were skipped.")
+    if r["files_incomplete"]:
+        lines.append(f"[!] {r['files_incomplete']} file(s) could only be read in part and were NOT kept.")
+    return lines
+
 
 @image_browser_bp.route('/api/image/hash_manifest', methods=['POST'])
 @requires_auth
@@ -1226,20 +1405,18 @@ def image_hash_manifest():
     # re-select per algorithm.
     hash_sets = {lid: s for lid, s in load_hash_list_sets(hash_list_ids).items() if s["algorithm"] == algo}
 
-    result = _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets)
-    if not result["success"]:
-        # Both of _run_hash_manifest_body()'s own failure paths (no
-        # recognized filesystem, manifest write failure) were already 500
-        # in the pre-extraction code - preserved as-is here.
-        return jsonify(result), 500
-
-    log_chain_of_custody("hash_manifest_export_image", {
-        "image_path": image_path, "algorithm": algo, "files_hashed": result["files_hashed"],
-        "files_errored": result["files_errored"], "truncated": result["truncated"],
-        "search_gaps": result["search_gaps"], "partitions_skipped": result["partitions_skipped"],
-        "hash_list_matches": result["hash_list_match_count"],
-    })
-    return jsonify(result)
+    return _start_image_tool_job(
+        "image_hash_manifest", "Hash Manifest",
+        lambda progress, should_stop: _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets, progress=progress,
+                                                              should_stop=should_stop, max_seconds=None,
+                                                              max_files=IMAGE_HASH_JOB_MAX_FILES),
+        lambda r: _summarize_hash_manifest(r, len(hash_sets)),
+        "hash_manifest_export_image",
+        lambda r: {"image_path": image_path, "algorithm": algo, "files_hashed": r["files_hashed"],
+                   "files_errored": r["files_errored"], "truncated": r["truncated"],
+                   "search_gaps": r["search_gaps"], "partitions_skipped": r["partitions_skipped"],
+                   "hash_list_matches": r["hash_list_match_count"], "manifest_path": r["manifest_path"]},
+        {"image_path": image_path, "algorithm": algo, "destination": dest_dir})
 
 # --- Recursive YARA rule sweep, computed directly inside an acquired image ---
 # The whole-image counterpart to routes/file_explorer.py's/this file's own
@@ -1254,7 +1431,8 @@ IMAGE_YARA_MAX_FILES = 5000
 IMAGE_YARA_MAX_SECONDS = 300
 IMAGE_YARA_MAX_FILE_BYTES = 64 * 1024 * 1024  # a file larger than this is skipped, not truncated-and-scanned - a partial scan of a huge file risks a false sense of "checked" for content past the cut point
 
-def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
+def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None, progress=None, should_stop=None,
+                         max_seconds=IMAGE_YARA_MAX_SECONDS, max_files=IMAGE_YARA_MAX_FILES):
     """The actual walk-and-scan work for a whole-image YARA sweep. Returns
     a plain dict; the route builds its jsonify() response from it, Auto
     Analyze's own step function reads the same dict directly - the exact
@@ -1277,6 +1455,9 @@ def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
     if not filesystems:
         return {"success": False, "error": "No recognized filesystem found in this image."}
 
+    want = lambda e: not (e['is_dir'] or e['deleted'] or e['is_virtual'])
+    total_estimate = _count_image_files(image_path, filesystems, want, max_files, should_stop) if progress else 0
+    stopped = False
     start_time = time.time()
     files_scanned = 0
     files_skipped_too_large = 0
@@ -1293,11 +1474,17 @@ def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
         for entry, path in _tsk_walk(fs, stats=walk_stats):
             if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
                 continue
-            if files_scanned >= IMAGE_YARA_MAX_FILES or (time.time() - start_time) > IMAGE_YARA_MAX_SECONDS:
-                coverage.note(f"the sweep stopped at its limit ({IMAGE_YARA_MAX_FILES} files or "
-                              f"{IMAGE_YARA_MAX_SECONDS} seconds), so later files were not scanned.")
+            if should_stop and should_stop():
+                coverage.note(IMAGE_TOOL_STOPPED_NOTE)
+                stopped = truncated = True
+                break
+            if files_scanned >= max_files or (max_seconds and (time.time() - start_time) > max_seconds):
+                coverage.note(f"the sweep stopped at its limit ({max_files} files"
+                              + (f" or {max_seconds} seconds" if max_seconds else "") + "), so later files were not scanned.")
                 truncated = True
                 break
+            if progress:
+                progress(files_scanned + files_skipped_too_large + files_errored, total_estimate)
             if entry['size'] and entry['size'] > IMAGE_YARA_MAX_FILE_BYTES:
                 files_skipped_too_large += 1
                 continue
@@ -1363,7 +1550,7 @@ def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
     return {
         "success": True, "report_path": report_path, "files_scanned": files_scanned,
         "files_skipped_too_large": files_skipped_too_large, "files_errored": files_errored,
-        "truncated": truncated, **coverage.as_dict(), "matched_file_count": len(match_rows),
+        "truncated": truncated, "stopped": stopped, **coverage.as_dict(), "matched_file_count": len(match_rows),
         "matches": [{"path": p, "rules": m} for p, m in match_rows[:50]],
     }
 
@@ -1392,17 +1579,20 @@ def image_yara_sweep():
     if not ruleset_ids:
         return jsonify({"success": False, "error": "No YARA rulesets selected."}), 400
 
-    result = _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=case_folder)
-    if not result["success"]:
-        return jsonify(result), 500
-
-    log_chain_of_custody("yara_sweep_image", {
-        "image_path": image_path, "files_scanned": result["files_scanned"],
-        "files_errored": result["files_errored"], "truncated": result["truncated"],
-        "search_gaps": result["search_gaps"], "partitions_skipped": result["partitions_skipped"],
-        "matched_file_count": result["matched_file_count"],
-    })
-    return jsonify(result)
+    if not load_yara_ruleset_sources(ruleset_ids):
+        return jsonify({"success": False, "error": "None of the selected YARA rulesets could be loaded."}), 400
+    return _start_image_tool_job(
+        "image_yara_sweep", "YARA Rule Sweep",
+        lambda progress, should_stop: _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=case_folder,
+                                                           progress=progress, should_stop=should_stop, max_seconds=None,
+                                                           max_files=IMAGE_YARA_JOB_MAX_FILES),
+        lambda r: _summarize_yara_sweep(r, len(ruleset_ids)),
+        "yara_sweep_image",
+        lambda r: {"image_path": image_path, "files_scanned": r["files_scanned"],
+                   "files_errored": r["files_errored"], "truncated": r["truncated"],
+                   "search_gaps": r["search_gaps"], "partitions_skipped": r["partitions_skipped"],
+                   "matched_file_count": r["matched_file_count"], "report_path": r["report_path"]},
+        {"image_path": image_path, "ruleset_ids": ruleset_ids, "destination": dest_dir})
 
 # --- Lightweight keyword/structured-data screening, built specifically for
 # Auto Analyze - NOT a third scanning implementation. Reuses the exact same
@@ -3787,8 +3977,9 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
         append_log(f"[*] Found {total_files_estimate} file(s) to scan (capped at {IMAGE_TRIAGE_MAX_FILES}).")
 
         last_update_time = time.time()
+        stopped = False
         for fsinfo in filesystems:
-            if snapshot_job()["status"] == "Stopped":
+            if stopped:
                 break
             try:
                 fs = _tsk_open_fs(image_path, fsinfo['offset'])
@@ -3797,8 +3988,12 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                 continue
             walk_stats = {}
             for entry, path in _tsk_walk(fs, stats=walk_stats):
-                if snapshot_job()["status"] == "Stopped":
+                # job_stop_requested() also sees a newer job taking the slot -
+                # "Stopped" alone is overwritten by that job's own status.
+                if job_stop_requested():
                     append_log("[!] Scan stopped by user.")
+                    coverage.note(IMAGE_TOOL_STOPPED_NOTE)
+                    stopped = True
                     break
                 if entry['is_dir'] or entry['is_virtual']:
                     continue
@@ -3875,7 +4070,7 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                     update_job(**updates)
                     last_update_time = time.time()
             coverage.note_walk(walk_stats, fsinfo)
-            if walk_truncated or snapshot_job()["status"] == "Stopped":
+            if walk_truncated or stopped:
                 break
         walk_truncated = walk_truncated or coverage.incomplete
 
@@ -3924,7 +4119,7 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
 
         for gap in coverage.gaps:
             append_log(f"[!] Not scanned: {gap}")
-        if snapshot_job()["status"] == "Stopped":
+        if stopped:
             pass  # already logged above
         else:
             update_job(status=("Completed - not everything was scanned (see the log)" if walk_truncated
@@ -4566,7 +4761,8 @@ def _create_new_file(dest_file, inode):
     raise FileExistsError(f"no free name for {dest_file}")
 
 
-def _run_recover_deleted_body(image_path, dest_dir):
+def _run_recover_deleted_body(image_path, dest_dir, progress=None, should_stop=None, max_seconds=IMAGE_RECOVER_MAX_SECONDS,
+                              max_files=IMAGE_RECOVER_MAX_FILES):
     """The actual walk-and-recover work, extracted verbatim out of
     image_recover_deleted() (Phase 2 of Linux Artifacts + Auto Analyze,
     2026-08-25) so Auto Analyze can call it directly as one sequenced step
@@ -4594,6 +4790,10 @@ def _run_recover_deleted_body(image_path, dest_dir):
             return {"success": False, "error": f"{output_root} already exists - nothing was recovered, nothing "
                                                f"was overwritten. Try again in a moment."}
     multi_fs = len(filesystems) > 1
+    want = lambda e: e['deleted'] and not (e['is_dir'] or e['is_virtual'])
+    total_estimate = _count_image_files(image_path, filesystems, want, max_files, should_stop) if progress else 0
+    stopped = False
+    processed = 0
 
     start_time = time.time()
     files_recovered = 0
@@ -4620,11 +4820,18 @@ def _run_recover_deleted_body(image_path, dest_dir):
         for entry, path in _tsk_walk(fs, stats=walk_stats):
             if entry['is_dir'] or not entry['deleted'] or entry['is_virtual']:
                 continue
-            if files_recovered >= IMAGE_RECOVER_MAX_FILES or (time.time() - start_time) > IMAGE_RECOVER_MAX_SECONDS:
-                coverage.note(f"recovery stopped at its limit ({IMAGE_RECOVER_MAX_FILES} files or "
-                              f"{IMAGE_RECOVER_MAX_SECONDS} seconds), so later deleted files were not recovered.")
+            if should_stop and should_stop():
+                coverage.note(IMAGE_TOOL_STOPPED_NOTE)
+                stopped = truncated = True
+                break
+            if files_recovered >= max_files or (max_seconds and (time.time() - start_time) > max_seconds):
+                coverage.note(f"recovery stopped at its limit ({max_files} files"
+                              + (f" or {max_seconds} seconds" if max_seconds else "") + "), so later deleted files were not recovered.")
                 truncated = True
                 break
+            if progress:
+                progress(processed, total_estimate)
+            processed += 1
             size = entry['size'] or 0
             if size <= 0:
                 files_skipped_empty += 1
@@ -4678,7 +4885,7 @@ def _run_recover_deleted_body(image_path, dest_dir):
         "files_recovered": files_recovered, "total_bytes": total_bytes,
         "files_skipped_too_large": files_skipped_too_large, "files_skipped_empty": files_skipped_empty,
         "files_errored": files_errored, "files_incomplete": files_incomplete,
-        "truncated": truncated, **coverage.as_dict(),
+        "truncated": truncated, "stopped": stopped, **coverage.as_dict(),
     }
 
 @image_browser_bp.route('/api/image/recover_deleted', methods=['POST'])
@@ -4696,18 +4903,19 @@ def image_recover_deleted():
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
 
-    result = _run_recover_deleted_body(image_path, dest_dir)
-    if not result["success"]:
-        return jsonify(result), 500
-
-    log_chain_of_custody("recover_deleted_files_image", {
-        "image_path": image_path, "output_dir": result["output_dir"], "files_recovered": result["files_recovered"],
-        "total_bytes": result["total_bytes"], "files_skipped_too_large": result["files_skipped_too_large"],
-        "files_skipped_empty": result["files_skipped_empty"], "files_errored": result["files_errored"],
-        "files_incomplete": result["files_incomplete"], "truncated": result["truncated"],
-        "search_gaps": result["search_gaps"], "partitions_skipped": result["partitions_skipped"],
-    })
-    return jsonify(result)
+    return _start_image_tool_job(
+        "image_recover_deleted", "Recover Deleted Files",
+        lambda progress, should_stop: _run_recover_deleted_body(image_path, dest_dir, progress=progress,
+                                                                should_stop=should_stop, max_seconds=None,
+                                                                max_files=IMAGE_RECOVER_JOB_MAX_FILES),
+        _summarize_recover_deleted,
+        "recover_deleted_files_image",
+        lambda r: {"image_path": image_path, "output_dir": r["output_dir"], "files_recovered": r["files_recovered"],
+                   "total_bytes": r["total_bytes"], "files_skipped_too_large": r["files_skipped_too_large"],
+                   "files_skipped_empty": r["files_skipped_empty"], "files_errored": r["files_errored"],
+                   "files_incomplete": r["files_incomplete"], "truncated": r["truncated"],
+                   "search_gaps": r["search_gaps"], "partitions_skipped": r["partitions_skipped"]},
+        {"image_path": image_path, "destination": dest_dir})
 
 # --- Auto Analyze: Windows/Linux disk-image profiles (Phase 3, 2026-08-25) ---
 # Detects an image's filesystem type (core.tsk_utils.classify_image_profile,

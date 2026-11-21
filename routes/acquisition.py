@@ -4242,6 +4242,7 @@ def get_progress():
         "transferred_bytes": job["transferred_bytes"],
         "total_bytes": job["total_bytes"],
         "status": job["status"],
-        "log": job["log"]
+        "log": job["log"],
+        "summary": job.get("summary") or "",
     })
 
