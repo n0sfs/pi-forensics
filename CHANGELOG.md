@@ -132,6 +132,14 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **DFIR reports now list the evidence acquired.** The DFIR template left out the evidence
+  inventory and hashes entirely; it now has an "Evidence Acquired & Integrity Hashing" section after
+  the Incident Overview, in both PDF and HTML.
+- **PDF evidence tables no longer overlap.** Long device names, hashes and dates ran into the next
+  column; each cell is now shortened with "..." to fit its column. Folder, image-file and live
+  collection acquisitions show what they came from instead of a blank device.
+- **CASE/UCO report tools heading matches its contents** ("Tools & Configured Tools").
+- **Setting a case to the status it already has no longer writes a case-log entry.**
 - **Rooted-Android physical acquisition lists partitions by name again.** The partition-name lookup
   reached the phone as a bare `ls`, so the picker showed raw block names (sda34) instead of userdata,
   system and so on.
