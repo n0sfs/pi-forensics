@@ -33,6 +33,12 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Security
 
+- **The Write Blocker badge shows only what the drive actually reports, and Start refuses an
+  unprotected source.** With no source selected it used to show the state of whatever drive was
+  `/dev/sda`, and it read "On" when the check failed or the drive was unplugged. It now says No
+  source, Drive gone or Unknown in those cases. Acquisition, ddrescue and File Recovery refuse to
+  start from a source drive whose write blocker is off or can't be confirmed, and say how to fix it.
+  Toggle Write Blocker on a drive in an unknown state now protects it instead of guessing.
 - **An unreadable settings file stops the app instead of opening it up.** It used to read as "no
   accounts", which let anyone in with the old shared default login - and the next settings change
   then erased every account. There is no built-in default password any more.
