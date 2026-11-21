@@ -128,3 +128,44 @@ def test_dfir_pdf_draws_analysis_results(client, evidence_root, monkeypatch):
                         lambda c, y, findings, title="Analysis Results": (seen.append(findings), real(c, y, findings, title))[1])
     assert _export(client, report, "dfir", "pdf").startswith(b"%PDF")
     assert len(seen) == 1 and seen[0]["indexed"] is False
+
+
+def _standard(client, report, fmt, **sections):
+    res = client.post("/api/export_report", json={"report_path": report, "format": fmt, "template": "standard",
+                                                  "preview": True, "sections": {"case_details": True, **sections}})
+    assert res.status_code == 200, res.data[:300]
+    return res.data
+
+
+def test_key_findings_and_glossary_are_opt_in(client, evidence_root):
+    _, report = _case(evidence_root)
+    off = _standard(client, report, "html").decode()
+    assert "Key Findings Summary" not in off and "Glossary" not in off
+    on = _standard(client, report, "html", key_findings=True, glossary=True).decode()
+    assert 'id="sec-key_findings"' in on or "Key Findings Summary" in on
+    assert "2 item(s) acquired" in on
+    assert "No analysis tool has been run against this case." in on
+    assert "Write blocker" in on and "dl class=\"glossary\"" in on
+    assert _standard(client, report, "pdf", key_findings=True, glossary=True).startswith(b"%PDF")
+
+
+def test_key_findings_rows_flag_incomplete_and_count_hits():
+    events = [dict(EVENTS[0], acquisition_status="FAILED"), EVENTS[1]]
+    findings = {"indexed": True, "flagged_total": 3,
+                "keyword_hits": [{"label": "Email", "count": 4}, {"label": "Card", "count": 1}],
+                "parsed_artifacts": [{"artifact_type": "sms", "count": 10}]}
+    rows = {label: (value, problem) for label, value, problem in
+            reporting._key_findings_rows(events, {}, findings, exhibit_count=2)}
+    assert rows["Evidence items"] == ("2 item(s) acquired, 1 incomplete", True)
+    assert rows["Flagged by examiner"][0] == "3 item(s)"
+    assert rows["Keyword & indicator hits"][0] == "5 distinct match(es) - Email: 4, Card: 1"
+    assert rows["Parsed artifacts"][0] == "10 record(s) - sms: 10"
+    assert rows["Exhibits"][0] == "2 attached"
+
+
+def test_custom_template_saved_without_new_blocks_keeps_them_off():
+    record, err = reporting._custom_report_template_from_payload(
+        {"name": "Old", "sections": [{"key": "case_info", "enabled": True}]})
+    assert err is None
+    by_key = {s["key"]: s for s in record["sections"]}
+    assert by_key["key_findings"]["enabled"] is False and by_key["glossary"]["enabled"] is False

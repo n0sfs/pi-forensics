@@ -67,6 +67,15 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 - **The share browser needs Settings permission**, and no longer puts the SMB password on the command
   line.
 
+### Added
+
+- **Key Findings Summary and Glossary report sections.** Both are optional checkboxes on the
+  Standard template (off by default, and in Settings station defaults and custom templates). Key
+  Findings Summary rolls up the case in one table: items acquired and any incomplete, integrity
+  status, items flagged, keyword/indicator hits, parsed records and exhibits. Glossary explains the
+  report's technical terms (hash, write blocker, forensic image, IOC, YARA and so on) for a
+  non-technical reader.
+
 ### Changed
 
 - **DFIR reports include Analysis Results.** After Technical Analysis & Forensic Findings, the DFIR
