@@ -29,6 +29,7 @@ import signal
 
 from flask import Blueprint, jsonify, request, g
 
+from core.write_block import source_write_block_problem
 from core.priv import priv_argv, priv_available
 from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import (
@@ -3555,6 +3556,11 @@ def start_imaging():
         update_job(active=False)
         return jsonify({"error": f"The destination {dest_path} is on {source} itself - an image can never be written "
                                   f"onto the device being imaged. Choose a destination on different storage."}), 400
+    # Never image a source whose write blocker is off or unconfirmed (2026-11-20).
+    wb_problem = source_write_block_problem(source) if source_kind == 'real_device' else None
+    if wb_problem:
+        update_job(active=False)
+        return jsonify({"error": wb_problem, "write_blocker_off": True}), 409
 
     if not os.path.exists(dest_path):
         try:
@@ -3995,6 +4001,10 @@ def start_ddrescue():
         update_job(active=False)
         return jsonify({"error": f"The destination {dest_path} is on {source} itself - an image can never be written "
                                   f"onto the device being imaged. Choose a destination on different storage."}), 400
+    wb_problem = source_write_block_problem(source)
+    if wb_problem:
+        update_job(active=False)
+        return jsonify({"error": wb_problem, "write_blocker_off": True}), 409
 
     if strategy not in ('stage1_fast', 'stage2_trim', 'stage3_intensive', 'reverse'):
         update_job(active=False)
