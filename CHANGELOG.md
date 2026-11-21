@@ -173,6 +173,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Fixed
 
+- **Re-running the installer no longer asks for a dashboard password it won't use, or falsely warns
+  that the password is still the default.** When the account already exists, the installer keeps
+  its password and skips the prompt. The closing "still the default 'forensics'" warning now checks
+  the account's real password.
 - **DFIR reports now list the evidence acquired.** The DFIR template left out the evidence
   inventory and hashes entirely; it now has an "Evidence Acquired & Integrity Hashing" section after
   the Incident Overview, in both PDF and HTML.
