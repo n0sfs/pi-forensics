@@ -12564,6 +12564,9 @@ async function viewContactInTimeline(contactKey) {
     const tab = document.getElementById('repTimelineTab');
     if (tab) new bootstrap.Tab(tab).show();
     await loadCaseTimeline();
+    // The cached timeline keeps whatever filters were left on it; start this
+    // jump from a clean slate so no leftover filter hides the contact's rows.
+    if (caseTimelineCache) resetCaseTimelineFilters();
     const sel = document.getElementById('caseTimelineContactSelect');
     if (sel && [...sel.options].some((o) => o.value === contactKey)) {
         sel.value = contactKey;
@@ -17509,9 +17512,61 @@ let caseTimelineContactLabel = {};
 const CASE_TIMELINE_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'];
 
-async function loadCaseTimeline() {
+// Per-case cache (Maintainer decision 2026-11-22): building this timeline means a
+// full filesystem (MACB) walk of every image plus every parsed artifact - the
+// slowest request in Reporting, and it used to rerun on every tab open.
+// Re-opening the tab for the SAME case now reuses the last build, keeping the
+// examiner's filters, and the summary row shows "Built HH:MM (n min ago)"
+// beside a Rebuild button. The cache key also carries the case's job count,
+// so an acquisition finishing into the case rebuilds on the next open by
+// itself; evidence that arrives without a new job (e.g. a later artifact
+// parse) needs Rebuild, which is what the built-at time is there to prompt.
+let caseTimelineCacheKey = null;
+let caseTimelineBuiltAt = null;     // Date.now() of the build the cache holds
+let caseTimelineInFlight = null;    // {key, promise} - one build at a time per case
+
+function _caseTimelineKey() {
+    if (!activeCase) return null;
+    const jobs = Array.isArray(currentLoadedReportData?.events) ? currentLoadedReportData.events.length : '';
+    return `${activeCase.case_folder}|${jobs}`;
+}
+
+function _caseTimelineUpdateBuiltLabel() {
+    const el = document.getElementById('caseTimelineBuiltAt');
+    const btn = document.getElementById('caseTimelineRebuildBtn');
+    if (btn) btn.style.display = caseTimelineCache ? '' : 'none';
+    if (!el) return;
+    if (!caseTimelineBuiltAt || !caseTimelineCache) { el.textContent = ''; return; }
+    const d = new Date(caseTimelineBuiltAt);
+    const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const mins = Math.floor((Date.now() - caseTimelineBuiltAt) / 60000);
+    const ago = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : `${Math.floor(mins / 60)} h ${mins % 60} min ago`;
+    el.textContent = `Built ${hhmm} (${ago})`;
+    el.title = `Timeline built ${d.toLocaleString()}. Evidence added to the case after this needs Rebuild.`;
+}
+setInterval(() => {
+    const pane = document.getElementById('repTimelinePane');
+    if (pane && pane.classList.contains('active')) _caseTimelineUpdateBuiltLabel();
+}, 30000);
+
+async function loadCaseTimeline(forceRebuild = false) {
     const body = document.getElementById('caseTimelineBody');
     if (!body || !activeCase) return;
+    const key = _caseTimelineKey();
+    if (!forceRebuild && caseTimelineCache && caseTimelineCacheKey === key) {
+        _caseTimelineUpdateBuiltLabel();
+        renderCaseTimeline();
+        return;
+    }
+    if (caseTimelineInFlight && caseTimelineInFlight.key === key) return caseTimelineInFlight.promise;
+    const promise = _buildCaseTimeline(body, key);
+    caseTimelineInFlight = { key, promise };
+    try { await promise; } finally { if (caseTimelineInFlight && caseTimelineInFlight.promise === promise) caseTimelineInFlight = null; }
+}
+
+async function _buildCaseTimeline(body, key) {
+    const rebuildBtn = document.getElementById('caseTimelineRebuildBtn');
+    if (rebuildBtn) rebuildBtn.disabled = true;
     body.innerHTML = '<tr><td colspan="4" class="text-subtle p-2"><span class="spinner-border spinner-border-sm me-2" role="status"></span>Building timeline...</td></tr>';
     const summaryEl = document.getElementById('caseTimelineSummary');
     if (summaryEl) summaryEl.textContent = '';
@@ -17523,6 +17578,9 @@ async function loadCaseTimeline() {
     // file from the CURRENT case, producing a download labelled case B
     // containing case A's evidence.
     caseTimelineCache = null;
+    caseTimelineCacheKey = null;
+    caseTimelineBuiltAt = null;
+    _caseTimelineUpdateBuiltLabel();
     caseTimelineFilteredRows = [];
     caseTimelineBucketFilter = null;   // a fresh case load shouldn't carry over a stale drill-down from a previous case
     caseTimelineEvidenceFilter = '__all__';
@@ -17541,7 +17599,12 @@ async function loadCaseTimeline() {
             body.innerHTML = `<tr><td colspan="4" class="text-danger p-2">${escapeHtmlForPopup(data.error || 'Request failed.')}</td></tr>`;
             return;
         }
+        // A case switch while this was building: drop the stale response.
+        if (_caseTimelineKey() !== key) return;
         caseTimelineCache = data;
+        caseTimelineCacheKey = key;
+        caseTimelineBuiltAt = Date.now();
+        _caseTimelineUpdateBuiltLabel();
         renderCaseTimelineCategoryFilters(data.categories || []);
         populateCaseTimelineEvidenceFilter(data.events);
         populateCaseTimelineYearFilter(data.events);
@@ -17549,6 +17612,8 @@ async function loadCaseTimeline() {
         renderCaseTimeline();
     } catch (err) {
         body.innerHTML = '<tr><td colspan="4" class="text-danger p-2">Request failed.</td></tr>';
+    } finally {
+        if (rebuildBtn) rebuildBtn.disabled = false;
     }
 }
 
@@ -18197,7 +18262,7 @@ function _buildCaseTimelineRows(e) {
             previewRow.appendChild(pTd);
             const btn = document.createElement('button');
             btn.type = 'button';
-            btn.className = 'btn btn-xs btn-outline-secondary';
+            btn.className = 'btn btn-xs btn-outline-info';
             btn.title = 'Show this event\'s recovered message/email/note text';
             btn.innerHTML = '<i class="bi bi-chat-left-text me-1"></i>Message';
             btn.setAttribute('aria-expanded', 'false');

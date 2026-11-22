@@ -98,6 +98,10 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
   under the detail), long paths wrap at folder boundaries, the header stays put while scrolling,
   and the chart and table fit above the fold on the 1024x600 touchscreen. The CSV export still
   contains every matching row and now also notes an active search or zoom.
+- **Evidence Timeline opens instantly the second time.** It keeps the last build for the open case
+  (with your filters) instead of rescanning every evidence item on each visit. "Built HH:MM (n min
+  ago)" shows how fresh it is, and Rebuild rescans on demand. A new acquisition in the case triggers a
+  rebuild by itself; for evidence added any other way, press Rebuild.
 - **The Mobile tab has a "Before you start" checklist.** It covers iOS, Android and SIM. Steps the
   station can see (device detected, trusted or USB-debugging authorized, destination inside the active
   case) are ticked live. The rest (network isolation, screen kept awake, a known backup password or

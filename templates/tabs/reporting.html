@@ -824,8 +824,12 @@
                                                         <button type="button" class="btn btn-xs btn-outline-light" onclick="clearCaseTimelineBucketFilter()">Clear</button>
                                                     </div>
                                                     <div id="caseTimelineNotes" class="small text-warning mb-2 collapsed" style="display:none;" role="button" tabindex="0" title="Tap to show or hide the full note" onclick="this.classList.toggle('collapsed')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.classList.toggle('collapsed');}"></div>
-                                                    <div class="d-flex align-items-center small mb-1">
+                                                    <div class="d-flex align-items-center flex-wrap gap-2 small mb-1">
                                                         <span id="caseTimelineSummary" class="text-subtle" aria-live="polite"></span>
+                                                        <span class="ms-auto d-flex align-items-center gap-2">
+                                                            <span id="caseTimelineBuiltAt" class="text-subtle"></span>
+                                                            <button type="button" id="caseTimelineRebuildBtn" class="btn btn-xs btn-outline-light text-nowrap" style="display:none;" onclick="loadCaseTimeline(true)" title="Rescan every evidence item in this case and rebuild the timeline"><i class="bi bi-arrow-repeat me-1"></i>Rebuild</button>
+                                                        </span>
                                                     </div>
                                                     <div id="caseTimelineScroll" class="case-timeline-scroll small border border-secondary rounded-2 bg-app-dark">
                                                         <table class="table table-sm table-dark mb-0 case-timeline-table">
