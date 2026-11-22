@@ -1,16 +1,9 @@
 <!DOCTYPE html>
 <!--
   Pi Forensics Suite landing page. Self-contained: this file plus the
-  existing docs/images/PIF*.JPG screenshots (already used by the repo
-  README). No build step - served by GitHub Pages from docs/ on `main`.
-  Deliberately does not embed or link to a live instance of the app
-  itself; this is a static description of the project only.
-
-  Visual system shares its language with the project's own System
-  Architecture reference doc (IBM Plex Mono/Sans, near-black ground,
-  kicker-labeled panels, one restrained accent) rather than the
-  earlier gold/green "PCB" theme, so the two documents read as one
-  family when viewed side by side.
+  docs/images/PIF*.JPG screenshots. No build step - served by GitHub
+  Pages from docs/ on `main`. Keep it short: one row per capability,
+  details live in the README and User Manual.
 -->
 <html lang="en">
 <head>
@@ -40,7 +33,7 @@
   "description": "Self-hosted, open-source forensic acquisition software for Raspberry Pi and ARM single-board computers - bit-for-bit disk imaging, software write-blocking, mobile device acquisition, file recovery, and DFIR-structured case reporting.",
   "url": "https://n0sfs.github.io/pi-forensics/",
   "codeRepository": "https://github.com/n0sfs/pi-forensics",
-  "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+  "license": "https://opensource.org/licenses/MIT",
   "applicationCategory": "SecurityApplication",
   "operatingSystem": "Raspberry Pi OS, Debian (ARM64)",
   "keywords": "digital forensics, Raspberry Pi, ARM single-board computer, disk imaging, write blocker, chain of custody, DFIR"
@@ -145,6 +138,7 @@
   .hero-grid { display: grid; grid-template-columns: 1fr; gap: 18px; text-align: center; align-items: center; }
   .hero h1 { font-size: clamp(32px, 5vw, 52px); line-height: 1.1; margin: 18px 0 20px; }
   .hero h1 .hi { color: var(--cyan-hi); }
+  .nw { white-space: nowrap; }
   .hero p.lede { font-size: 18px; color: var(--text-dim); max-width: 640px; margin: 0 auto 32px; font-family: var(--sans); line-height: 1.65; }
   .hero-cta { display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; margin-bottom: 50px; }
 
@@ -180,27 +174,7 @@
   .section-head h2 { font-size: clamp(24px, 3vw, 33px); margin: 14px 0 12px; color: var(--text); }
   .section-head p { color: var(--text-dim); font-size: 16px; font-family: var(--sans); line-height: 1.6; }
 
-  /* ---------- Layer panel (shared card language) ---------- */
-  .layer {
-    background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent, var(--cyan));
-    border-radius: var(--radius); padding: 24px 26px 26px;
-  }
-  .layer-kicker { font-family: var(--mono); font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; color: var(--accent, var(--cyan)); margin: 0 0 6px; }
-  .layer-title { font-family: var(--sans); font-weight: 700; font-size: 1.15rem; margin: 0 0 10px; color: var(--text); }
-  .layer ul { margin: 0; padding: 0; list-style: none; }
-  .layer li { position: relative; padding: 9px 0 9px 22px; color: var(--text-dim); font-size: 14.5px; border-bottom: 1px solid var(--border); line-height: 1.55; }
-  .layer li:last-child { border-bottom: none; }
-  .layer--for li::before { content: "+"; position: absolute; left: 0; top: 9px; color: var(--cyan); font-family: var(--mono); font-weight: 700; }
-  .layer--against li::before { content: "\2212"; position: absolute; left: 2px; top: 9px; color: var(--text-faint); font-family: var(--mono); font-weight: 700; }
-
-  /* ---------- Why (comparison) ---------- */
-  .why-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .why-grid .layer--against { opacity: .82; --accent: var(--text-faint); }
-
-  /* ---------- Feature rows (2026-08-29: merged the old separate feature-grid
-     and screenshot-gallery sections into one - each capability paired
-     directly with the screen that shows it, instead of two disconnected
-     lists a reader had to mentally cross-reference themselves) ---------- */
+  /* ---------- Feature rows: each capability paired with its screen ---------- */
   .feature-rows { display: flex; flex-direction: column; gap: 18px; }
   .feature-row {
     display: grid; grid-template-columns: 1fr 1.15fr; gap: 36px; align-items: center;
@@ -251,12 +225,6 @@
   .terminal .cmt { color: var(--text-faint); }
   .terminal .pmt { color: var(--cyan); user-select: none; }
 
-  /* ---------- CTA band ---------- */
-  .cta-band { text-align: center; padding: 74px 0; }
-  .cta-band h2 { font-size: clamp(26px, 3.4vw, 38px); max-width: 720px; margin: 0 auto 16px; color: var(--text); }
-  .cta-band p { color: var(--text-dim); font-size: 16px; margin-bottom: 26px; font-family: var(--sans); }
-  .cta-band .hero-cta { margin-bottom: 0; }
-
   /* ---------- Footer ---------- */
   footer { border-top: 1px solid var(--border); background: var(--bg-2); padding: 44px 0 28px; }
   .foot-grid { display: flex; justify-content: space-between; gap: 40px; flex-wrap: wrap; margin-bottom: 34px; }
@@ -270,15 +238,20 @@
 
   @media (max-width: 900px) {
     .nav-links { display: none; }
-    .why-grid, .feature-row, .sec-strip-grid, .install-card { grid-template-columns: 1fr; }
+    .feature-row, .sec-strip-grid, .install-card { grid-template-columns: 1fr; }
   }
   @media (max-width: 640px) {
     .pad { padding: 56px 0; }
-    .layer { padding: 18px 18px 20px; }
+    .feature-row { padding: 22px 20px; gap: 20px; }
     .sec-strip { padding: 26px 22px; }
     .spec-grid { grid-template-columns: 1fr; }
     .spec-item { border-left: none !important; border-top: 1px solid var(--border); }
     .spec-item:first-child { border-top: none; }
+    .hero .kicker { font-size: 11px; letter-spacing: 0.06em; }
+    .terminal pre { font-size: 10.5px; padding: 16px 12px; }
+  }
+  @media (max-width: 360px) {
+    .terminal pre { font-size: 9px; padding: 14px 10px; }
   }
 </style>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
@@ -287,7 +260,6 @@
   <div class="wrap nav-inner">
     <a class="brand" href="#top"><span class="chip"></span>PI_FORENSICS_SUITE</a>
     <nav class="nav-links">
-      <a href="#why">Why</a>
       <a href="#features">Features</a>
       <a href="#security">Security</a>
       <a href="#install">Install</a>
@@ -302,7 +274,7 @@
   <div class="wrap hero-grid">
     <div>
       <span class="kicker"><span class="dot"></span>OPEN SOURCE &middot; MIT &middot; RASPBERRY PI / ARM64</span>
-      <h1>Bit-for-bit imaging<br>on <span class="hi">$50 hardware.</span></h1>
+      <h1><span class="nw">Bit-for-bit</span> imaging<br>on <span class="hi">$50 hardware.</span></h1>
       <p class="lede">A self-hosted forensic acquisition station for Raspberry Pi and ARM boards &mdash; write-blocking, hashing, mobile device acquisition, and DFIR-structured reporting from a touchscreen kiosk or any browser on the LAN. No commercial appliance required.</p>
       <div class="hero-cta">
         <a class="btn btn-cyan" href="https://github.com/n0sfs/pi-forensics">View on GitHub &rarr;</a>
@@ -330,51 +302,19 @@
   </div>
 </div>
 
-<section class="pad" id="why">
-  <div class="wrap">
-    <div class="section-head">
-      <span class="kicker"><span class="dot"></span>THE CASE FOR IT</span>
-      <h2>A write-blocker and imaging appliance shouldn't cost more than the drives you're imaging.</h2>
-      <p>Originally published as academic research &mdash; <a href="https://commons.erau.edu/jdfsl/vol11/iss1/3/" style="color: var(--cyan-hi); border-bottom: 1px dotted var(--cyan-deep);">"Low Budget Forensics using ARM Based Single Board Computers"</a> &mdash; and substantially extended since.</p>
-    </div>
-    <div class="why-grid">
-      <div class="layer layer--against">
-        <p class="layer-kicker">Dedicated appliance</p>
-        <p class="layer-title">The traditional path</p>
-        <ul>
-          <li>A commercial imaging workstation or hardware write-blocker, often priced out of reach for a student or a small shop</li>
-          <li>Fixed-function hardware you can't extend, field-repair, or repurpose</li>
-          <li>License renewals and vendor lock-in for a workflow that's fundamentally: image it, hash it, write a report</li>
-        </ul>
-      </div>
-      <div class="layer layer--for">
-        <p class="layer-kicker">Pi Forensics Suite</p>
-        <p class="layer-title">An ARM board and this software</p>
-        <ul>
-          <li>A Raspberry Pi or comparable ARM SBC, storage, and a USB write-blocker adapter &mdash; commodity hardware</li>
-          <li>The same acquisition engines examiners already trust (dc3dd, ewfacquire, ddrescue, PhotoRec, The Sleuth Kit, ExifTool, MVT, Volatility3) wired together, not reimplemented</li>
-          <li>Self-hosted and MIT licensed &mdash; inspect it, extend it, run it entirely offline</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
-<div class="divider"></div>
-
 <section class="pad" id="features">
   <div class="wrap">
     <div class="section-head">
       <span class="kicker"><span class="dot"></span>WHAT'S ON THE STATION</span>
       <h2>One case, every tool.</h2>
-      <p>Create a case once; acquisition, recovery, mobile, and reporting all auto-fill against it. Every screen ships with inline help &mdash; nothing here requires memorizing dd flags.</p>
+      <p>Create a case once; acquisition, recovery, mobile, and reporting all file against it. Every screen has inline help.</p>
     </div>
     <div class="feature-rows">
       <div class="feature-row">
         <div>
           <span class="tag">ACQUISITION</span>
           <h3>Bit-for-bit imaging</h3>
-          <p>dc3dd, dcfldd, plain dd, E01, and AFF, plus ddrescue for failing drives with a Mapfile Inspector. BitLocker-, LUKS-, and VeraCrypt-encrypted sources unlock directly through one consolidated panel, a read-only Live Preview lets you look before you image, and raw&harr;E01 conversion runs after the fact. MD5/SHA-1/SHA-256 verification on every job, every USB device write-blocked by default.</p>
+          <p>dc3dd, dcfldd, dd, E01, AFF, and ddrescue for failing drives. Unlocks BitLocker, LUKS, and VeraCrypt sources, previews read-only before you image, and verifies MD5/SHA-1/SHA-256 on every job.</p>
         </div>
         <div class="shot-frame"><img src="images/PIF2.JPG" alt="Forensic Acquisition screen with encrypted-volume and format controls"></div>
       </div>
@@ -382,7 +322,7 @@
         <div>
           <span class="tag">RECOVERY</span>
           <h3>File recovery suite</h3>
-          <p>PhotoRec, extundelete, foremost, scalpel, and read-only TestDisk partition analysis in one tool selector &mdash; one source/destination/case layout, one terminal, instead of a screen per tool.</p>
+          <p>PhotoRec, extundelete, foremost, scalpel, and read-only TestDisk behind one tool selector and one source/destination layout.</p>
         </div>
         <div class="shot-frame"><img src="images/PIF4.JPG" alt="File Recovery screen with PhotoRec selected"></div>
       </div>
@@ -390,7 +330,7 @@
         <div>
           <span class="tag">LIVE COLLECTION</span>
           <h3>Volatile data from a running machine</h3>
-          <p>The station's one deliberate exception to write-blocking everything: build a USB with UAC (Linux/macOS/BSD triage collection) and a bundled PowerShell script (Windows), run it on a separate live machine to capture running processes, network connections, logged-on sessions, mapped drives, clipboard contents, and more &mdash; state that's gone the moment a disk is imaged &mdash; with an optional full memory (RAM) capture via AVML or WinPmem along the way. Bring the same drive back and import the results into a case: every file individually hashed with a manifest, process hashes automatically checked against every configured Hash Set, and the parsed results dropped straight into File Explorer's searchable index and the Evidence Timeline with an at-a-glance summary.</p>
+          <p>Build a USB with UAC (Linux/macOS/BSD) and a PowerShell collector (Windows) to capture processes, connections, sessions, and optional RAM. Import it back into the case: every file hashed, checked against your hash sets, and indexed into the timeline.</p>
         </div>
         <div class="shot-frame"><img src="images/PIF12.JPG" alt="Live Collection USB screen with Build and Import panels"></div>
       </div>
@@ -398,7 +338,7 @@
         <div>
           <span class="tag">MOBILE</span>
           <h3>iOS &amp; Android acquisition</h3>
-          <p>Full iOS backup via idevicebackup2 (with optional encrypted Keychain capture) and Android via adb pull/backup/bugreport. Reads real device detail &mdash; model, OS version, IMEI, MACs &mdash; before you start, and can trigger the iOS pairing handshake itself for a device that hasn't shown its trust prompt yet. Also pulls iOS crash-report logs non-destructively, and reads SIM/UICC cards via a connected PC/SC reader.</p>
+          <p>iOS backup via idevicebackup2 (optional Keychain) and Android adb pull/backup/bugreport. Shows model, OS, IMEI, and MACs before you start, and reads SIM cards over PC/SC.</p>
         </div>
         <div class="shot-frame"><img src="images/PIF3.JPG" alt="Mobile Forensics screen with device detail panel"></div>
       </div>
@@ -406,7 +346,7 @@
         <div>
           <span class="tag">FILE EXPLORER</span>
           <h3>Browse inside an image</h3>
-          <p>An in-process Sleuth Kit engine (pytsk3) walks a real folder tree down to individual files &mdash; recursive search, a MACB timeline, hex dumps, EXIF/GPS metadata, an inline KML map, and a read-only SQLite table browser, all with no mount step. Runs Volatility3 or mquire against a captured memory image, and browses a BitLocker/LUKS/VeraCrypt-decrypted volume the same way.</p>
+          <p>An in-process Sleuth Kit engine browses images with no mount step: search, MACB timeline, hex, EXIF/GPS, KML maps, and a read-only SQLite viewer. Runs Volatility3 or mquire on memory images.</p>
         </div>
         <div class="shot-frame"><img src="images/PIF5.JPG" alt="Forensic File Explorer browsing an acquired case folder with a grouped folder tree"></div>
       </div>
@@ -414,7 +354,7 @@
         <div>
           <span class="tag">ANALYSIS</span>
           <h3>Artifact parsing, one click</h3>
-          <p><b>Auto Analyze</b> detects what you've selected and runs a curated tool set automatically. Dedicated parsers recover Windows Registry hives, Event Logs, Prefetch, Recycle Bin, LNK/Jump List data, Thumbcache, Sticky Notes, SRUM (per-app network/execution history), and PowerShell/Firewall logs; Linux shell history (incl. zsh's timestamped history format), cron, and auth logs; macOS LaunchAgents/LaunchDaemons persistence items; cryptocurrency wallet files; and mobile chat/app data &mdash; plus your own saved YARA rules and known-good/known-bad hash and URL lists, with one-click MalwareBazaar/URLhaus imports. Mobile-app-specific tools round it out: recover deleted SQLite rows, static-analyze an Android APK or iOS IPA (permissions, components, signing certs, provisioning profile, optional Mach-O layer), decrypt a WhatsApp local backup against a pulled key file, and deep-parse an adb bugreport into structured sections. For a deeper pass on an already-pulled Android or iOS extraction, right-click it and run ALEAPP or iLEAPP &mdash; the same open-source parsers examiners already use, covering hundreds of app-specific artifacts, each in its own isolated environment so the two tools' conflicting dependencies never collide.</p>
+          <p><b>Auto Analyze</b> picks the right parsers for Windows (Registry, Event Logs, Prefetch, LNK/Jump Lists, SRUM), Linux, macOS, crypto wallets, and mobile apps, plus YARA rules and hash/URL lists. ALEAPP and iLEAPP run on Android and iOS extractions.</p>
         </div>
         <div class="shot-frame"><img src="images/PIF7.JPG" alt="File Explorer previewing a KML geolocation export next to the File Views analysis tree"></div>
       </div>
@@ -422,7 +362,7 @@
         <div>
           <span class="tag">REPORTING</span>
           <h3>DFIR-structured case files</h3>
-          <p>A case Overview dashboard, a timestamped Case Notes journal, a physical-evidence Custody Log, a Report Narrative, an Evidence Timeline merging filesystem and artifact data, a Pattern of Life view with an interactive contact relationship graph, per-job records, a station-wide audit trail, case-wide integrity re-verification, and a full-case export bundle &mdash; exported to PDF, HTML, JSON, or CSV as a Standard, DFIR, law-enforcement, or CASE/UCO report, or a template you build yourself.</p>
+          <p>Case overview, notes, custody log, narrative, evidence timeline, and pattern-of-life graph, with case-wide integrity re-verification. Exports PDF, HTML, JSON, CSV, or CASE/UCO.</p>
         </div>
         <div class="shot-frame"><img src="images/PIF6.JPG" alt="Reporting screen with the case-wide Overview dashboard open"></div>
       </div>
@@ -430,7 +370,7 @@
         <div>
           <span class="tag">STATION</span>
           <h3>Runs itself</h3>
-          <p>TLS certificate generation with correct SANs, one-click tool installs, SMB/NFS/SFTP mounting with encrypted auto-reconnect on reboot, and network IP configuration with an automatic revert if you lock yourself out.</p>
+          <p>TLS certificates, one-click tool installs, SMB/NFS/SFTP mounts that reconnect on reboot, and network changes that roll back if they lock you out.</p>
         </div>
         <div class="shot-frame"><img src="images/PIF10.JPG" alt="Settings Service Controls and Diagnostics panel"></div>
       </div>
@@ -474,29 +414,19 @@
       </div>
       <div class="terminal">
         <div class="bar"><i></i><i></i><i></i><span>sh &mdash; examiner@pi-forensics</span></div>
-        <pre><span class="cmt"># clone and install in one line</span>
-<span class="pmt">$</span> sudo git clone https://github.com/n0sfs/pi-forensics.git \
-    /opt/pi-forensics && cd /opt/pi-forensics \
-    && sudo python3 install.py
+        <pre><span class="cmt"># clone and install</span>
+<span class="pmt">$</span> sudo git clone \
+  https://github.com/n0sfs/pi-forensics.git \
+  /opt/pi-forensics
+<span class="pmt">$</span> cd /opt/pi-forensics
+<span class="pmt">$</span> sudo python3 install.py
 
 <span class="cmt"># reachable on the LAN once complete</span>
 <span class="pmt">$</span> open https://&lt;PI_IP_ADDRESS&gt;
 
-<span class="cmt"># or boots straight into kiosk mode on a touchscreen</span>
-<span class="cmt"># or any display attached directly to the Pi</span></pre>
+<span class="cmt"># or boot straight into kiosk mode</span>
+<span class="cmt"># on a display attached to the Pi</span></pre>
       </div>
-    </div>
-  </div>
-</section>
-
-<section class="cta-band">
-  <div class="wrap">
-    <span class="kicker" style="margin-bottom: 16px;"><span class="dot"></span>GET STARTED</span>
-    <h2>Read the source, run the installer, image a drive.</h2>
-    <p>MIT &middot; no telemetry &middot; no account required to use it.</p>
-    <div class="hero-cta">
-      <a class="btn btn-cyan" href="https://github.com/n0sfs/pi-forensics">View on GitHub &rarr;</a>
-      <a class="btn btn-outline" href="https://github.com/n0sfs/pi-forensics/blob/main/README.md">Read the README</a>
     </div>
   </div>
 </section>
@@ -514,10 +444,6 @@
           <a href="https://github.com/n0sfs/pi-forensics">Repository</a>
           <a href="https://github.com/n0sfs/pi-forensics/blob/main/README.md">Documentation</a>
           <a href="https://github.com/n0sfs/pi-forensics/issues">Issues</a>
-        </div>
-        <div class="foot-col">
-          <h4>Research</h4>
-          <a href="https://commons.erau.edu/jdfsl/vol11/iss1/3/">Original paper</a>
         </div>
         <div class="foot-col">
           <h4>License</h4>
