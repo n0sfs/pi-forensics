@@ -386,7 +386,7 @@
         }
         .help-kicker .dot { width: 6px; height: 6px; border-radius: 2px; background: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(var(--accent-cyan-rgb), 0.16); flex-shrink: 0; }
         .faq-group-kicker, .tool-ref-kicker {
-            font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase;
+            font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase;
             color: var(--accent-cyan) !important; font-weight: 700 !important;
             margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-color);
         }
@@ -729,13 +729,24 @@
             .settings-content, .help-content, .reports-content { padding: 10px; }
             .reports-content .card-body, .settings-content .card-body { padding: .65rem; }
         }
+
+        /* ---- 2026-11-24 polish round 2 ---- */
+        /* Pop-ups taller than the screen (Memory Forensics, Unlock Encrypted Volume on the
+           600px kiosk) scrolled the whole dialog, pushing Start/Cancel up to 341px below the
+           bottom edge. The body scrolls now; title and buttons always stay on screen. */
+        .modal-content { max-height: calc(100dvh - var(--bs-modal-margin) * 2); }
+        .modal-content > .modal-body { overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+        /* Smallest text was 9-10.5px (badges inside .small text, examiner chips, the
+           kiosk-mode badge, Help section kickers): nothing renders under ~12px now. */
+        .badge { font-size: max(.75em, 11.5px); }
+        .badge .small, .badge.small { font-size: inherit; }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-dark px-4 py-1">
         <span class="navbar-brand fw-bold text-info fs-6 d-flex align-items-center">
             <i class="bi bi-shield-check text-cyan me-2"></i>Pi Forensics Suite
-            <span class="text-subtle fw-normal ms-2" style="font-size: 0.7rem;" title="Installed application version - see Settings for update controls">v{{ app_version }}</span>
+            <span class="text-subtle fw-normal ms-2" style="font-size: 0.75rem;" title="Installed application version - see Settings for update controls">v{{ app_version }}</span>
         </span>
 
         <!-- Hidden below md (767.98px): pure system-health telemetry, not an

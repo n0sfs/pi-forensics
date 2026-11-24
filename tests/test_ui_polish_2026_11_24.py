@@ -71,3 +71,30 @@ def test_export_preview_empty_state_is_dark():
 def test_reporting_header_controls_are_named():
     assert re.search(r'<select id="editCaseStatus"[^>]*aria-label="Case status"', REPORTING)
     assert "addInput.setAttribute('aria-label', 'Add an examiner name')" in MAIN_JS
+
+
+# ---- round 2 ----
+
+def test_tall_popups_scroll_their_body_so_buttons_stay_on_screen():
+    assert re.search(r"\.modal-content \{ max-height: calc\(100dvh - var\(--bs-modal-margin\) \* 2\); \}", INDEX)
+    assert re.search(r"\.modal-content > \.modal-body \{ overflow-y: auto; min-height: 0;", INDEX)
+
+
+def test_no_text_below_about_12px_in_badges_and_kickers():
+    assert ".badge { font-size: max(.75em, 11.5px); }" in INDEX
+    m = re.search(r"\.faq-group-kicker, \.tool-ref-kicker \{\s*font-size: ([\d.]+)rem", INDEX)
+    assert m and float(m.group(1)) >= 0.75
+
+
+def test_tag_popup_close_button_stays_right_aligned():
+    html = _read("templates", "tabs", "file_explorer.html")
+    footer = html[html.index('id="tagModalAttachBtn"'):]
+    footer = footer[:footer.index("</div>")]
+    assert 'class="btn btn-sm btn-secondary ms-auto" data-bs-dismiss="modal">Close' in footer
+
+
+def test_help_tab_strip_breaks_into_two_balanced_rows():
+    html = _read("templates", "tabs", "help.html")
+    tools = html.index('id="helpNavTools"')
+    fields = html.index('id="helpNavReportFields"')
+    assert '<span class="reports-nav-break" aria-hidden="true"></span>' in html[tools:fields]
