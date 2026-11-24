@@ -1537,6 +1537,8 @@ function buildExplorerListingTable() {
         selectAllCb.setAttribute('aria-label', 'Select all files in this folder');
         selectAllCb.onclick = () => toggleSelectAllExplorerFiles(selectAllCb.checked);
         selTh.appendChild(selectAllCb);
+        selTh.classList.add('hit-cell');
+        selTh.onclick = (ev) => { if (ev.target === selTh) selectAllCb.click(); };
         headRow.appendChild(selTh);
     }
     [['name', 'Name'], ['size', 'Size'], ['modified', 'Modified'], ['accessed', 'Accessed'], ['changed', 'Changed'], ['created', 'Created']].forEach(([field, label]) => {
@@ -1644,6 +1646,9 @@ function buildFileTableRow(tbody, item) {
             updateExplorerBatchToolbar();
         };
         selTd.appendChild(cb);
+        // The whole 44px cell toggles the box, not just the small checkbox itself.
+        selTd.classList.add('hit-cell');
+        selTd.onclick = (ev) => { if (ev.target === selTd) { ev.stopPropagation(); cb.click(); } };
     }
     tr.appendChild(selTd);
 
@@ -5351,10 +5356,11 @@ function renderExplorerPathBreadcrumb(path) {
             seg.className = 'text-info fw-bold';
         } else {
             seg.className = 'text-info';
-            seg.style.cursor = 'pointer';
-            seg.style.textDecoration = 'underline';
+            seg.setAttribute('role', 'link');
+            seg.tabIndex = 0;
             seg.title = `Go to ${target}`;
             seg.onclick = () => loadExplorer(target);
+            seg.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); loadExplorer(target); } };
         }
         pathLabel.appendChild(seg);
         if (!isLast) {
@@ -5364,6 +5370,8 @@ function renderExplorerPathBreadcrumb(path) {
             pathLabel.appendChild(sep);
         }
     });
+    // Narrow screens: keep the current folder (the last crumb) in view.
+    pathLabel.scrollLeft = pathLabel.scrollWidth;
 }
 
 async function loadExplorer(path) {
@@ -15701,6 +15709,7 @@ function renderExaminersList() {
         addInput.className = 'form-control form-control-sm';
         addInput.style.maxWidth = '200px';
         addInput.placeholder = 'Add an examiner name...';
+        addInput.setAttribute('aria-label', 'Add an examiner name');
         addInput.title = "No user accounts are configured on this station, so examiner names can't be checked against a real account list yet.";
         const doAdd = () => {
             const val = addInput.value.trim();
@@ -20358,7 +20367,7 @@ function resetExportPreview() {
     const iframe = document.getElementById("exportPreviewFrame");
     const statusEl = document.getElementById("exportPreviewStatus");
     if (exportPreviewObjectUrl) { URL.revokeObjectURL(exportPreviewObjectUrl); exportPreviewObjectUrl = null; }
-    if (iframe) { iframe.removeAttribute('src'); iframe.srcdoc = ''; iframe.removeAttribute('sandbox'); }
+    if (iframe) { iframe.removeAttribute('src'); iframe.srcdoc = ''; iframe.removeAttribute('sandbox'); delete iframe.dataset.loaded; }
     if (statusEl) { statusEl.textContent = ''; statusEl.className = 'small text-subtle'; }
 }
 
@@ -20397,6 +20406,7 @@ async function refreshExportPreview() {
         }
 
         if (exportPreviewObjectUrl) { URL.revokeObjectURL(exportPreviewObjectUrl); exportPreviewObjectUrl = null; }
+        iframe.dataset.loaded = '1'; // drops the dark empty-state background (index.html)
 
         if (format === 'pdf') {
             // No sandbox at all for PDF - confirmed live that Chrome's native

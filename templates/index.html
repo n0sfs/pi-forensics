@@ -662,6 +662,73 @@
             .settings-content, .help-content, .reports-content { padding: 14px; }
             #forensicTabContent { padding-top: 12px; }
         }
+
+        /* ---- 2026-11-24 polish round 1 ---- */
+        /* Close (x) buttons were 32x32 in every pop-up and 13x13 on the examiner chips: a
+           finger-sized hit area via an invisible overlay, so headers and chips keep their size. */
+        @media (pointer: coarse) {
+            .btn-close { position: relative; }
+            .btn-close::after { content: ''; position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; transform: translate(-50%, -50%); }
+            /* Checkbox/radio rows were 22-26px tall (hash algorithms, export sections, timeline
+               filters, plugin lists): the whole row is the target, 44px tall. */
+            .form-check { min-height: 44px; display: flex; align-items: center; margin-bottom: 0; }
+            .form-check-inline { display: inline-flex; }
+            .form-check .form-check-input { margin-top: 0; flex-shrink: 0; }
+            .form-check .form-check-label { padding-left: .4rem; }
+            /* Expand/collapse rows ("Previous exports", "Customize contents", prerequisites)
+               were 21px tall; group toggles in Files & Artifacts were 33px. */
+            details > summary { padding-top: 11px; padding-bottom: 11px; }
+            .report-file-group-toggle { min-height: 44px; }
+            /* Help (i) icons: the old -0.7rem margin made their hit area overlap the control
+               beside them (Case Status, Save Report Changes, Timeline month), so a tap on the
+               edge of those opened a tooltip instead. 44px wide, and only 8px taller than the
+               glyph so it never reaches into the row above or below. */
+            i.bi[data-bs-toggle="tooltip"] { padding: 8px 15px; margin: -8px 0; }
+            /* Bare <label><input> chips (Timeline source/category filters, Pattern of Life
+               toggles) are not .form-check rows - same 44px row height. */
+            label:has(> input.form-check-input) { min-height: 44px; display: inline-flex; align-items: center; }
+            /* The decorative search icon beside Quick search was a 32px sliver. */
+            .input-group > .input-group-text { min-width: 44px; justify-content: center; }
+            /* Linked-file pickers in Case Notes / Custody: with 44px rows a 100px box showed
+               barely two entries. */
+            #newCaseNoteLinkedFiles, #newCustodyLinkedFiles { max-height: 176px !important; }
+            /* File Explorer row checkboxes were 18px; the row itself is 44px tall. */
+            #explorerContainer .form-check-input { width: 24px; height: 24px; }
+            #explorerContainer .hit-cell { cursor: pointer; min-width: 44px; }
+            #explorerContainer thead th { height: 44px; }
+        }
+        /* Mouse: .btn-xs buttons (Refresh, Preview, Rebuild, Actions...) were 17-22px tall and
+           expand/collapse rows 21px, under the 24px WCAG 2.2 minimum target. */
+        @media (pointer: fine) {
+            .btn-xs { min-height: 26px; }
+            details > summary { padding-top: 2px; padding-bottom: 2px; }
+            .btn-close { position: relative; }
+            .btn-close::after { content: ''; position: absolute; left: 50%; top: 50%; width: 24px; height: 24px; transform: translate(-50%, -50%); }
+        }
+        /* Mouse/desktop: (i) icons were 12x18px, under the 24px WCAG 2.2 minimum target. */
+        @media (pointer: fine) {
+            i.bi[data-bs-toggle="tooltip"] { display: inline-block; min-width: 24px; min-height: 24px; line-height: 24px; text-align: center; }
+        }
+        /* Reporting header: when Save Report Changes wraps onto its own row it sat at the far
+           left under the status dropdown; keep it on the right edge like on desktop. */
+        #reportHeaderSaveControls { margin-left: auto; }
+        /* File Explorer breadcrumb: on a phone the current folder (the part that matters) was
+           cut off by the ellipsis. It now scrolls, and is scrolled to the end on every load. */
+        #explorerPath { overflow-x: auto; white-space: nowrap; text-overflow: clip; scrollbar-width: none; min-width: 0; }
+        #explorerPath::-webkit-scrollbar { display: none; }
+        #explorerPath [role="link"] { cursor: pointer; text-decoration: underline; }
+        /* Export / template previews: an empty preview was a glaring white slab in the dark UI
+           until the first Refresh. Dark until a document is loaded into it. */
+        #exportPreviewFrame:not([data-loaded]), #rtbPreviewFrame:not([data-loaded]) { background: var(--bg-dark) !important; }
+        /* Phone: three nested card paddings left Reporting content ~200px wide on a 390px
+           screen. Tighter gutters at every level below 576px. */
+        @media (max-width: 575.98px) {
+            .app-content-area > .container-fluid { padding-left: 8px !important; padding-right: 8px !important; }
+            .card-body { padding: .75rem; }
+            .card-header { padding-left: .75rem; padding-right: .75rem; }
+            .settings-content, .help-content, .reports-content { padding: 10px; }
+            .reports-content .card-body, .settings-content .card-body { padding: .65rem; }
+        }
     </style>
 </head>
 <body>
