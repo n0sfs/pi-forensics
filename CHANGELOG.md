@@ -88,6 +88,26 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
 
 ### Changed
 
+- **Interface pass across every screen (desktop, 1024x600 touchscreen, phone).** The header's system
+  readout fits on two rows on the touchscreen again (it used a third, ~40px of a 600px screen). The
+  sidebar's selected item no longer spills past its edge. Pages have even spacing below the case
+  bar. Info and warning boxes are dark-tinted instead of pale light-mode panels. Date fields, scroll
+  bars and dropdown lists draw in the dark theme. Case Number / Evidence ID / Examiner and the
+  acquisition Format / Compression / Split fields no longer cut off their text on the touchscreen.
+  The Overview chart's labels are readable on the touchscreen. On a phone, Settings, Reporting and
+  Help tabs are one swipeable row (they stacked into a tall list), File Explorer's view buttons and
+  the Diagnostics readout no longer run off the right edge, and the Reporting header's examiner box
+  is usable.
+- **Accessibility.** Every pop-up window and close button now has a name for screen readers,
+  form fields without a visible label are labelled, progress bars and scrolling logs are named and
+  reachable by keyboard, every control shows a visible focus ring, and small green, red and pink
+  text plus grey and red outline buttons meet WCAG AA contrast. An automated check of all 32 views
+  and 33 pop-ups at the three screen sizes went from 426 findings to 0.
+- **Quieter, lighter page load.** The background update check no longer logs a red 502/504 error in
+  the browser on a station without internet (that is the normal offline state). Identical requests
+  made at the same moment by different panels (case summary, file listing, report load, tags) now
+  share one round trip.
+
 - **Evidence Timeline is faster and easier to work through.** The table now draws 200 rows at a time
   and loads more as you scroll (or with Show More), so a full 6,000-event case opens about 6x faster
   and filter changes no longer redraw every row. New: a search box (all words must match; "quoted

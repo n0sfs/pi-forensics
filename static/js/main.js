@@ -30,6 +30,55 @@
     };
 })();
 
+// --- Concurrent identical reads share one request (2026-11-23 UI audit) ---
+// Selecting a case fired /api/case_index/summary 4x, files/browse 2x,
+// all_tagged_items 2x, report/load 2x, tags_for_paths 2x and cases/list 2x
+// within a few hundred ms - independent panels each asking for the same thing. A request to one of
+// these read endpoints with the exact same method, URL and body as one still
+// in flight now waits for that one and gets its own clone of the response.
+// Nothing is cached: once a request settles the next call goes to the server.
+// Any other non-GET request (a write) drops the in-flight table first, so a
+// read issued after a save never reuses a response that started before it.
+// Wraps the 401 wrapper above, so a shared response still goes through it once.
+(function () {
+    const COALESCE_PATHS = new Set([
+        '/api/case_index/summary', '/api/case_index/all_tagged_items',
+        '/api/case_index/tags_for_paths', '/api/report/load', '/api/cases/list',
+        '/api/files/browse',
+    ]);
+    const inflight = new Map();
+    const _innerFetch = window.fetch;
+    window.fetch = function (input, init) {
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+        const path = url.split('?')[0];
+        const body = init && init.body;
+        if (!COALESCE_PATHS.has(path) || (init && init.signal) || (body != null && typeof body !== 'string')) {
+            if (method !== 'GET') inflight.clear();
+            return _innerFetch(input, init);
+        }
+        const key = method + ' ' + url + ' ' + (body || '');
+        let shared = inflight.get(key);
+        if (!shared) {
+            shared = _innerFetch(input, init);
+            inflight.set(key, shared);
+            const forget = () => { if (inflight.get(key) === shared) inflight.delete(key); };
+            shared.then(forget, forget);
+        }
+        return shared.then(res => res.clone());
+    };
+})();
+
+// On a phone the Settings/Reporting/Help tab strips are one swipeable row
+// (2026-11-23 UI audit) - keep the active item in view when it changes,
+// including when another part of the app switches tabs programmatically.
+document.addEventListener('shown.bs.tab', (ev) => {
+    const t = ev.target;
+    if (t && t.closest && t.closest('.settings-nav, .reports-nav, .help-nav') && t.scrollIntoView) {
+        t.scrollIntoView({ block: 'nearest', inline: 'center' });
+    }
+});
+
 let isWriteBlockActive = null; // true / false / null = not known (no drive, drive gone, check failed)
 let throughputChart = null;
 const maxGraphPoints = 30;
@@ -1485,6 +1534,7 @@ function buildExplorerListingTable() {
         selectAllCb.type = 'checkbox';
         selectAllCb.className = 'form-check-input';
         selectAllCb.title = 'Select all files in this folder';
+        selectAllCb.setAttribute('aria-label', 'Select all files in this folder');
         selectAllCb.onclick = () => toggleSelectAllExplorerFiles(selectAllCb.checked);
         selTh.appendChild(selectAllCb);
         headRow.appendChild(selTh);
@@ -1586,6 +1636,7 @@ function buildFileTableRow(tbody, item) {
         cb.type = 'checkbox';
         cb.className = 'form-check-input';
         cb.checked = explorerSelectedFiles.has(item.path);
+        cb.setAttribute('aria-label', 'Select ' + (item.name || 'file'));
         cb.onclick = (ev) => {
             ev.stopPropagation(); // don't also trigger the row's own single-select/preview click handler below
             if (cb.checked) explorerSelectedFiles.set(item.path, item);

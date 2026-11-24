@@ -2837,9 +2837,14 @@ def check_for_update():
             ['git', 'fetch', 'origin', 'main', '--quiet'],
             cwd=INSTALL_DIR, capture_output=True, text=True, timeout=15,
         )
+        # An unreachable remote is this appliance's normal offline state, not
+        # a server fault: answered 200 with success False (2026-11-23 UI
+        # audit) so the page-load background poll stops logging a red 502/504
+        # in the console of every station without internet. A manual check
+        # still shows the error text as a toast.
         if fetch_res.returncode != 0:
             err = fetch_res.stderr.strip() or "git fetch failed."
-            return jsonify({"success": False, "error": err}), 502
+            return jsonify({"success": False, "offline": True, "error": err})
 
         count_res = subprocess.run(
             ['git', 'rev-list', '--count', 'HEAD..origin/main'],
@@ -2871,7 +2876,7 @@ def check_for_update():
             "commits_behind": commits_behind,
         })
     except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "Timed out reaching the git remote (no internet access?)."}), 504
+        return jsonify({"success": False, "offline": True, "error": "Timed out reaching the git remote (no internet access?)."})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

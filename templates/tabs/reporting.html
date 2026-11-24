@@ -202,7 +202,7 @@
                                                              on #caseCompositionCard below makes the chart itself absorb
                                                              the leftover height instead, so this column's bottom edge
                                                              actually lines up with the tile grid's. -->
-                                                        <div class="col-lg-3 col-md-4 d-flex flex-column">
+                                                        <div class="col-xl-3 col-lg-4 d-flex flex-column">
                                                             <div class="input-group input-group-sm mb-2">
                                                                 <span class="input-group-text bg-app-dark border-secondary text-info" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
                                                                       title="Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab."><i class="bi bi-search"></i></span>
@@ -247,7 +247,7 @@
                                                                 </div>
                                                             </div>
                                                         </div>
-                                                        <div class="col-lg-9 col-md-8">
+                                                        <div class="col-xl-9 col-lg-8">
                                                             <!-- Every tile below is clickable (2026-09-09) - jumps
                                                                  to whichever tab actually shows that number's own
                                                                  detail. Reuses jumpToReportingTab() (main.js), which
@@ -409,7 +409,7 @@
                                                          grows over the life of a case, not this form. -->
                                                     <div class="row g-2 mb-2">
                                                         <div class="col-md-4">
-                                                            <select id="newCaseNoteCategory" class="form-select form-select-sm">
+                                                            <select id="newCaseNoteCategory" class="form-select form-select-sm" aria-label="Note category">
                                                                 <option value="General">General</option>
                                                                 <option value="Objective">Objective</option>
                                                                 <option value="Acquisition">Acquisition</option>
@@ -418,7 +418,7 @@
                                                             </select>
                                                         </div>
                                                         <div class="col-md-8">
-                                                            <input type="file" id="newCaseNoteFiles" class="form-control form-control-sm" multiple>
+                                                            <input type="file" id="newCaseNoteFiles" class="form-control form-control-sm" multiple aria-label="Attach files to note">
                                                         </div>
                                                     </div>
                                                     <textarea id="newCaseNoteText" class="form-control form-control-sm mb-2" rows="3" placeholder="What did you do / observe just now?"></textarea>
@@ -460,7 +460,7 @@
                                                         <div class="row g-2 mb-2">
                                                             <div class="col-md-6"><input type="text" id="newCustodyReason" class="form-control form-control-sm" placeholder="Reason (e.g. transport to lab)"></div>
                                                             <div class="col-md-6">
-                                                                <select id="newCustodyMethod" class="form-select form-select-sm">
+                                                                <select id="newCustodyMethod" class="form-select form-select-sm" aria-label="Transfer method">
                                                                     <option value="In-Person">In-Person</option>
                                                                     <option value="Evidence Locker">Evidence Locker</option>
                                                                     <option value="Shipped">Shipped</option>
@@ -499,23 +499,23 @@
                                                             <div class="mt-1"><i class="bi bi-arrow-right-short"></i>Logging what you did/observed as you go instead? See <a href="#" onclick="new bootstrap.Tab(document.getElementById('repCaseNotesTab')).show(); return false;">Case Notes</a>.</div>
                                                         </div>
                                                         <div class="mb-2">
-                                                            <label class="telemetry-grid-label d-block mb-1">Executive Summary</label>
+                                                            <label for="editExecSummary" class="telemetry-grid-label d-block mb-1">Executive Summary</label>
                                                             <textarea id="editExecSummary" class="form-control form-control-sm" rows="3" placeholder="High-level summary of the case, scope, and outcome for a non-technical reader..."></textarea>
                                                         </div>
                                                         <div class="mb-2">
-                                                            <label class="telemetry-grid-label d-block mb-1">Objectives</label>
+                                                            <label for="editObjectives" class="telemetry-grid-label d-block mb-1">Objectives</label>
                                                             <textarea id="editObjectives" class="form-control form-control-sm" rows="2" placeholder="What was this examination asked to determine?"></textarea>
                                                         </div>
                                                         <div class="mb-2">
-                                                            <label class="telemetry-grid-label d-block mb-1">Relevant Findings</label>
+                                                            <label for="editFindingsSummary" class="telemetry-grid-label d-block mb-1">Relevant Findings</label>
                                                             <textarea id="editFindingsSummary" class="form-control form-control-sm" rows="3" placeholder="Findings most relevant to the objectives above..."></textarea>
                                                         </div>
                                                         <div class="mb-2">
-                                                            <label class="telemetry-grid-label d-block mb-1">Limitations &amp; Statement of Uncertainty</label>
+                                                            <label for="editLimitations" class="telemetry-grid-label d-block mb-1">Limitations &amp; Statement of Uncertainty</label>
                                                             <textarea id="editLimitations" class="form-control form-control-sm" rows="2" placeholder="Anything that limits confidence in these findings (partial acquisition, damaged media, tool limitations)..."></textarea>
                                                         </div>
                                                         <div class="mb-2">
-                                                            <label class="telemetry-grid-label d-block mb-1">Conclusion</label>
+                                                            <label for="editConclusion" class="telemetry-grid-label d-block mb-1">Conclusion</label>
                                                             <textarea id="editConclusion" class="form-control form-control-sm" rows="2" placeholder="Closing statement..."></textarea>
                                                         </div>
                                                         <div class="mb-2">
@@ -603,7 +603,7 @@
                                                                title="How often this device sent/received a text, call, or app message (WhatsApp, etc.). By Hour of Day/By Day of Week/Heatmap collapse the whole selected range into one typical recurring pattern (sleep/waking hours, a regular weekday routine, unusual late-night activity); Over Time instead plots the range chronologically, to show whether activity actually rose, fell, or spiked at a point in time. Optionally fold in web browsing and/or calendar activity via the checkboxes below - both are already parsed and on the Evidence Timeline, but excluded from this chart's default view since neither is a two-way communication. Times are shown in this browser's own local time zone, matching every other timestamp display in this app - the device's own configured time zone at the moment of each event isn't reliably knowable."></i>
                                                         </h6>
                                                         <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
-                                                            <div class="btn-group btn-group-sm" role="group">
+                                                            <div class="btn-group btn-group-sm btn-group-wrap" role="group" aria-label="Activity pattern view">
                                                                 <button type="button" class="btn btn-outline-info active" id="polGranHourBtn" onclick="setPatternOfLifeActivityGranularity('hour')">By Hour of Day</button>
                                                                 <button type="button" class="btn btn-outline-info" id="polGranDowBtn" onclick="setPatternOfLifeActivityGranularity('dow')">By Day of Week</button>
                                                                 <button type="button" class="btn btn-outline-info" id="polGranHeatmapBtn" onclick="setPatternOfLifeActivityGranularity('heatmap')" title="A 2D hour-of-day x day-of-week grid - reveals a pattern neither 1D view shows alone, e.g. 'active every Tuesday night' rather than just 'active at night' overall."><i class="bi bi-grid-3x3-gap-fill me-1"></i>Heatmap</button>
@@ -760,7 +760,7 @@
                                                     <hr class="border-secondary my-4">
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-clock-history me-1"></i>Case Activity Log</h6>
                                                     <div class="small text-subtle mb-2">Station-wide actions tagged to this case number (creation, selection, job starts/stops, settings changes) - a broad activity log, not a structured acquisition record like the Acquisition Jobs section above. See Settings &gt; Station Audit Log for the full, unfiltered station-wide log across all cases.</div>
-                                                    <div id="caseHistoryContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
+                                                    <div id="caseHistoryContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;" tabindex="0" role="region" aria-label="Case activity log">
                                                         <span class="text-subtle">Open this tab to see this case's history.</span>
                                                     </div>
                                                 </div>
@@ -854,7 +854,7 @@
                                                         <div class="col-md-8">
                                                             <div class="row g-2 mb-1">
                                                                 <div class="col-md-4">
-                                                                    <label class="telemetry-grid-label d-block mb-1">Export Format</label>
+                                                                    <label for="exportFormatSelect" class="telemetry-grid-label d-block mb-1">Export Format</label>
                                                                     <select id="exportFormatSelect" class="form-select form-select-sm" onchange="onExportFormatChange()">
                                                                         <option value="pdf">PDF Document (.pdf)</option>
                                                                         <option value="html">HTML Report (.html)</option>
@@ -863,7 +863,7 @@
                                                                     </select>
                                                                 </div>
                                                                 <div class="col-md-8" id="exportTemplateGroup">
-                                                                    <label class="telemetry-grid-label d-block mb-1">Report Template</label>
+                                                                    <label for="exportTemplateSelect" class="telemetry-grid-label d-block mb-1">Report Template</label>
                                                                     <select id="exportTemplateSelect" class="form-select form-select-sm mb-1" onchange="onExportTemplateChange()">
                                                                         <option value="standard">Standard - configurable sections</option>
                                                                         <option value="dfir">DFIR Report - fixed incident-response structure</option>
@@ -1061,7 +1061,7 @@
                                                     </div>
                                                     <div id="exportJsonPreviewGroup" class="mt-3" style="display:none;">
                                                         <div class="small text-subtle mb-2">Live raw JSON structure of the case report - auto-updates on load/save. Export downloads exactly this.</div>
-                                                        <pre id="jsonPreview" class="log-window mb-0" style="height: clamp(180px, 40vh, 420px);">[Select or create a case above to view raw structured JSON data]</pre>
+                                                        <pre id="jsonPreview" class="log-window mb-0" style="height: clamp(180px, 40vh, 420px);" tabindex="0" role="region" aria-label="Json preview output">[Select or create a case above to view raw structured JSON data]</pre>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1070,16 +1070,16 @@
                                 </div>
                             </div>
             </div>
-    <div class="modal fade" id="reportTemplateBuilderModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="reportTemplateBuilderModal" tabindex="-1" aria-hidden="true" aria-labelledby="reportTemplateBuilderModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-xl">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-sliders me-2"></i>Report Template Builder</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="reportTemplateBuilderModalLabel" class="modal-title text-info fs-6"><i class="bi bi-sliders me-2"></i>Report Template Builder</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="mb-3">
-                        <label class="telemetry-grid-label d-block mb-1">Template Name</label>
+                        <label for="rtbName" class="telemetry-grid-label d-block mb-1">Template Name</label>
                         <input type="text" id="rtbName" class="form-control form-control-sm" placeholder="e.g. SOC Brief" maxlength="80">
                     </div>
                     <div class="small text-subtle mb-2">
@@ -1113,12 +1113,12 @@
          .kml attachment/exhibit; File Explorer renders the same shared
          renderKmlViewer() inline in its own Preview pane instead of this
          modal, since it already has a dedicated details pane to use. -->
-    <div class="modal fade" id="kmlViewerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="kmlViewerModal" tabindex="-1" aria-hidden="true" aria-labelledby="kmlViewerModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-geo-alt me-2"></i><span id="kmlViewerTitle">Geolocation Map</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="kmlViewerModalLabel" class="modal-title text-info fs-6"><i class="bi bi-geo-alt me-2"></i><span id="kmlViewerTitle">Geolocation Map</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div id="kmlViewerContainer"><span class="text-subtle small">Loading...</span></div>
@@ -1134,12 +1134,12 @@
          always typed by hand (e.g. "Evidence Source" -> pick the actual
          drive image). Sets plain text into the field, same as typing -
          no schema change, just a convenience filler. -->
-    <div class="modal fade" id="customFieldItemPickerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="customFieldItemPickerModal" tabindex="-1" aria-hidden="true" aria-labelledby="customFieldItemPickerModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-link-45deg me-2"></i>Set "<span id="cfPickerFieldLabel"></span>" From a Case Item</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="customFieldItemPickerModalLabel" class="modal-title text-info fs-6"><i class="bi bi-link-45deg me-2"></i>Set "<span id="cfPickerFieldLabel"></span>" From a Case Item</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <input type="text" id="cfPickerSearch" class="form-control form-control-sm mb-2" placeholder="Filter..." oninput="renderCustomFieldItemPickerList()">
@@ -1152,12 +1152,12 @@
         </div>
     </div>
 
-    <div class="modal fade" id="contactMergeModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="contactMergeModal" tabindex="-1" aria-hidden="true" aria-labelledby="contactMergeModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-people me-2"></i>Manage Identity: <span id="contactMergeModalName"></span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="contactMergeModalLabel" class="modal-title text-info fs-6"><i class="bi bi-people me-2"></i>Manage Identity: <span id="contactMergeModalName"></span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <p class="small text-subtle mb-2">

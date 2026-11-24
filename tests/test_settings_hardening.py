@@ -320,3 +320,40 @@ def test_the_first_account_ends_the_shared_login(app):
     assert res.status_code == 200, res.get_json()
     saved = config.load_runtime_config()
     assert "pass" not in saved and "pass_hash" not in saved
+
+
+# --- update check on an offline station (2026-11-23 UI audit) -------------------------------
+
+def _git_fetch_result(monkeypatch, rc=0, stderr="", timeout=False):
+    import subprocess as real_subprocess
+
+    def fake_run(cmd, **kw):
+        if timeout:
+            raise real_subprocess.TimeoutExpired(cmd, 15)
+        if cmd[:2] == ["git", "fetch"]:
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr=stderr)
+        return types.SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+    monkeypatch.setattr(settings.subprocess, "run", fake_run)
+
+
+def test_update_check_with_no_remote_is_a_200_not_a_server_error(admin, monkeypatch):
+    # Offline is this appliance's normal state - the page-load poll must not log a 502.
+    _git_fetch_result(monkeypatch, rc=128, stderr="fatal: unable to access remote")
+    res = admin.get("/api/system/check_update")
+    body = res.get_json()
+    assert res.status_code == 200
+    assert body["success"] is False and body["offline"] is True
+    assert "unable to access" in body["error"]
+
+
+def test_update_check_timeout_is_a_200_not_a_gateway_timeout(admin, monkeypatch):
+    _git_fetch_result(monkeypatch, timeout=True)
+    res = admin.get("/api/system/check_update")
+    assert res.status_code == 200
+    assert res.get_json()["offline"] is True
+
+
+def test_update_check_still_reports_up_to_date(admin, monkeypatch):
+    _git_fetch_result(monkeypatch)
+    body = admin.get("/api/system/check_update").get_json()
+    assert body["success"] is True and body["update_available"] is False

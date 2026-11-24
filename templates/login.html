@@ -62,11 +62,11 @@
 
         <form id="loginForm" autocomplete="on">
             <div class="mb-3">
-                <label class="small text-subtle d-block mb-1">Username</label>
+                <label for="loginUsername" class="small text-subtle d-block mb-1">Username</label>
                 <input type="text" id="loginUsername" class="form-control" autocomplete="username" autofocus required>
             </div>
             <div class="mb-3">
-                <label class="small text-subtle d-block mb-1">Password</label>
+                <label for="loginPassword" class="small text-subtle d-block mb-1">Password</label>
                 <input type="password" id="loginPassword" class="form-control" autocomplete="current-password" required>
             </div>
             <div id="loginStatus" class="small mb-2{% if expired %} text-warning{% endif %}">{% if expired %}Your session expired due to inactivity. Please log in again.{% endif %}</div>

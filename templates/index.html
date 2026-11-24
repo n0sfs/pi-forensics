@@ -24,7 +24,7 @@
             --text-bright: #ffffff;
             --text-subtle: #cbd5e1;
             --hover-bg: #1e2638;
-            --active-bg: #0284c7;
+            --active-bg: #0369a1;
         }
 
         body {
@@ -63,7 +63,7 @@
         }
 
         .app-sidebar {
-            width: 190px;
+            width: 200px;
             flex-shrink: 0;
             background-color: #111522;
             border-right: 1px solid var(--border-color);
@@ -102,7 +102,7 @@
             border: none;
             border-left: 3px solid transparent;
             border-radius: 0;
-            padding: 12px 16px;
+            padding: 12px 10px 12px 14px;
             white-space: nowrap;
             overflow: hidden;
             transition: color 0.15s ease;
@@ -580,6 +580,88 @@
         .accordion-button:not(.collapsed) { background-color: var(--card-bg); color: var(--accent-cyan); box-shadow: none; }
         .accordion-button::after { filter: invert(1) grayscale(1) brightness(1.5); }
         .accordion-item { background-color: transparent; }
+
+        /* ---- 2026-11-23 whole-app UI audit (desktop 1440 / kiosk 1024x600 / phone 390) ---- */
+        /* Native controls (date pickers, scrollbars, select popups) render dark to match the
+           theme - the date inputs' calendar icon was black-on-black. */
+        :root { color-scheme: dark; }
+        * { scrollbar-color: #3d4766 transparent; }
+        /* Sidebar: "Forensic Acquisition" (nowrap) is wider than 190px, so its <li> grew past
+           the sidebar and the active row's highlight spilled 12px into the content area. */
+        .app-sidebar .nav-item { min-width: 0; }
+        /* Same top/bottom breathing room every pane already had left/right - panes sat flush
+           against the case bar. */
+        #forensicTabContent { padding-top: 16px; padding-bottom: 24px; }
+        /* Bootstrap's light alerts (pale cyan/yellow boxes) were the only light-mode surfaces
+           in a dark UI, and a cyan button on the pale cyan box measured 1.67:1 contrast. */
+        .alert { border-radius: 8px; }
+        .alert-info { --bs-alert-color: #a5ecfa; --bs-alert-bg: rgba(13,202,240,.09); --bs-alert-border-color: rgba(13,202,240,.35); --bs-alert-link-color: #cff6fd; }
+        .alert-warning { --bs-alert-color: #ffdd7a; --bs-alert-bg: rgba(255,193,7,.09); --bs-alert-border-color: rgba(255,193,7,.38); --bs-alert-link-color: #ffe9a8; }
+        .alert-success { --bs-alert-color: #86efac; --bs-alert-bg: rgba(34,197,94,.09); --bs-alert-border-color: rgba(34,197,94,.38); --bs-alert-link-color: #bbf7d0; }
+        .alert-danger { --bs-alert-color: #fca5a5; --bs-alert-bg: rgba(239,68,68,.1); --bs-alert-border-color: rgba(239,68,68,.4); --bs-alert-link-color: #fecaca; }
+        .alert-primary { --bs-alert-color: #9ec5fe; --bs-alert-bg: rgba(13,110,253,.1); --bs-alert-border-color: rgba(13,110,253,.4); --bs-alert-link-color: #cfe2ff; }
+        .alert a:not(.btn) { color: var(--bs-alert-link-color); }
+        .alert-secondary { --bs-alert-color: var(--text-subtle); --bs-alert-bg: rgba(255,255,255,.04); --bs-alert-border-color: var(--border-color); --bs-alert-link-color: #fff; }
+        /* WCAG AA text contrast on the near-black panels (Bootstrap's defaults measured
+           3.3-4.4:1 there). */
+        .text-success { color: #4ade80 !important; }
+        .text-danger { color: #f87171 !important; }
+        code { color: #f9a8d4; }
+        .btn-outline-secondary { --bs-btn-color: #b6bec8; --bs-btn-border-color: #5c6675; --bs-btn-hover-color: #fff; --bs-btn-hover-bg: #4b5563; --bs-btn-hover-border-color: #6b7280; }
+        .btn-outline-danger { --bs-btn-color: #f87171; }
+        /* An unchecked switch was a black pill on a black panel - give the track an edge and
+           a visible knob. */
+        .form-switch .form-check-input:not(:checked) { border-color: #64748b; background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%2394a3b8'/%3e%3c/svg%3e"); }
+        /* Visible keyboard focus everywhere (several custom buttons/tiles removed the outline). */
+        .btn:focus-visible, .list-group-item:focus-visible, .nav-link:focus-visible, .form-check-input:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+            outline: 2px solid var(--accent-cyan); outline-offset: 2px; box-shadow: none;
+        }
+        /* Settings > Diagnostics' phone-only telemetry mirror: RAM and Network ran past the
+           box's right edge at 390px. One metric per row, bars take what's left. */
+        .diag-mobile-telemetry > div { display: grid !important; grid-template-columns: 5.8rem minmax(0, 1fr); column-gap: .5rem; row-gap: 4px; align-items: center; }
+        .diag-mobile-telemetry .progress { grid-column: 2; width: 100% !important; }
+        .diag-mobile-telemetry .telemetry-val { font-size: .85rem; }
+        .diag-mobile-telemetry #settingsInterfacesContainer { flex-wrap: wrap; }
+        /* A button group whose labels must not break mid-word on a narrow screen
+           (Pattern of Life granularity). */
+        .btn-group-wrap { flex-wrap: wrap; row-gap: 4px; }
+        .btn-group-wrap > .btn { white-space: nowrap; flex: 0 0 auto; }
+        /* Header telemetry: at 1024-1279px Network was pushed onto a third header row, costing
+           ~38px of the kiosk's 600px height. Tighter spacing keeps it to two rows. */
+        @media (max-width: 1279.98px) {
+            .navbar .telemetry-row { gap: .6rem !important; }
+            .navbar .telemetry-row .progress { width: 40px !important; }
+            .navbar .telemetry-row .telemetry-label { font-size: .74rem; }
+            .navbar .telemetry-row .telemetry-val { font-size: .84rem; }
+            .navbar .telemetry-row .telemetry-label .bi { display: none; }
+        }
+        /* Settings / Reporting / Help tab strips: on the kiosk the last item wrapped onto a
+           second row on its own; on a phone every item stacked into a ~260-470px tall list
+           above the content. Tighter on tablet width, one swipeable row on a phone. */
+        @media (max-width: 1199.98px) {
+            .settings-nav, .help-nav, .reports-nav { padding: 0 4px; }
+            .settings-nav .list-group-item, .help-nav .list-group-item, .reports-nav .list-group-item { padding: 11px 9px; font-size: .85rem; gap: 6px; }
+        }
+        @media (max-width: 767.98px) {
+            .settings-nav, .help-nav, .reports-nav {
+                flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity;
+                scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent);
+                mask-image: linear-gradient(90deg, #000 88%, transparent);
+            }
+            .settings-nav::-webkit-scrollbar, .help-nav::-webkit-scrollbar, .reports-nav::-webkit-scrollbar { display: none; }
+            .settings-nav .list-group-item, .help-nav .list-group-item, .reports-nav .list-group-item { scroll-snap-align: start; }
+            .reports-nav-break { display: none; }
+            /* Reporting header: the examiner box, its + button and the chips each landed on
+               their own row with the help icon floating. Input and + share one row now. */
+            #reportHeaderCaseMeta { width: 100%; row-gap: .5rem !important; }
+            #reportHeaderCaseMeta > div:nth-child(2) { flex: 1 1 100%; min-width: 0; align-items: flex-start !important; }
+            #reportHeaderCaseMeta > div:nth-child(2) > .bi { margin-top: .6rem; }
+            #examinersContainer { flex: 1 1 auto; min-width: 0; }
+            #examinersContainer > input { flex: 1 1 140px; min-width: 0; max-width: none !important; }
+            .reports-nav #repExportTab { margin-left: 0; }
+            .settings-content, .help-content, .reports-content { padding: 14px; }
+            #forensicTabContent { padding-top: 12px; }
+        }
     </style>
 </head>
 <body>
@@ -606,7 +688,7 @@
              with the Keyboard button and account menu. Forcing this row
              to always be its own line makes the header exactly two rows
              at every width ≥768px, not width-dependent chaos. -->
-        <div class="d-none d-md-flex flex-wrap align-items-center gap-3 text-nowrap" style="order: 2; flex-basis: 100%;">
+        <div class="telemetry-row d-none d-md-flex flex-wrap align-items-center gap-3 text-nowrap" style="order: 2; flex-basis: 100%;">
             <div class="d-flex align-items-center gap-2">
                 <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
                 <span id="cpuVal" class="telemetry-val">0%</span>
@@ -765,7 +847,7 @@
                 <div id="reportingStatsRow" class="d-flex flex-wrap align-items-center gap-3 text-nowrap ms-auto" style="display:none !important;"></div>
             </div>
 
-            <div class="container-fluid px-4">
+            <div class="container-fluid px-3 px-md-4">
                 <div class="tab-content" id="forensicTabContent">
 {% include 'tabs/home.html' %}
 {% include 'tabs/acquisition.html' %}

@@ -5,7 +5,7 @@
                                 <div class="card-body py-2">
                                     <div class="row g-3">
                                         <div class="col-md-5">
-                                            <label class="telemetry-grid-label d-block mb-1">Tool</label>
+                                            <label for="recoveryToolSelect" class="telemetry-grid-label d-block mb-1">Tool</label>
                                             <select id="recoveryToolSelect" class="form-select form-select-sm mb-1" onchange="updateRecoveryToolControls()">
                                                 <option value="photorec" selected>PhotoRec - File Carving</option>
                                                 <option value="extundelete">extundelete - ext2/3/4 Deleted File Recovery</option>
@@ -28,7 +28,7 @@
                                                      until one of those two workarounds - calls the same shared
                                                      refreshDrives() every other drive-select already uses. -->
                                                 <div class="input-group input-group-sm mb-1">
-                                                    <select id="recoverySourceDrive" class="form-select form-select-sm drive-select" data-placeholder="-- Choose Source Drive --" onchange="onRecoverySourceDriveChange()"></select>
+                                                    <select id="recoverySourceDrive" class="form-select form-select-sm drive-select" data-placeholder="-- Choose Source Drive --" onchange="onRecoverySourceDriveChange()" aria-label="Source drive"></select>
                                                     <button class="btn btn-outline-info fw-bold" type="button" onclick="refreshDrives()" title="Re-scan for connected drives"><i class="bi bi-arrow-clockwise"></i></button>
                                                 </div>
                                                 <div class="input-group input-group-sm mt-1">
@@ -39,7 +39,7 @@
                                             <div id="recoveryDestCol" class="mb-2">
                                                 <label class="telemetry-grid-label d-block mb-1">Destination</label>
                                                 <div class="input-group input-group-sm">
-                                                    <input type="text" id="recoveryDest" class="form-control" value="/mnt">
+                                                    <input type="text" id="recoveryDest" class="form-control" value="/mnt" aria-label="Destination directory">
                                                     <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'recoveryDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                                 </div>
                                                 <div class="small text-warning mt-1"><i class="bi bi-exclamation-triangle me-1"></i>Don't recover straight into <code>/mnt</code> - Browse to a case folder (or another drive), so the recovered files land in their own folder and never on the station's own SD card or the drive being recovered from.</div>
@@ -63,9 +63,9 @@
 
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder-symlink me-1"></i>Case &amp; Evidence Metadata</div>
                                             <div id="recoveryMetadataRow" class="row g-2 mb-3">
-                                                <div class="col-6 col-md-4"><label class="visually-hidden" for="recoveryCaseNum">Case Number</label><input type="text" id="recoveryCaseNum" class="form-control form-control-sm" placeholder="Case # (blank = &quot;UNASSIGNED&quot;)"></div>
-                                                <div class="col-6 col-md-4"><label class="visually-hidden" for="recoveryEvidenceId">Evidence ID</label><input type="text" id="recoveryEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (blank = &quot;ITEM-01&quot;)"></div>
-                                                <div class="col-6 col-md-4"><label class="visually-hidden" for="recoveryExaminer">Examiner Name</label><input type="text" id="recoveryExaminer" class="form-control form-control-sm" placeholder="Examiner Name (optional)"></div>
+                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="recoveryCaseNum">Case Number</label><input type="text" id="recoveryCaseNum" class="form-control form-control-sm" placeholder="Case # (blank = &quot;UNASSIGNED&quot;)"></div>
+                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="recoveryEvidenceId">Evidence ID</label><input type="text" id="recoveryEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (blank = &quot;ITEM-01&quot;)"></div>
+                                                <div class="col-12 col-xl-4"><label class="visually-hidden" for="recoveryExaminer">Examiner Name</label><input type="text" id="recoveryExaminer" class="form-control form-control-sm" placeholder="Examiner Name (optional)"></div>
                                             </div>
 
                                             <div class="d-flex gap-2">
@@ -80,11 +80,11 @@
                                                 <span id="recoveryProgressPct" class="fw-bold fs-5 text-light">0.0%</span>
                                             </div>
                                             <div class="progress bg-secondary mb-2" style="height: 10px;">
-                                                <div id="recoveryProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
+                                                <div id="recoveryProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%" aria-label="Recovery progress"></div>
                                             </div>
                                             <div id="recoveryBytesVal" class="small text-subtle mb-2"></div>
                                             <label class="form-label fw-bold text-light small mb-1">Terminal / Output:</label>
-                                            <pre id="recoveryLogOutput" class="log-window" style="height: clamp(180px, 45vh, 420px);">[Recovery tools idle. Select a tool and source above, then Start.]</pre>
+                                            <pre id="recoveryLogOutput" class="log-window" style="height: clamp(180px, 45vh, 420px);" tabindex="0" role="region" aria-label="Recovery log">[Recovery tools idle. Select a tool and source above, then Start.]</pre>
                                             <div id="recoveryStructuredOutput" class="font-monospace small border border-secondary rounded-2 p-2" style="display:none; height: clamp(180px, 45vh, 420px); overflow-y: auto; background-color: #090b10;"></div>
                                         </div>
                                     </div>

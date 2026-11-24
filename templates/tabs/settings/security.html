@@ -158,7 +158,7 @@
                                                     <div id="tlsTrustLinux" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
                                                         <div class="accordion-body small text-subtle">
                                                             <div class="mb-2">System-wide trust (Debian/Ubuntu-based, affects Chrome/Chromium/Edge and most other apps):</div>
-                                                            <pre class="log-window mb-0" style="height:auto;">sudo cp pi-forensics.crt /usr/local/share/ca-certificates/pi-forensics.crt
+                                                            <pre class="log-window mb-0" style="height:auto;" tabindex="0" role="region" aria-label="Command output">sudo cp pi-forensics.crt /usr/local/share/ca-certificates/pi-forensics.crt
 sudo update-ca-certificates</pre>
                                                             <div class="mt-2">Firefox keeps its own certificate store regardless of distro - see the Firefox note below.</div>
                                                         </div>
@@ -199,7 +199,7 @@ sudo update-ca-certificates</pre>
                                             <div class="small text-subtle mb-2">Generate a fresh self-signed certificate + private key (.pem/.key) directly on this station - no terminal needed. Automatically includes every network IP this Pi currently has (so browsers stop reporting a hostname mismatch), still shows a self-signed warning on first visit since nothing signed it.</div>
                                             <div class="row g-2 mb-2">
                                                 <div class="col-md-8">
-                                                    <label class="telemetry-grid-label d-block mb-1">Additional Hostname (optional)</label>
+                                                    <label for="tlsGenExtraHostname" class="telemetry-grid-label d-block mb-1">Additional Hostname (optional)</label>
                                                     <input type="text" id="tlsGenExtraHostname" class="form-control form-control-sm" placeholder="e.g. a custom DNS name pointing at this Pi">
                                                 </div>
                                                 <div class="col-md-4 d-flex align-items-end">
@@ -214,11 +214,11 @@ sudo update-ca-certificates</pre>
                                             <div class="small text-subtle mb-2">Replace with a certificate + private key of your own (RSA only, e.g. one signed by a real CA). Both files are validated as a matching pair before anything is installed.</div>
                                             <div class="row g-2 mb-2">
                                                 <div class="col-md-6">
-                                                    <label class="telemetry-grid-label d-block mb-1">Certificate File (.crt/.pem)</label>
+                                                    <label for="tlsCertFile" class="telemetry-grid-label d-block mb-1">Certificate File (.crt/.pem)</label>
                                                     <input type="file" id="tlsCertFile" class="form-control form-control-sm" accept=".crt,.pem,.cer">
                                                 </div>
                                                 <div class="col-md-6">
-                                                    <label class="telemetry-grid-label d-block mb-1">Private Key File (.key)</label>
+                                                    <label for="tlsKeyFile" class="telemetry-grid-label d-block mb-1">Private Key File (.key)</label>
                                                     <input type="file" id="tlsKeyFile" class="form-control form-control-sm" accept=".key,.pem">
                                                 </div>
                                             </div>

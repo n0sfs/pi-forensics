@@ -9,7 +9,7 @@
                                  fetchSystemInfo()/fetchNetworkInterfaces() populate both this and
                                  the navbar version from the exact same single poll, two views of one
                                  source of truth, not a second polling loop. -->
-                            <div class="d-flex d-md-none flex-wrap align-items-center gap-3 text-nowrap mb-3 p-2 bg-app-dark border border-secondary rounded-2">
+                            <div class="d-grid d-md-none gap-2 mb-3 p-2 bg-app-dark border border-secondary rounded-2 diag-mobile-telemetry">
                                 <div class="d-flex align-items-center gap-2">
                                     <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
                                     <span id="cpuValSettings" class="telemetry-val">0%</span>
@@ -108,7 +108,7 @@
                                             <button type="button" class="btn btn-xs btn-outline-info fw-bold py-0 px-2" onclick="loadToolVersions()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
                                         </div>
                                     </div>
-                                    <pre id="diagOutput" class="log-window mb-0" style="height: 420px;">[Run a command on the left to see its output here.]</pre>
+                                    <pre id="diagOutput" class="log-window mb-0" style="height: 420px;" tabindex="0" role="region" aria-label="Diagnostic output">[Run a command on the left to see its output here.]</pre>
                                     <div id="toolVersionsPanel" class="log-window mb-0 p-0" style="height: 420px; overflow-y: auto; display:none;">
                                         <table class="table table-sm table-dark table-striped mb-0 font-monospace small">
                                             <caption class="caption-top small text-subtle px-2 py-1">

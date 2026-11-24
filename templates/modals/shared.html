@@ -1,14 +1,14 @@
-    <div class="modal fade" id="folderBrowserModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="folderBrowserModal" tabindex="-1" aria-hidden="true" aria-labelledby="modalTitle">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
                     <h5 class="modal-title text-info fs-6" id="modalTitle"><i class="bi bi-folder2-open me-2"></i>Select Directory or File</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="d-flex align-items-center mb-3">
                         <span class="me-2 fw-bold text-muted small">Current Path:</span>
-                        <input type="text" id="modalCurrentPath" class="form-control form-control-sm font-monospace" value="/mnt" readonly>
+                        <input type="text" id="modalCurrentPath" class="form-control form-control-sm font-monospace" value="/mnt" readonly aria-label="Current folder">
                         <button class="btn btn-sm btn-outline-secondary ms-2 text-nowrap" onclick="navigateFolderUp()"><i class="bi bi-arrow-up me-1"></i>Up Level</button>
                     </div>
                     <div class="list-group list-group-flush border border-secondary rounded-2" id="folderList" style="max-height: 250px; overflow-y: auto; background-color: #090b10;"></div>
@@ -20,18 +20,18 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="caseManagerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="caseManagerModal" tabindex="-1" aria-hidden="true" aria-labelledby="caseManagerModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-folder-plus me-2"></i>Create or Select Case</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="caseManagerModalLabel" class="modal-title text-info fs-6"><i class="bi bi-folder-plus me-2"></i>Create or Select Case</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <h6 class="text-info fw-bold mb-2"><i class="bi bi-plus-circle me-2"></i>Create New Case</h6>
                     <div class="row g-2 mb-2">
                         <div class="col-md-6"><input type="text" id="newCaseNumber" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
-                        <div class="col-md-6"><input type="text" id="newCaseExaminer" class="form-control form-control-sm" readonly placeholder="Examiner (you)" title="Auto-filled from your logged-in account"></div>
+                        <div class="col-md-6"><input type="text" id="newCaseExaminer" class="form-control form-control-sm" readonly placeholder="Examiner (you)" title="Auto-filled from your logged-in account" aria-label="Examiner"></div>
                     </div>
                     <div class="input-group input-group-sm mb-2">
                         <input type="text" id="newCaseParentDir" class="form-control" value="/mnt" placeholder="Where to create the case folder">
@@ -52,7 +52,7 @@
                             <input type="text" id="caseSearchFilter" class="form-control form-control-sm" placeholder="Filter by case # or examiner..." oninput="renderCaseList()">
                         </div>
                         <div class="col-5">
-                            <select id="caseStatusFilter" class="form-select form-select-sm" onchange="renderCaseList()">
+                            <select id="caseStatusFilter" class="form-select form-select-sm" onchange="renderCaseList()" aria-label="Case status filter">
                                 <option value="__active__" selected>Active (hide Archived)</option>
                                 <option value="__all__">All statuses</option>
                                 <option value="Open">Open</option>
@@ -75,12 +75,12 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="hashListCheckModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="hashListCheckModal" tabindex="-1" aria-hidden="true" aria-labelledby="hashListCheckModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-list-check me-2"></i>Check Against Hash Sets: <span id="hashListCheckFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="hashListCheckModalLabel" class="modal-title text-info fs-6"><i class="bi bi-list-check me-2"></i>Check Against Hash Sets: <span id="hashListCheckFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="small text-subtle mb-2">Hashes this file with whichever algorithm(s) the checked sets below actually use, then checks for membership. Manage sets in Settings &gt; Case &amp; Reporting &gt; Hash Sets.</div>
@@ -96,12 +96,12 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="yaraScanModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="yaraScanModal" tabindex="-1" aria-hidden="true" aria-labelledby="yaraScanModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-bug me-2"></i>Scan with YARA Rules: <span id="yaraScanFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="yaraScanModalLabel" class="modal-title text-info fs-6"><i class="bi bi-bug me-2"></i>Scan with YARA Rules: <span id="yaraScanFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="small text-subtle mb-2">Runs this file against the checked ruleset(s) below. Manage rulesets in Settings &gt; Case &amp; Reporting &gt; YARA Rulesets.</div>
@@ -117,24 +117,24 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="changePasswordModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="changePasswordModal" tabindex="-1" aria-hidden="true" aria-labelledby="changePasswordModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-sm">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-key-fill me-2"></i>Change My Password</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="changePasswordModalLabel" class="modal-title text-info fs-6"><i class="bi bi-key-fill me-2"></i>Change My Password</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Current Password</label>
+                        <label for="cfgCurrentPass" class="telemetry-grid-label d-block mb-1">Current Password</label>
                         <input type="password" id="cfgCurrentPass" class="form-control form-control-sm" placeholder="Enter active password" autocomplete="current-password">
                     </div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">New Password</label>
+                        <label for="cfgNewPass" class="telemetry-grid-label d-block mb-1">New Password</label>
                         <input type="password" id="cfgNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)" autocomplete="new-password">
                     </div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Confirm New Password</label>
+                        <label for="cfgConfirmPass" class="telemetry-grid-label d-block mb-1">Confirm New Password</label>
                         <input type="password" id="cfgConfirmPass" class="form-control form-control-sm" placeholder="Confirm new password" autocomplete="new-password">
                     </div>
                     <div id="cfgPassStatus" class="small"></div>
@@ -146,23 +146,23 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="switchUserModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="switchUserModal" tabindex="-1" aria-hidden="true" aria-labelledby="switchUserModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-sm">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-person-fill-lock me-2"></i>Switch User</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="switchUserModalLabel" class="modal-title text-info fs-6"><i class="bi bi-person-fill-lock me-2"></i>Switch User</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="small text-subtle mb-2">
                         Signs this session in as a different station account, without leaving this page.
                     </div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Username</label>
+                        <label for="switchUserUsername" class="telemetry-grid-label d-block mb-1">Username</label>
                         <input type="text" id="switchUserUsername" class="form-control form-control-sm" autocomplete="username">
                     </div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Password</label>
+                        <label for="switchUserPassword" class="telemetry-grid-label d-block mb-1">Password</label>
                         <input type="password" id="switchUserPassword" class="form-control form-control-sm" autocomplete="current-password">
                     </div>
                     <div id="switchUserStatus" class="small"></div>

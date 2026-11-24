@@ -26,7 +26,7 @@
                                         <div class="col-md-6 d-flex flex-column">
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-usb-symbol me-1"></i>Build Live Collection USB</div>
                                             <div class="small text-subtle mb-2">This <strong>erases the selected drive entirely</strong> and formats it exFAT. Never point this at a drive that already holds evidence or data you need.</div>
-                                            <select id="liveCollectionBuildDriveSelect" class="form-select form-select-sm mb-2" onchange="onLiveCollectionBuildDriveSelect()">
+                                            <select id="liveCollectionBuildDriveSelect" class="form-select form-select-sm mb-2" onchange="onLiveCollectionBuildDriveSelect()" aria-label="USB drive to build">
                                                 <option value="">-- Select USB Drive --</option>
                                             </select>
                                             <div id="liveCollectionBuildDriveInfo" class="small text-warning mb-2"></div>
@@ -54,7 +54,7 @@
                                                  why. Also now shows Model/Serial/Size, matching Build's own
                                                  selection feedback - previously the only way to confirm the
                                                  right drive was selected was the raw /dev/sdX string. -->
-                                            <select id="liveCollectionImportDriveSelect" class="form-select form-select-sm mb-2" onchange="onLiveCollectionImportDriveSelect()">
+                                            <select id="liveCollectionImportDriveSelect" class="form-select form-select-sm mb-2" onchange="onLiveCollectionImportDriveSelect()" aria-label="USB drive to import from">
                                                 <option value="">-- Select USB Drive --</option>
                                             </select>
                                             <div id="liveCollectionImportDriveInfo" class="small text-warning mb-2"></div>
@@ -105,7 +105,7 @@
                                         <hr class="border-secondary my-2">
                                         <div id="liveCollectionStatus" class="fw-bold text-info small mb-1">Status: IDLE</div>
                                         <div class="progress bg-secondary" style="height: 8px;">
-                                            <div id="liveCollectionBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" role="progressbar" style="width: 0%"></div>
+                                            <div id="liveCollectionBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" role="progressbar" style="width: 0%" aria-label="Live collection progress"></div>
                                         </div>
                                     </div>
                                 </div>

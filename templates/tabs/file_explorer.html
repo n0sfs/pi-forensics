@@ -12,7 +12,7 @@
                                                 <span class="telemetry-grid-label">Folders &amp; Files</span>
                                                 <button type="button" id="explorerTreeToggleBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="toggleExplorerTreeCol()" title="Show/hide the folder tree" aria-label="Show/hide the folder tree"><i class="bi bi-diagram-3"></i></button>
                                             </div>
-                                            <div id="explorerTreeContainer" class="file-pane" style="height: clamp(320px, 74vh, 800px);"></div>
+                                            <div id="explorerTreeContainer" class="file-pane" style="height: clamp(320px, 74vh, 800px);" tabindex="0" role="region" aria-label="Folder tree"></div>
                                         </div>
                                         <div class="col-lg-9">
                                             <div class="mb-2">
@@ -86,15 +86,15 @@
                                                         <button type="button" class="btn btn-xs btn-outline-danger py-0 px-2" onclick="stopAcquisition()"><i class="bi bi-stop-fill me-1"></i>Stop</button>
                                                     </div>
                                                     <div class="progress" style="height: 6px;">
-                                                        <div id="explorerJobProgressBar" class="progress-bar bg-info" role="progressbar" style="width: 0%;"></div>
+                                                        <div id="explorerJobProgressBar" class="progress-bar bg-info" role="progressbar" style="width: 0%;" aria-label="Explorer job progress"></div>
                                                     </div>
                                                 </div>
                                                 <div id="explorerContainer" class="file-pane" style="height: clamp(140px, 26vh, 300px);"></div>
                                             </div>
                                             <div>
-                                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                                <div class="d-flex flex-wrap justify-content-between align-items-center gap-1 mb-1">
                                                     <span class="telemetry-grid-label">Details</span>
-                                                    <div class="d-flex gap-1">
+                                                    <div class="d-flex flex-wrap justify-content-end gap-1">
                                                         <button type="button" id="explorerRowActionsBtn" class="btn btn-xs btn-outline-warning py-0 px-2" onclick="openActionsForSelectedRow(event)" title="Actions for the item selected in the listing - the same menu as right-click or press-and-hold"><i class="bi bi-three-dots-vertical"></i>Actions</button>
                                                         <button type="button" id="explorerViewPreviewBtn" class="btn btn-xs btn-info py-0 px-2" onclick="switchExplorerRightView('preview')">Preview</button>
                                                         <button type="button" id="explorerViewHexBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('hex')" title="Raw byte view (offset / hex / ASCII) of the first part of the file">Hex</button>
@@ -282,16 +282,16 @@
                         </div>
                     </div>
             </div>
-    <div class="modal fade" id="verifyHashModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="verifyHashModal" tabindex="-1" aria-hidden="true" aria-labelledby="verifyHashModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-hash me-2"></i>Verify Image Hash: <span id="verifyHashFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="verifyHashModalLabel" class="modal-title text-info fs-6"><i class="bi bi-hash me-2"></i>Verify Image Hash: <span id="verifyHashFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="mb-3">
-                        <label class="telemetry-grid-label d-block mb-1">Hash Algorithm:</label>
+                        <label for="verifyAlgorithmSelect" class="telemetry-grid-label d-block mb-1">Hash Algorithm:</label>
                         <select id="verifyAlgorithmSelect" class="form-select form-select-sm">
                             <option value="sha256" selected>SHA-256</option>
                             <option value="sha1">SHA-1</option>
@@ -299,7 +299,7 @@
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label class="telemetry-grid-label d-block mb-1">Expected Reference Hash (Optional Comparison):</label>
+                        <label for="verifyExpectedHash" class="telemetry-grid-label d-block mb-1">Expected Reference Hash (Optional Comparison):</label>
                         <input type="text" id="verifyExpectedHash" class="form-control form-control-sm font-monospace" placeholder="Paste known acquisition hash here...">
                     </div>
                     <button class="btn btn-sm btn-info text-dark fw-bold w-100 mb-3" onclick="runStandaloneHashVerification()">
@@ -323,16 +323,16 @@
         </div>
     </div>
 
-    <div class="modal fade" id="androidBackupModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="androidBackupModal" tabindex="-1" aria-hidden="true" aria-labelledby="androidBackupModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-file-earmark-lock2 me-2"></i>Android Backup (.ab): <span id="androidBackupModalFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="androidBackupModalLabel" class="modal-title text-info fs-6"><i class="bi bi-file-earmark-lock2 me-2"></i>Android Backup (.ab): <span id="androidBackupModalFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="mb-3">
-                        <label class="telemetry-grid-label d-block mb-1">Action:</label>
+                        <label for="androidBackupModalMode" class="telemetry-grid-label d-block mb-1">Action:</label>
                         <select id="androidBackupModalMode" class="form-select form-select-sm">
                             <option value="parse">Parse (this app's own decoder - indexes SMS/MMS content into File Views/Reporting)</option>
                             <option value="extract">Extract All Files (unpacks the entire backup - APKs, shared storage, app data blobs - into a new folder for further analysis)</option>
@@ -340,7 +340,7 @@
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label class="telemetry-grid-label d-block mb-1">Backup Password (leave blank if not password-protected):</label>
+                        <label for="androidBackupModalPassword" class="telemetry-grid-label d-block mb-1">Backup Password (leave blank if not password-protected):</label>
                         <input type="password" id="androidBackupModalPassword" class="form-control form-control-sm" placeholder="Only needed if a password was set on-device at backup time">
                     </div>
                     <button class="btn btn-sm btn-info text-dark fw-bold w-100 mb-3" onclick="runAndroidBackupModalAction()">
@@ -351,7 +351,7 @@
                             <span class="telemetry-grid-label">Status:</span>
                             <span id="androidBackupModalBadge" class="badge bg-secondary">AWAITING INPUT</span>
                         </div>
-                        <pre id="androidBackupModalOutput" class="log-window mb-0" style="height: 160px;">Pick an action and click Run.</pre>
+                        <pre id="androidBackupModalOutput" class="log-window mb-0" style="height: 160px;" tabindex="0" role="region" aria-label="Android backup output">Pick an action and click Run.</pre>
                     </div>
                 </div>
                 <div class="modal-footer border-secondary py-2">
@@ -361,12 +361,12 @@
         </div>
     </div>
 
-    <div class="modal fade" id="whatsappDecryptModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="whatsappDecryptModal" tabindex="-1" aria-hidden="true" aria-labelledby="whatsappDecryptModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-key-fill me-2"></i>Decrypt WhatsApp Backup: <span id="whatsappDecryptFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="whatsappDecryptModalLabel" class="modal-title text-info fs-6"><i class="bi bi-key-fill me-2"></i>Decrypt WhatsApp Backup: <span id="whatsappDecryptFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="mb-3">
@@ -385,7 +385,7 @@
                             <span class="telemetry-grid-label">Status:</span>
                             <span id="whatsappDecryptBadge" class="badge bg-secondary">AWAITING INPUT</span>
                         </div>
-                        <pre id="whatsappDecryptOutput" class="log-window mb-0" style="height: 140px;">Select a key file and click Decrypt.</pre>
+                        <pre id="whatsappDecryptOutput" class="log-window mb-0" style="height: 140px;" tabindex="0" role="region" aria-label="WhatsApp decrypt output">Select a key file and click Decrypt.</pre>
                     </div>
                 </div>
                 <div class="modal-footer border-secondary py-2">
@@ -395,12 +395,12 @@
         </div>
     </div>
 
-    <div class="modal fade" id="ipaAnalyzeOptionsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="ipaAnalyzeOptionsModal" tabindex="-1" aria-hidden="true" aria-labelledby="ipaAnalyzeOptionsModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-apple me-2"></i>Analyze IPA: <span id="ipaAnalyzeFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="ipaAnalyzeOptionsModalLabel" class="modal-title text-info fs-6"><i class="bi bi-apple me-2"></i>Analyze IPA: <span id="ipaAnalyzeFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="small text-subtle mb-2">Reads Info.plist (bundle ID, version, permission usage descriptions) and the embedded mobile provisioning profile (team, entitlements, provisioned devices) - no signature verification is attempted.</div>
@@ -414,16 +414,16 @@
         </div>
     </div>
 
-    <div class="modal fade" id="imageConversionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="imageConversionModal" tabindex="-1" aria-hidden="true" aria-labelledby="imageConversionModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-arrow-repeat me-2"></i>Convert Image Format: <span id="convertImageFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="imageConversionModalLabel" class="modal-title text-info fs-6"><i class="bi bi-arrow-repeat me-2"></i>Convert Image Format: <span id="convertImageFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="mb-3">
-                        <label class="telemetry-grid-label d-block mb-1">Convert To:</label>
+                        <label for="convertImageTargetFormat" class="telemetry-grid-label d-block mb-1">Convert To:</label>
                         <select id="convertImageTargetFormat" class="form-select form-select-sm">
                             <option value="e01">EWF (.E01)</option>
                             <option value="raw">Raw (.dd)</option>
@@ -454,19 +454,19 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="autoAnalyzeModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="autoAnalyzeModal" tabindex="-1" aria-hidden="true" aria-labelledby="autoAnalyzeModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-lightning-fill me-2"></i>Auto Analyze: <span id="autoAnalyzeFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="autoAnalyzeModalLabel" class="modal-title text-info fs-6"><i class="bi bi-lightning-fill me-2"></i>Auto Analyze: <span id="autoAnalyzeFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div id="autoAnalyzeDetecting" class="small text-subtle mb-2"><i class="bi bi-hourglass-split me-1"></i>Detecting evidence type...</div>
                     <div id="autoAnalyzeDetectedInfo" class="small text-info mb-3" style="display:none;"></div>
 
                     <div class="mb-3">
-                        <label class="telemetry-grid-label d-block mb-1">Profile:</label>
+                        <label for="autoAnalyzeProfileSelect" class="telemetry-grid-label d-block mb-1">Profile:</label>
                         <select id="autoAnalyzeProfileSelect" class="form-select form-select-sm" onchange="onAutoAnalyzeProfileChange()">
                             <option value="">-- select a profile --</option>
                             <option value="windows">Windows Disk Image</option>
@@ -505,17 +505,17 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="encVolUnlockImageModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="encVolUnlockImageModal" tabindex="-1" aria-hidden="true" aria-labelledby="encVolUnlockImageModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-shield-lock me-2"></i>Unlock Encrypted Volume: <span id="encVolImageFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="encVolUnlockImageModalLabel" class="modal-title text-info fs-6"><i class="bi bi-shield-lock me-2"></i>Unlock Encrypted Volume: <span id="encVolImageFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="small text-subtle mb-3">Decrypts this image (or a specific encrypted partition within it), then browses the decrypted volume using the same Sleuth Kit tools (Search, Timeline, Metadata, Hex, etc.) as any other image. The unlocked volume stays available until you click Exit Image or Lock/Cleanup it.</div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Encryption Type:</label>
+                        <label for="encVolImageTypeSelect" class="telemetry-grid-label d-block mb-1">Encryption Type:</label>
                         <select id="encVolImageTypeSelect" class="form-select form-select-sm" onchange="onEncVolImageTypeChange()">
                             <option value="bitlocker">BitLocker (Windows)</option>
                             <option value="luks">LUKS (Linux)</option>
@@ -523,14 +523,14 @@
                         </select>
                     </div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Partition Byte Offset (0 for a single-filesystem image or a whole-device container):</label>
+                        <label for="encVolImageOffset" class="telemetry-grid-label d-block mb-1">Partition Byte Offset (0 for a single-filesystem image or a whole-device container):</label>
                         <input type="number" id="encVolImageOffset" class="form-control form-control-sm" value="0" min="0">
                     </div>
                     <div class="mb-2">
                         <button type="button" class="btn btn-sm btn-outline-info fw-bold w-100" onclick="detectEncVolImage()"><i class="bi bi-search me-1"></i>Detect Signature at This Offset</button>
                     </div>
                     <div class="mb-3">
-                        <label class="telemetry-grid-label d-block mb-1">Recovery Key / Passphrase / Password:</label>
+                        <label for="encVolImageKey" class="telemetry-grid-label d-block mb-1">Recovery Key / Passphrase / Password:</label>
                         <input type="password" id="encVolImageKey" class="form-control form-control-sm" placeholder="Recovery key, passphrase, or password">
                     </div>
                     <div id="encVolImageStatus" class="small text-subtle">Select the encryption type, enter the byte offset of the encrypted partition (0 if this image has no partition table) and the credential, then click Unlock & Browse.</div>
@@ -542,18 +542,18 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="f2fsMountModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="f2fsMountModal" tabindex="-1" aria-hidden="true" aria-labelledby="f2fsMountModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-folder-symlink me-2"></i>Mount F2FS Partition: <span id="f2fsImageFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="f2fsMountModalLabel" class="modal-title text-info fs-6"><i class="bi bi-folder-symlink me-2"></i>Mount F2FS Partition: <span id="f2fsImageFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="small text-subtle mb-3">F2FS (common on a rooted Android device's own data partition) has no Sleuth Kit driver, so this mounts it read-only through the station's own kernel filesystem support instead - the result appears as a normal, browsable folder in File Explorer. This is read-only browse/extract/hash only - deleted-file recovery isn't possible for F2FS this way (see the Tool Reference for why).</div>
                     <div id="f2fsActiveMountsContainer" class="mb-3"></div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Partition Byte Offset (0 for a whole-image F2FS filesystem):</label>
+                        <label for="f2fsImageOffset" class="telemetry-grid-label d-block mb-1">Partition Byte Offset (0 for a whole-image F2FS filesystem):</label>
                         <input type="number" id="f2fsImageOffset" class="form-control form-control-sm" value="0" min="0">
                     </div>
                     <div class="mb-2">
@@ -568,15 +568,15 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="memoryForensicsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="memoryForensicsModal" tabindex="-1" aria-hidden="true" aria-labelledby="memoryForensicsModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-memory me-2"></i>Memory Forensics: <span id="memForensicsFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="memoryForensicsModalLabel" class="modal-title text-info fs-6"><i class="bi bi-memory me-2"></i>Memory Forensics: <span id="memForensicsFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
-                    <label class="telemetry-grid-label d-block mb-1">Engine:</label>
+                    <label for="memForensicsEngine" class="telemetry-grid-label d-block mb-1">Engine:</label>
                     <select class="form-select form-select-sm bg-dark text-light border-secondary mb-2" id="memForensicsEngine" onchange="onMemForensicsEngineChange()">
                         <option value="vol3">Volatility3 (Windows)</option>
                         <option value="mquire">mquire (Linux, x86_64 only)</option>
@@ -624,15 +624,15 @@
         </div>
     </div>
 
-    <div class="modal fade" id="leappScanModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="leappScanModal" tabindex="-1" aria-hidden="true" aria-labelledby="leappScanModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-stack me-2"></i>ALEAPP/iLEAPP: <span id="leappFolderName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="leappScanModalLabel" class="modal-title text-info fs-6"><i class="bi bi-stack me-2"></i>ALEAPP/iLEAPP: <span id="leappFolderName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
-                    <label class="telemetry-grid-label d-block mb-1">Parser:</label>
+                    <label for="leappTool" class="telemetry-grid-label d-block mb-1">Parser:</label>
                     <select class="form-select form-select-sm bg-dark text-light border-secondary mb-2" id="leappTool">
                         <option value="aleapp">ALEAPP (Android - adb pull output)</option>
                         <option value="ileapp">iLEAPP (iOS - idevicebackup2 backup)</option>
@@ -647,12 +647,12 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="tagItemModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="tagItemModal" tabindex="-1" aria-hidden="true" aria-labelledby="tagItemModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-tag me-2"></i>Tag: <span id="tagItemFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="tagItemModalLabel" class="modal-title text-info fs-6"><i class="bi bi-tag me-2"></i>Tag: <span id="tagItemFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <!-- Exhibit Caption (2026-09-09) - folded in from Reporting's own
@@ -674,7 +674,7 @@
                         <div id="tagItemCaptionHint" class="text-subtle small mt-1"></div>
                     </div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Comment (optional, applied when you tag with a new tag below):</label>
+                        <label for="tagItemComment" class="telemetry-grid-label d-block mb-1">Comment (optional, applied when you tag with a new tag below):</label>
                         <textarea id="tagItemComment" class="form-control form-control-sm" rows="2" placeholder="e.g. why this file matters to the case..."></textarea>
                     </div>
                     <div id="tagItemExistingList" class="list-group list-group-flush mb-2" style="max-height: 220px; overflow-y: auto;">
@@ -687,11 +687,11 @@
                         <div class="collapse mt-2" id="tagItemNewTagForm">
                             <div class="row g-2 align-items-end">
                                 <div class="col-6">
-                                    <label class="telemetry-grid-label d-block mb-1">Tag Name:</label>
+                                    <label for="newTagName" class="telemetry-grid-label d-block mb-1">Tag Name:</label>
                                     <input type="text" id="newTagName" class="form-control form-control-sm" maxlength="60" placeholder="e.g. Contraband">
                                 </div>
                                 <div class="col-3">
-                                    <label class="telemetry-grid-label d-block mb-1">Color:</label>
+                                    <label for="newTagColor" class="telemetry-grid-label d-block mb-1">Color:</label>
                                     <select id="newTagColor" class="form-select form-select-sm">
                                         <option value="secondary" selected>Gray</option>
                                         <option value="info">Blue</option>
@@ -743,21 +743,21 @@
          generalize once N files can have genuinely divergent existing tag
          state - this one is deliberately simpler (pick or create one tag,
          apply it to every selected file, show a running/final status). -->
-    <div class="modal fade" id="batchTagModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="batchTagModal" tabindex="-1" aria-hidden="true" aria-labelledby="batchTagModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-tag me-2"></i>Tag <span id="batchTagFileCount">0</span> File(s)</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="batchTagModalLabel" class="modal-title text-info fs-6"><i class="bi bi-tag me-2"></i>Tag <span id="batchTagFileCount">0</span> File(s)</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="small text-subtle mb-2">Applies one tag (and an optional shared comment) to every selected file.</div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Comment (optional, shared across every selected file):</label>
+                        <label for="batchTagComment" class="telemetry-grid-label d-block mb-1">Comment (optional, shared across every selected file):</label>
                         <textarea id="batchTagComment" class="form-control form-control-sm" rows="2" placeholder="e.g. why these files matter to the case..."></textarea>
                     </div>
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">Existing Tag:</label>
+                        <label for="batchTagExistingSelect" class="telemetry-grid-label d-block mb-1">Existing Tag:</label>
                         <select id="batchTagExistingSelect" class="form-select form-select-sm">
                             <option value="">-- pick a tag --</option>
                         </select>
@@ -770,11 +770,11 @@
                         <div class="collapse mt-2" id="batchTagNewTagForm">
                             <div class="row g-2 align-items-end">
                                 <div class="col-6">
-                                    <label class="telemetry-grid-label d-block mb-1">Tag Name:</label>
+                                    <label for="batchNewTagName" class="telemetry-grid-label d-block mb-1">Tag Name:</label>
                                     <input type="text" id="batchNewTagName" class="form-control form-control-sm" maxlength="60" placeholder="e.g. Contraband">
                                 </div>
                                 <div class="col-3">
-                                    <label class="telemetry-grid-label d-block mb-1">Color:</label>
+                                    <label for="batchNewTagColor" class="telemetry-grid-label d-block mb-1">Color:</label>
                                     <select id="batchNewTagColor" class="form-select form-select-sm">
                                         <option value="secondary" selected>Gray</option>
                                         <option value="info">Blue</option>
@@ -823,12 +823,12 @@
          per-file results table (rather than the single-item modal's single
          result block) since the whole point of checking several files at
          once is seeing which ones match. -->
-    <div class="modal fade" id="batchHashCheckModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="batchHashCheckModal" tabindex="-1" aria-hidden="true" aria-labelledby="batchHashCheckModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-list-check me-2"></i>Check <span id="batchHashCheckFileCount">0</span> File(s) Against Hash Sets</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="batchHashCheckModalLabel" class="modal-title text-info fs-6"><i class="bi bi-list-check me-2"></i>Check <span id="batchHashCheckFileCount">0</span> File(s) Against Hash Sets</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="small text-subtle mb-2">Hashes every selected file with whichever algorithm(s) the checked sets below actually use, then checks for membership. Manage sets in Settings &gt; Case &amp; Reporting &gt; Hash Sets.</div>
@@ -844,18 +844,18 @@
             </div>
         </div>
     </div>
-    <div class="modal fade" id="toolOutputModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="toolOutputModal" tabindex="-1" aria-hidden="true" aria-labelledby="toolOutputModalLabel">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i id="toolOutputIcon" class="bi bi-terminal-fill me-2"></i><span id="toolOutputTitle">Tool Output</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 id="toolOutputModalLabel" class="modal-title text-info fs-6"><i id="toolOutputIcon" class="bi bi-terminal-fill me-2"></i><span id="toolOutputTitle">Tool Output</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div id="toolOutputBadgeRow" class="mb-2" style="display:none;">
                         <span id="toolOutputBadge" class="badge bg-secondary"></span>
                     </div>
-                    <pre id="toolOutputContainer" class="log-window mb-0" style="height: 350px;">Loading...</pre>
+                    <pre id="toolOutputContainer" class="log-window mb-0" style="height: 350px;" tabindex="0" role="region" aria-label="Tool output">Loading...</pre>
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>

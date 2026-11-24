@@ -17,7 +17,7 @@
                                             </details>
                                             <div class="row g-2 align-items-center mb-2">
                                                 <div class="col-md-8">
-                                                    <select id="mobileDeviceMode" class="form-select form-select-sm" onchange="updateMobileDeviceMode()">
+                                                    <select id="mobileDeviceMode" class="form-select form-select-sm" onchange="updateMobileDeviceMode()" aria-label="Device platform">
                                                         <option value="ios" selected>iOS Device</option>
                                                         <option value="android">Android Device</option>
                                                         <option value="sim">SIM/UICC Card</option>
@@ -29,7 +29,7 @@
                                             </div>
 
                                             <div id="mobileIosControls">
-                                                <select class="form-select form-select-sm mb-2" id="mobileIosSelect" onchange="onMobileIosSelect()">
+                                                <select class="form-select form-select-sm mb-2" id="mobileIosSelect" onchange="onMobileIosSelect()" aria-label="Connected device">
                                                     <option value="">No devices found - tap Refresh</option>
                                                 </select>
                                                 <div class="d-flex align-items-center gap-2 mb-2">
@@ -213,7 +213,7 @@
                                                 </div>
                                                 </div>
 
-                                                <label class="telemetry-grid-label d-block mb-1">Acquisition Mode</label>
+                                                <label for="mobileAndroidMode" class="telemetry-grid-label d-block mb-1">Acquisition Mode</label>
                                                 <select id="mobileAndroidMode" class="form-select form-select-sm mb-1" onchange="updateAndroidModeHelp()">
                                                     <option value="pull" selected>Pull Accessible Storage (adb pull)</option>
                                                     <option value="backup">Full Backup (adb backup)</option>
@@ -231,7 +231,7 @@
                                                 <div id="mobileAndroidPhysicalPanel" style="display:none;">
                                                     <div id="mobilePhysicalRootBanner" class="small p-2 mb-2 rounded-2 border"></div>
 
-                                                    <label class="telemetry-grid-label d-block mb-1">Target Partition / Block Device</label>
+                                                    <label for="mobilePhysicalTargetSelect" class="telemetry-grid-label d-block mb-1">Target Partition / Block Device</label>
                                                     <select id="mobilePhysicalTargetSelect" class="form-select form-select-sm mb-1">
                                                         <option value="">-- Detect targets first --</option>
                                                     </select>
@@ -246,7 +246,7 @@
                                                         <input type="text" id="mobilePhysicalManualTarget" class="form-control form-control-sm font-monospace" placeholder="/dev/block/mmcblk0 (whole disk) or a specific partition path">
                                                     </div>
 
-                                                    <label class="telemetry-grid-label d-block mb-1">Acquisition Engine</label>
+                                                    <label for="mobilePhysicalFormat" class="telemetry-grid-label d-block mb-1">Acquisition Engine</label>
                                                     <select id="mobilePhysicalFormat" class="form-select form-select-sm mb-1">
                                                         <option value="dc3dd" selected>dc3dd (raw, hashing built in)</option>
                                                         <option value="dcfldd">dcfldd (raw, hashing built in)</option>
@@ -280,18 +280,18 @@
                                                 <button type="button" class="btn btn-outline-success btn-sm mb-2" onclick="readSimCard()"><i class="bi bi-sim me-1"></i>Read Card</button>
                                                 <div id="mobileSimStatus" class="small text-subtle mb-2"></div>
                                                 <label class="form-label fw-bold text-light small mb-1">Card Read Output (raw):</label>
-                                                <pre id="mobileSimOutput" class="log-window" style="height: clamp(150px, 30vh, 300px);">[No card read yet.]</pre>
+                                                <pre id="mobileSimOutput" class="log-window" style="height: clamp(150px, 30vh, 300px);" tabindex="0" role="region" aria-label="Mobile sim output">[No card read yet.]</pre>
                                             </div>
 
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder-symlink me-1"></i>Case &amp; Evidence Metadata</div>
                                             <div class="row g-2 mb-2">
-                                                <div class="col-md-4"><label class="visually-hidden" for="mobileCaseNum">Case Number</label><input type="text" id="mobileCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
-                                                <div class="col-md-4"><label class="visually-hidden" for="mobileEvidenceId">Evidence ID</label><input type="text" id="mobileEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
-                                                <div class="col-md-4"><label class="visually-hidden" for="mobileExaminer">Examiner Name</label><input type="text" id="mobileExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="mobileCaseNum">Case Number</label><input type="text" id="mobileCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="mobileEvidenceId">Evidence ID</label><input type="text" id="mobileEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
+                                                <div class="col-12 col-xl-4"><label class="visually-hidden" for="mobileExaminer">Examiner Name</label><input type="text" id="mobileExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
                                             </div>
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder2-open me-1"></i>Destination Directory</div>
                                             <div class="input-group input-group-sm">
-                                                <input type="text" id="mobileDest" class="form-control" value="/mnt" oninput="renderMobilePrereqChecklist()" onchange="renderMobilePrereqChecklist()">
+                                                <input type="text" id="mobileDest" class="form-control" value="/mnt" oninput="renderMobilePrereqChecklist()" onchange="renderMobilePrereqChecklist()" aria-label="Destination directory">
                                                 <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'mobileDest')">
                                                     <i class="bi bi-folder2-open me-1"></i>Browse
                                                 </button>
@@ -312,7 +312,7 @@
                                                 Mobile acquisition tools don't report a reliable global percentage, so this shows live bytes-on-disk and the tool's own log instead of a progress bar.
                                             </div>
                                             <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
-                                            <pre id="mobileLogOutput" class="log-window" style="height: clamp(180px, 45vh, 420px);">[Mobile forensics module idle and ready.]</pre>
+                                            <pre id="mobileLogOutput" class="log-window" style="height: clamp(180px, 45vh, 420px);" tabindex="0" role="region" aria-label="Mobile acquisition log">[Mobile forensics module idle and ready.]</pre>
                                         </div>
                                     </div>
                                 </div>

@@ -26,16 +26,16 @@
                                                 <span id="lblHealthBadge" class="badge bg-secondary">UNCHECKED</span>
                                             </div>
                                             <div class="row g-2 align-items-center mb-2">
-                                                <div class="col-md-6">
+                                                <div class="col-12 col-xl-6">
                                                     <label class="visually-hidden" for="driveSelect">Target Source Drive</label>
                                                     <select id="driveSelect" class="form-select form-select-sm drive-select" data-placeholder="-- Choose Target Source Drive --" onchange="onAcquisitionDriveChange()">
                                                         <option value="">-- Choose Target Source Drive --</option>
                                                     </select>
                                                 </div>
-                                                <div class="col-md-3">
+                                                <div class="col-6 col-xl-3">
                                                     <button class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan</button>
                                                 </div>
-                                                <div class="col-md-3">
+                                                <div class="col-6 col-xl-3">
                                                     <button type="button" class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="startDevicePreview()" title="Preview this drive read-only before acquiring"><i class="bi bi-eye me-1"></i>Preview</button>
                                                 </div>
                                             </div>
@@ -69,7 +69,7 @@
                                             <div class="p-2 bg-dark border border-info rounded-2 mb-3" id="encryptedVolumeBlock">
                                                 <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
                                                     <span class="small fw-bold text-info"><i class="bi bi-shield-lock-fill me-1"></i>Encryption</span>
-                                                    <select id="encVolTypeSelect" class="form-select form-select-sm" style="width:auto;" onchange="onEncVolTypeChange()">
+                                                    <select id="encVolTypeSelect" class="form-select form-select-sm" style="width:auto;" onchange="onEncVolTypeChange()" aria-label="Encryption type">
                                                         <option value="bitlocker">BitLocker</option>
                                                         <option value="luks">LUKS</option>
                                                         <option value="veracrypt">VeraCrypt</option>
@@ -113,9 +113,9 @@
 
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder-symlink me-1"></i>Case & Evidence Metadata</div>
                                             <div class="row g-2 mb-2">
-                                                <div class="col-md-4"><label class="visually-hidden" for="caseNum">Case Number</label><input type="text" id="caseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
-                                                <div class="col-md-4"><label class="visually-hidden" for="evidenceId">Evidence ID</label><input type="text" id="evidenceId" class="form-control form-control-sm" placeholder="Evidence ID (e.g. ITEM-01)"></div>
-                                                <div class="col-md-4"><label class="visually-hidden" for="examiner">Examiner Name</label><input type="text" id="examiner" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="caseNum">Case Number</label><input type="text" id="caseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="evidenceId">Evidence ID</label><input type="text" id="evidenceId" class="form-control form-control-sm" placeholder="Evidence ID (e.g. ITEM-01)"></div>
+                                                <div class="col-12 col-xl-4"><label class="visually-hidden" for="examiner">Examiner Name</label><input type="text" id="examiner" class="form-control form-control-sm" placeholder="Examiner Name"></div>
                                             </div>
                                             <div id="acqPrecheck" class="small mb-2" role="status" aria-live="polite" style="display:none;"></div>
                                             <input type="text" id="notes" class="form-control form-control-sm" placeholder="Notes / Chain of Custody Remarks">
@@ -124,8 +124,8 @@
                                         <div class="col-md-6">
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-sliders me-1"></i>Advanced Acquisition Controls</div>
                                             <div class="row g-2 mb-1">
-                                                <div class="col-md-4">
-                                                    <label class="telemetry-grid-label d-block">Format</label>
+                                                <div class="col-12 col-xl-4">
+                                                    <label for="imageFormatSelect" class="telemetry-grid-label d-block">Format</label>
                                                     <select id="imageFormatSelect" class="form-select form-select-sm" onchange="toggleFormatControls()">
                                                         <option value="dd" selected>Raw / dc3dd (.dd)</option>
                                                         <option value="dcfldd">Raw / dcfldd (.dd)</option>
@@ -136,16 +136,16 @@
                                                         <option value="logical">Logical / Selected Folders</option>
                                                     </select>
                                                 </div>
-                                                <div class="col-md-4">
-                                                    <label class="telemetry-grid-label d-block">E01 Compression</label>
+                                                <div class="col-6 col-xl-4">
+                                                    <label for="compressionSelect" class="telemetry-grid-label d-block">E01 Compression</label>
                                                     <select id="compressionSelect" class="form-select form-select-sm" disabled>
                                                         <option value="fast" selected>Fast</option>
                                                         <option value="best">Best</option>
                                                         <option value="none">None</option>
                                                     </select>
                                                 </div>
-                                                <div class="col-md-4">
-                                                    <label class="telemetry-grid-label d-block">Segment Split Size</label>
+                                                <div class="col-6 col-xl-4">
+                                                    <label for="splitSizeSelect" class="telemetry-grid-label d-block">Segment Split Size</label>
                                                     <select id="splitSizeSelect" class="form-select form-select-sm" disabled>
                                                         <option value="2000M" selected>2 GB (Default)</option>
                                                         <option value="650M">650 MB (CD)</option>
@@ -159,7 +159,7 @@
                                             <div id="ddrescueOptionRow" class="mb-2" style="display:none;">
                                                 <div class="row g-2 mb-1">
                                                     <div class="col-md-6">
-                                                        <label class="telemetry-grid-label d-block mb-1">Recovery Strategy</label>
+                                                        <label for="ddrescueStrategySelect" class="telemetry-grid-label d-block mb-1">Recovery Strategy</label>
                                                         <select id="ddrescueStrategySelect" class="form-select form-select-sm" onchange="updateDdrescueStrategyHelp()">
                                                             <option value="stage1_fast" selected>1. Fast Copy (No-Scrape/No-Trim - Safest for Weak Heads)</option>
                                                             <option value="stage2_trim">2. Edge Trimming Pass (Isolate Bad Sectors)</option>
@@ -168,7 +168,7 @@
                                                         </select>
                                                     </div>
                                                     <div class="col-md-3">
-                                                        <label class="telemetry-grid-label d-block mb-1">Bad Sector Retries</label>
+                                                        <label for="ddrescueRetries" class="telemetry-grid-label d-block mb-1">Bad Sector Retries</label>
                                                         <input type="number" class="form-control form-control-sm" id="ddrescueRetries" value="3" min="0" max="10">
                                                     </div>
                                                     <div class="col-md-3 align-self-end">
@@ -232,7 +232,7 @@
                                                     <label class="form-check-label small text-light" for="chainAutoAnalyzeCheck">
                                                         Automatically run Auto Analyze when this finishes
                                                     </label>
-                                                    <i class="bi bi-info-circle text-subtle ms-1" data-bs-toggle="tooltip" data-bs-placement="right"
+                                                    <i role="button" tabindex="0" class="bi bi-info-circle text-subtle ms-1" data-bs-toggle="tooltip" data-bs-placement="right"
                                                        title="If the acquisition completes successfully, detects the evidence type (Windows/Linux disk image) and immediately runs Auto Analyze's curated default tools against it - no second click needed. Only runs if a type could be determined; requires an active case."></i>
                                                 </div>
                                             </div>
@@ -250,7 +250,7 @@
                                                 <span id="progressPct" class="fw-bold fs-5 text-light">0.0%</span>
                                             </div>
                                             <div class="progress bg-secondary mb-2" style="height: 10px;">
-                                                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
+                                                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%" aria-label="Acquisition progress"></div>
                                             </div>
                                             <div class="row text-center align-items-center mb-2">
                                                 <div class="col-6 col-md-4"><small class="telemetry-label d-block">Speed</small><span id="speedVal" class="fw-bold text-warning">0.0 MB/s</span></div>
@@ -258,7 +258,7 @@
                                                 <div class="col-6 col-md-4"><small class="telemetry-label d-block">Bytes</small><span id="bytesVal" class="fw-bold text-light">0 / 0 GiB</span></div>
                                             </div>
                                             <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
-                                            <pre id="logOutput" class="log-window" style="height: clamp(140px, 30vh, 260px);">[System initialized and idle. Ready for disk acquisition job.]</pre>
+                                            <pre id="logOutput" class="log-window" style="height: clamp(140px, 30vh, 260px);" tabindex="0" role="region" aria-label="Acquisition log">[System initialized and idle. Ready for disk acquisition job.]</pre>
                                         </div>
                                     </div>
                                 </div>
