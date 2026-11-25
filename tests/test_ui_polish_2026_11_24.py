@@ -54,8 +54,8 @@ def test_mouse_targets_meet_wcag_24px():
 
 
 def test_phone_gutters_are_tightened():
-    m = re.search(r"@media \(max-width: 575\.98px\) \{(.*?)\n        \}", INDEX, re.S)
-    assert m and ".app-content-area > .container-fluid" in m.group(1)
+    blocks = re.findall(r"@media \(max-width: 575\.98px\) \{(.*?)\n        \}", INDEX, re.S)
+    assert any(".app-content-area > .container-fluid" in b for b in blocks)
 
 
 def test_explorer_breadcrumb_scrolls_to_current_folder_and_is_keyboard_usable():
@@ -158,3 +158,18 @@ def test_page_has_landmarks_and_a_level_one_heading():
     assert 'role="heading" aria-level="1"' in INDEX
     assert 'id="activeCaseBar" role="region" aria-label="Active case"' in INDEX
     assert 'id="appSidebar" role="navigation"' in INDEX
+
+
+# --- 2026-11-25 round 3 ------------------------------------------------------------------
+
+def test_reporting_header_puts_save_beside_the_title_on_short_widths():
+    assert 'id="reportHeaderLeft"' in REPORTING
+    m = re.search(r"@media \(max-width: 1100px\) \{(.*?)\n        \}", INDEX, re.S)
+    assert m and "#reportHeaderLeft { display: contents !important; }" in m.group(1)
+    assert "#reportHeaderSaveControls { order: 2; margin-left: auto; }" in m.group(1)
+    assert "#reportHeaderCaseMeta { order: 3; flex-basis: 100%; }" in m.group(1)
+
+
+def test_phone_timeline_table_keeps_a_readable_detail_column():
+    m = re.search(r"@media \(max-width: 575\.98px\) \{\s*\.case-timeline-scroll \{ overflow-x: auto; \}\s*\.case-timeline-table \{ min-width: 38rem; \}", INDEX)
+    assert m, "phone timeline min-width rule missing"

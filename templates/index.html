@@ -278,6 +278,13 @@
         @media (max-height: 700px) {
             .case-timeline-chart-box { height: 150px; }
         }
+        /* Phone: the three fixed columns (26.75rem) are wider than the pane (~270px), so the Detail
+           column collapsed to a few pixels and one row ran to 1,100px tall. The table keeps a
+           readable Detail width and the box scrolls sideways instead. */
+        @media (max-width: 575.98px) {
+            .case-timeline-scroll { overflow-x: auto; }
+            .case-timeline-table { min-width: 38rem; }
+        }
         /* A tapped outline button keeps its :hover fill on a touchscreen until the next tap
            elsewhere, so the Zoom Out button that replaces Zoom In under the finger looked
            pressed. Only the toggled-on state (.active) is filled there. */
@@ -741,6 +748,9 @@
             .card-header { padding-left: .75rem; padding-right: .75rem; }
             .settings-content, .help-content, .reports-content { padding: 10px; }
             .reports-content .card-body, .settings-content .card-body { padding: .65rem; }
+            /* Reporting header: Save fills its own row beside its (i) instead of floating right. */
+            #reportHeaderSaveControls { flex-basis: 100%; flex-wrap: nowrap !important; }
+            #btnSaveReportChanges { flex: 1; }
         }
 
         /* ---- 2026-11-24 polish round 2 ---- */
@@ -753,6 +763,15 @@
            kiosk-mode badge, Help section kickers): nothing renders under ~12px now. */
         .badge { font-size: max(.75em, 11.5px); }
         .badge .small, .badge.small { font-size: inherit; }
+        /* Reporting header on the kiosk / phone: the Save group wrapped onto its own third row
+           (~160px of a 600px screen before any content). Title + Save share row one, the
+           status / examiner controls take row two. */
+        @media (max-width: 1100px) {
+            #reportHeaderLeft { display: contents !important; }
+            #reportHeaderLeft > :first-child { order: 1; }
+            #reportHeaderSaveControls { order: 2; margin-left: auto; }
+            #reportHeaderCaseMeta { order: 3; flex-basis: 100%; }
+        }
         /* Short screens (the 1024x600 kiosk): nine 52px sidebar rows plus the toggle were 8px taller
            than the viewport, so even an empty page scrolled. 48px rows still clear 44px. */
         @media (max-height: 640px) {
