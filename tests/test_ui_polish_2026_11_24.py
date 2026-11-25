@@ -136,3 +136,25 @@ def test_placeholders_fit_their_fields():
         for i in ids:
             ph = re.search(r'id="%s"[^>]*placeholder="([^"]*)"' % i, html) or re.search(r'placeholder="([^"]*)"[^>]*id="%s"' % i, html)
             assert ph and len(ph.group(1).replace("&quot;", "\"")) <= 34, (i, ph and ph.group(1))  # longer ones were clipped on the 1024x600 kiosk
+
+
+# --- 2026-11-25 round 2 ------------------------------------------------------------------
+
+def test_layout_fills_viewport_without_a_hardcoded_navbar_height():
+    # `min-height: calc(100vh - 67px)` assumed one navbar height; the kiosk/phone header is
+    # taller, so short pages scrolled by 8px / 28px.
+    assert "calc(100vh - 67px)" not in INDEX
+    assert re.search(r"body \{ min-height: 100vh; display: flex; flex-direction: column; \}", INDEX)
+    assert re.search(r"\.app-layout \{[^}]*flex: 1 0 auto", INDEX)
+
+
+def test_short_screens_use_48px_sidebar_rows():
+    m = re.search(r"@media \(max-height: 640px\) \{(.*?)\n        \}", INDEX, re.S)
+    assert m and "padding-top: 10px; padding-bottom: 10px" in m.group(1)
+
+
+def test_page_has_landmarks_and_a_level_one_heading():
+    assert '<main class="app-content-area">' in INDEX and "</main>" in INDEX
+    assert 'role="heading" aria-level="1"' in INDEX
+    assert 'id="activeCaseBar" role="region" aria-label="Active case"' in INDEX
+    assert 'id="appSidebar" role="navigation"' in INDEX

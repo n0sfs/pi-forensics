@@ -56,10 +56,14 @@
             font-size: 0.85rem;
         }
 
+        /* The navbar's height varies (67px on desktop, 75px on the touch kiosk / wrapped phone
+           header), so a hard-coded `100vh - 67px` made a short page scroll by the difference
+           (8px on the kiosk). The body fills the viewport and the layout takes the remainder. */
+        body { min-height: 100vh; display: flex; flex-direction: column; }
         .app-layout {
             display: flex;
             align-items: stretch;
-            min-height: calc(100vh - 67px);
+            flex: 1 0 auto;
         }
 
         .app-sidebar {
@@ -749,11 +753,16 @@
            kiosk-mode badge, Help section kickers): nothing renders under ~12px now. */
         .badge { font-size: max(.75em, 11.5px); }
         .badge .small, .badge.small { font-size: inherit; }
+        /* Short screens (the 1024x600 kiosk): nine 52px sidebar rows plus the toggle were 8px taller
+           than the viewport, so even an empty page scrolled. 48px rows still clear 44px. */
+        @media (max-height: 640px) {
+            .app-sidebar .nav-link, .app-sidebar.compact .nav-link { padding-top: 10px; padding-bottom: 10px; }
+        }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-dark px-4 py-1">
-        <span class="navbar-brand fw-bold text-info fs-6 d-flex align-items-center">
+        <span class="navbar-brand fw-bold text-info fs-6 d-flex align-items-center" role="heading" aria-level="1">
             <i class="bi bi-shield-check text-cyan me-2"></i>Pi Forensics Suite
             <span class="text-subtle fw-normal ms-2" style="font-size: 0.75rem;" title="Installed application version - see Settings for update controls">v{{ app_version }}</span>
         </span>
@@ -836,7 +845,7 @@
 
     <!-- Application Module Tabs -->
     <div class="app-layout">
-        <div class="app-sidebar" id="appSidebar">
+        <div class="app-sidebar" id="appSidebar" role="navigation" aria-label="Main sections">
             <button class="sidebar-toggle-btn" id="sidebarToggleBtn" onclick="toggleSidebarCompact()" title="Expand/collapse sidebar" aria-label="Expand/collapse sidebar">
                 <i class="bi bi-chevron-double-left" id="sidebarToggleIcon"></i>
             </button>
@@ -902,7 +911,7 @@
             </ul>
         </div>
 
-        <div class="app-content-area">
+        <main class="app-content-area">
             <!-- Active Case Bar: persists across every tab below, unlike everything in .container-fluid.
                  Now the first row in .app-content-area (telemetry moved into the navbar above), so
                  the sidebar's align-items:stretch aligns its top edge with this bar's top edge.
@@ -913,7 +922,7 @@
                  app's one single legacy examiner-of-record, still used for job-form auto-fill, but
                  never the same thing as "who's actually working this case"). The station-wide stat
                  row (Total Cases, etc.) now shares this same row instead, right-aligned via ms-auto. -->
-            <div id="activeCaseBar" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap">
+            <div id="activeCaseBar" role="region" aria-label="Active case" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap">
                 <button id="btnCaseAction" class="btn btn-sm btn-outline-info fw-bold" onclick="openCaseManagerModal()">
                     <i class="bi bi-folder-plus me-1"></i><span id="btnCaseActionLabel">Create / Select Case</span>
                 </button>
@@ -948,7 +957,7 @@
 
                 </div>
             </div>
-        </div>
+        </main>
     </div>
 
 {% include 'modals/shared.html' %}
