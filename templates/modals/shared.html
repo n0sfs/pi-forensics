@@ -8,7 +8,7 @@
                 <div class="modal-body py-2">
                     <div class="d-flex align-items-center mb-3">
                         <span class="me-2 fw-bold text-muted small">Current Path:</span>
-                        <input type="text" id="modalCurrentPath" class="form-control form-control-sm font-monospace" value="/mnt" readonly aria-label="Current folder">
+                        <input type="text" id="modalCurrentPath" class="form-control form-control-sm font-monospace" value="{{ evidence_root or '/mnt' }}" readonly aria-label="Current folder">
                         <button class="btn btn-sm btn-outline-secondary ms-2 text-nowrap" onclick="navigateFolderUp()"><i class="bi bi-arrow-up me-1"></i>Up Level</button>
                     </div>
                     <div class="list-group list-group-flush border border-secondary rounded-2" id="folderList" style="max-height: 250px; overflow-y: auto; background-color: #090b10;"></div>
@@ -34,7 +34,7 @@
                         <div class="col-md-6"><input type="text" id="newCaseExaminer" class="form-control form-control-sm" readonly placeholder="Examiner (you)" title="Auto-filled from your logged-in account" aria-label="Examiner"></div>
                     </div>
                     <div class="input-group input-group-sm mb-2">
-                        <input type="text" id="newCaseParentDir" class="form-control" value="/mnt" placeholder="Where to create the case folder">
+                        <input type="text" id="newCaseParentDir" class="form-control" value="{{ evidence_root or '/mnt' }}" placeholder="Where to create the case folder">
                         <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'newCaseParentDir')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                     </div>
                     <textarea id="newCaseNotes" class="form-control form-control-sm mb-2" rows="2" placeholder="Notes (optional)"></textarea>

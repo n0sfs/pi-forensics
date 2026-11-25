@@ -20,7 +20,7 @@ from core.auth import (
     _safe_next_path, _effective_client_ip,
     _record_last_login, _is_locked_out, _record_auth_failure, _record_auth_success,
 )
-from core.config import get_app_version, render_doc_html
+from core.config import get_app_version, render_doc_html, EVIDENCE_ROOT
 
 auth_routes_bp = Blueprint('auth_routes', __name__)
 
@@ -84,6 +84,7 @@ def index():
         is_local_kiosk=is_local_kiosk_request(),
         offline_tiles_json=json.dumps(get_offline_tiles_info()),
         app_version=get_app_version(),
+        evidence_root=EVIDENCE_ROOT,
     )
 
 

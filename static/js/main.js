@@ -102,12 +102,17 @@ let encVolUnlockedFromDrive = ''; // the #driveSelect value when the volume was 
 let encVolActiveType = null; // 'bitlocker'|'luks'|'veracrypt' - which type is currently unlocked, needed to route Lock/status calls to the right /api/${type}/... endpoint
 let encVolMountConsumedByJob = false; // true once a started job is actually using the unlocked mount, so fetchProgress() knows the backend's own post-job auto-unlock applies
 
-let currentBrowsePath = '/mnt';
+// The station's evidence root (FORENSIC_ROOT, default /mnt), from the server (index.html).
+// Every default path below used to be a hard-coded '/mnt', so a station configured with any
+// other root opened File Explorer and every Destination on a folder the server refuses.
+const EVIDENCE_ROOT_PATH = (typeof window !== 'undefined' && window.EVIDENCE_ROOT) || '/mnt';
+
+let currentBrowsePath = EVIDENCE_ROOT_PATH;
 let folderModalInstance = null;
 let modalPickerMode = 'folder';
 let targetInputIdForModal = 'destPath';
 
-let explorerPath = '/mnt';
+let explorerPath = EVIDENCE_ROOT_PATH;
 let activeSelectedFile = null;
 let activeSelectedIsDir = false;
 
@@ -1540,6 +1545,7 @@ function buildExplorerListingTable() {
         selTh.classList.add('hit-cell');
         selTh.onclick = (ev) => { if (ev.target === selTh) selectAllCb.click(); };
         headRow.appendChild(selTh);
+        table.classList.add('has-select'); // pins the select + Name columns on sideways scroll (index.html)
     }
     [['name', 'Name'], ['size', 'Size'], ['modified', 'Modified'], ['accessed', 'Accessed'], ['changed', 'Changed'], ['created', 'Created']].forEach(([field, label]) => {
         const th = document.createElement('th');
@@ -1670,6 +1676,7 @@ function buildFileTableRow(tbody, item) {
         if (tagIndicator) labelSpan.appendChild(tagIndicator);
     }
     nameTd.appendChild(labelSpan);
+    nameTd.title = item.name; // the Name column is cut to 180-220px on the kiosk / phone
 
     const sizeTd = document.createElement('td');
     sizeTd.className = 'text-subtle font-monospace';
@@ -2642,6 +2649,9 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
     row.appendChild(toggle);
     row.appendChild(icon);
     row.appendChild(label);
+    // Labels are one line with an ellipsis in the narrow tree column: the full name (or, for a
+    // real folder, its full path) is the tooltip.
+    row.title = node.path || adapter.label(node);
     li.appendChild(row);
 
     let childrenUl = null;
@@ -2781,7 +2791,7 @@ async function autoExpandTreeSubtree(li) {
 // shows that case's evidence, matching every other job-launcher tab's
 // auto-fill; falls back to the full evidence root when no case is selected.
 function getExplorerRootPath() {
-    return (activeCase && activeCase.case_folder) ? activeCase.case_folder : '/mnt';
+    return (activeCase && activeCase.case_folder) ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
 }
 
 async function initExplorerTree(forceRebuild) {
@@ -2798,7 +2808,10 @@ async function initExplorerTree(forceRebuild) {
         const rootUl = document.createElement('ul');
         rootUl.className = 'explorer-tree';
         const rootPath = getExplorerRootPath();
-        const rootNode = { path: rootPath, name: rootPath, kind: 'dir' };
+        // The folder's own name, not its full path: the path wrapped mid-word in the narrow tree
+        // column (2026-11-25). The full path is the row's tooltip and is in the breadcrumb.
+        const rootName = rootPath.split('/').filter(Boolean).pop() || rootPath;
+        const rootNode = { path: rootPath, name: rootName, kind: 'dir' };
         const rootLi = renderExplorerTreeNode(rootNode, explorerTreeRealAdapter(), []);
         rootUl.appendChild(rootLi);
         container.appendChild(rootUl);
@@ -5370,8 +5383,14 @@ function renderExplorerPathBreadcrumb(path) {
             pathLabel.appendChild(sep);
         }
     });
-    // Narrow screens: keep the current folder (the last crumb) in view.
+    // Narrow screens: keep the current folder (the last crumb) in view. Setting it once was not
+    // enough - the listing is usually built while its tab is hidden (scrollWidth 0), so on a
+    // phone the current folder stayed cut off. Re-pin whenever the crumb row changes size.
     pathLabel.scrollLeft = pathLabel.scrollWidth;
+    if (!pathLabel._pinObserver && typeof ResizeObserver !== 'undefined') {
+        pathLabel._pinObserver = new ResizeObserver(() => { pathLabel.scrollLeft = pathLabel.scrollWidth; });
+        pathLabel._pinObserver.observe(pathLabel);
+    }
 }
 
 async function loadExplorer(path) {
@@ -7703,7 +7722,7 @@ async function runSelectedVideoContactSheet() {
 
 async function runImageVideoContactSheet() {
     if (!explorerImageSelected) return;
-    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const destinationDir = activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
     // Same missing-feedback issue as runSelectedVideoContactSheet() above.
     showToast('Generating video contact sheet...', 'info');
     try {
@@ -8700,7 +8719,7 @@ async function runSelectedThumbcacheParse() {
 
 async function runImageThumbcacheParse() {
     if (!explorerImagePath) return;
-    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const destinationDir = activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
     try {
         const res = await fetch('/api/image/parse_thumbcache', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -11057,7 +11076,7 @@ async function extractExplorerImageSelected() {
     // dumping extracted files loose at the evidence root - matches how
     // every other job-launcher already routes its output once a case is
     // active (see applyActiveCaseToFields()).
-    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const destinationDir = activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
     try {
         const res = await fetch('/api/image/extract', {
             method: 'POST',
@@ -11192,7 +11211,7 @@ async function runImageStrings() {
 async function runImageGeolocationExport() {
     if (!explorerImagePath) return;
     // Same active-case-folder-first destination as every other in-image action.
-    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const destinationDir = activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
     try {
         const res = await fetch('/api/image/start_geolocation_kml', {
             method: 'POST',
@@ -11212,7 +11231,7 @@ async function runImageGeolocationExport() {
 
 async function runImageHashManifest() {
     if (!explorerImagePath) return;
-    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const destinationDir = activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
     // D2: automatically cross-references against every saved SHA256 hash
     // list (matching this action's own hardcoded algorithm below) - opt-
     // out, not opt-in, same reasoning the single-file Check Against Hash
@@ -11254,7 +11273,7 @@ async function runImageYaraSweep() {
         showToast('No saved YARA rulesets yet - create one in Settings > Case & Reporting > YARA Rulesets.', 'warning');
         return;
     }
-    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const destinationDir = activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
     await startImageToolJob('YARA Rule Sweep', '/api/image/yara_sweep', {
         image_path: explorerImagePath, destination_dir: destinationDir, ruleset_ids: rulesets.map(rs => rs.id),
         case_folder: activeCase ? activeCase.case_folder : null,
@@ -11352,7 +11371,7 @@ async function materializeShadowCopy(storeIndex) {
     if (!explorerImagePath) return;
     const imagePath = explorerImagePath, imageOffset = explorerImageOffset;
     if (!await appConfirm({ title: `Copy out shadow copy #${storeIndex}?`, message: 'Its full contents are written to a new image file, which can be as large as the original volume and may take a while. It runs as a background job you can stop from the progress bar.', confirmText: 'Copy out', danger: false })) return;
-    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const destinationDir = activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
     try {
         const res = await fetch('/api/image/start_materialize_shadow_copy', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -11373,7 +11392,7 @@ async function materializeShadowCopy(storeIndex) {
 
 async function startImageTriageScan() {
     if (!explorerImagePath) return;
-    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const destinationDir = activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
     // This is a real background job over a whole image, so asking first is
     // proportionate - and it is the only way the examiner's saved keyword
     // lists can reach a scan launched from here. The route has always
@@ -11409,7 +11428,7 @@ async function runImageRecoverDeleted() {
     if (!explorerImagePath) return;
     const imagePath = explorerImagePath;
     if (!await appConfirm({ title: 'Recover deleted files from this image?', message: 'Recovery odds vary by filesystem type - NTFS/FAT usually work well, ext filesystems often do not, since data is frequently already gone by the time a file shows as deleted. A recovered file may also be partially overwritten if its space was reused - verify hashes where it matters. It runs as a background job you can stop from the progress bar.', confirmText: 'Recover files', danger: false })) return;
-    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const destinationDir = activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH;
     await startImageToolJob('Recover Deleted Files', '/api/image/recover_deleted', { image_path: imagePath, destination_dir: destinationDir });
 }
 
@@ -21395,7 +21414,7 @@ async function createCase() {
     if (!(await confirmDiscardUnsavedReportingChanges())) return;
     const caseNumber = document.getElementById("newCaseNumber")?.value.trim();
     const examiner = document.getElementById("newCaseExaminer")?.value.trim();
-    const parentDir = document.getElementById("newCaseParentDir")?.value.trim() || '/mnt';
+    const parentDir = document.getElementById("newCaseParentDir")?.value.trim() || EVIDENCE_ROOT_PATH;
     const notes = document.getElementById("newCaseNotes")?.value.trim();
     const statusEl = document.getElementById("createCaseStatus");
 
@@ -21818,7 +21837,7 @@ async function clearActiveCase() {
             const caseNumEl = document.getElementById(caseNumId);
             const destEl = document.getElementById(destId);
             if (caseNumEl && caseNumEl.value === activeCase.case_number) caseNumEl.value = '';
-            if (destEl && destEl.value === activeCase.case_folder) destEl.value = '/mnt';
+            if (destEl && destEl.value === activeCase.case_folder) destEl.value = EVIDENCE_ROOT_PATH;
         });
         clearPerCaseJobFields();
     }
@@ -22146,7 +22165,7 @@ function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
     targetInputIdForModal = targetInputId;
     
     const destPathEl = document.getElementById(targetInputIdForModal);
-    currentBrowsePath = destPathEl ? (destPathEl.value.trim() || '/mnt') : '/mnt';
+    currentBrowsePath = destPathEl ? (destPathEl.value.trim() || EVIDENCE_ROOT_PATH) : EVIDENCE_ROOT_PATH;
     
     const titleEl = document.getElementById("modalTitle");
     const selectBtn = document.getElementById("modalSelectBtn");
@@ -22401,7 +22420,7 @@ async function startLogicalAcquisition() {
     if (!hashes.length) return showToast('Select at least one verification hash algorithm.', 'warning');
 
     const makeZip = document.getElementById("logicalAcqMakeZip")?.checked || false;
-    const destPath = document.getElementById("destPath")?.value.trim() || '/mnt';
+    const destPath = document.getElementById("destPath")?.value.trim() || EVIDENCE_ROOT_PATH;
     const metadata = {
         case_number: document.getElementById("caseNum")?.value || "UNASSIGNED",
         evidence_id: document.getElementById("evidenceId")?.value || "ITEM-01",
@@ -23380,7 +23399,7 @@ function refreshLiveCollectionImportDestInfo() {
         el.innerHTML = `<i class="bi bi-folder-check me-1"></i>Will import into case <strong>${escapeHtmlForPopup(activeCase.case_number)}</strong>.`;
         el.className = 'small text-subtle mb-2';
     } else {
-        const destPath = document.getElementById('destPath')?.value || '/mnt';
+        const destPath = document.getElementById('destPath')?.value || EVIDENCE_ROOT_PATH;
         el.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i>No active case - will import into ` +
             `<strong>${escapeHtmlForPopup(destPath)}</strong> as an unassigned evidence item. Select or create a case first if this should be tied to one.`;
         el.className = 'small text-warning mb-2';
@@ -23458,7 +23477,7 @@ async function startImportLiveCollection() {
     if (!sel || !sel.value) return showToast('Select the USB drive to import from first.', 'warning');
     const selected = Array.from(document.querySelectorAll('.live-collection-run-check:checked')).map((c) => c.value);
     if (!selected.length) return showToast('Select at least one result run to import.', 'warning');
-    const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById('destPath')?.value || '/mnt');
+    const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById('destPath')?.value || EVIDENCE_ROOT_PATH);
     const metadata = {
         case_number: activeCase ? activeCase.case_number : (document.getElementById('caseNum')?.value || 'UNASSIGNED'),
         // Was #examinerName, an id that doesn't exist anywhere in this app
@@ -24651,7 +24670,7 @@ async function startRecoveryTool() {
         return;
     }
 
-    const dest = document.getElementById("recoveryDest")?.value || "/mnt";
+    const dest = document.getElementById("recoveryDest")?.value || EVIDENCE_ROOT_PATH;
     const metadata = {
         case_number: document.getElementById("recoveryCaseNum")?.value || "UNASSIGNED",
         evidence_id: document.getElementById("recoveryEvidenceId")?.value || "ITEM-01",
@@ -25073,7 +25092,7 @@ async function pullIosCrashReports() {
     const udid = document.getElementById("mobileIosSelect")?.value;
     const statusEl = document.getElementById("mobileIosCrashReportStatus");
     if (!udid) return showToast('Select a connected, trusted iOS device first.', 'warning');
-    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : '/mnt');
+    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH);
     if (statusEl) statusEl.textContent = 'Pulling crash reports...';
     try {
         const res = await fetch('/api/mobile/ios/pull_crash_reports', {
@@ -25129,7 +25148,7 @@ async function readSimCard() {
     const outputEl = document.getElementById("mobileSimOutput");
     const statusEl = document.getElementById("mobileSimStatus");
     if (readerIndex === '' || readerIndex === undefined) return showToast('Detect readers and select one first.', 'warning');
-    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : '/mnt');
+    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH);
     if (statusEl) statusEl.textContent = 'Reading card...';
     if (outputEl) outputEl.textContent = 'Running...';
     try {
@@ -25198,7 +25217,7 @@ async function pullWhatsappKey() {
     const dev = _currentlySelectedAndroidDevice();
     const statusEl = document.getElementById("mobileWhatsappKeyStatus");
     if (!dev) return showToast('Select a connected Android device first.', 'warning');
-    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : '/mnt');
+    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH);
     if (statusEl) statusEl.textContent = 'Pulling key file...';
     try {
         const res = await fetch(`/api/mobile/android/${encodeURIComponent(dev.serial)}/pull_whatsapp_key`, {
@@ -25244,7 +25263,7 @@ async function startCompanionUnifiedExtraction() {
         confirmText: 'Install and extract',
     })) return;
 
-    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : '/mnt');
+    const destinationDir = document.getElementById("mobileDest")?.value || (activeCase ? activeCase.case_folder : EVIDENCE_ROOT_PATH);
     const metadata = {
         case_number: document.getElementById("mobileCaseNum")?.value || 'UNASSIGNED',
         evidence_id: document.getElementById("mobileEvidenceId")?.value || 'ITEM-01',
@@ -25356,7 +25375,7 @@ async function startMtpPull() {
     const device = mtpDevicesCache[idx];
     if (!device) return showToast('List MTP Devices and select one first.', 'warning');
 
-    const dest = document.getElementById("mobileDest")?.value || '/mnt';
+    const dest = document.getElementById("mobileDest")?.value || EVIDENCE_ROOT_PATH;
     const metadata = {
         case_number: document.getElementById("mobileCaseNum")?.value || "UNASSIGNED",
         evidence_id: document.getElementById("mobileEvidenceId")?.value || "ITEM-01",
@@ -25396,7 +25415,7 @@ async function startIosBackup() {
     const udid = document.getElementById("mobileIosSelect")?.value;
     if (!udid) return showToast("Select a trusted iOS device first.", 'warning');
 
-    const dest = document.getElementById("mobileDest")?.value || '/mnt';
+    const dest = document.getElementById("mobileDest")?.value || EVIDENCE_ROOT_PATH;
     const encryptEnabled = document.getElementById("mobileIosEncryptToggle")?.checked;
     const encrypt_password = encryptEnabled ? (document.getElementById("mobileIosEncryptPassword")?.value || '') : '';
 
@@ -25437,7 +25456,7 @@ async function startAndroidAcquisition() {
     if (!serial) return showToast("Select an authorized Android device first.", 'warning');
 
     const mode = document.getElementById("mobileAndroidMode")?.value || 'pull';
-    const dest = document.getElementById("mobileDest")?.value || '/mnt';
+    const dest = document.getElementById("mobileDest")?.value || EVIDENCE_ROOT_PATH;
 
     const metadata = {
         case_number: document.getElementById("mobileCaseNum")?.value || "UNASSIGNED",
@@ -25626,7 +25645,18 @@ async function fetchWhoami() {
         const indicator = document.getElementById("whoamiIndicator");
         if (indicator && currentUsername) {
             indicator.style.display = '';
-            indicator.textContent = `Logged in as: ${currentUsername} (${currentUserRole})`;
+            // "Logged in as:" is dropped below 1280px (2026-11-25) so the case button fits on
+            // the header's first row on the 1024px kiosk; the person icon and the full sentence
+            // as the tooltip / accessible name carry the same meaning. Text nodes only.
+            indicator.textContent = '';
+            const icon = document.createElement('i');
+            icon.className = 'bi bi-person-circle me-1 d-xl-none';
+            icon.setAttribute('aria-hidden', 'true');
+            const prefix = document.createElement('span');
+            prefix.className = 'd-none d-xl-inline';
+            prefix.textContent = 'Logged in as: ';
+            indicator.append(icon, prefix, document.createTextNode(`${currentUsername} (${currentUserRole})`));
+            indicator.setAttribute('aria-label', `Logged in as: ${currentUsername} (${currentUserRole}) - account options`);
         }
         applyUserMgmtPermissionGating();
         applySidebarPermissionGating();
@@ -27370,7 +27400,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     // leaving Case Details permanently empty for that whole page load with nothing to
     // re-trigger a render once the cache did arrive (real bug, found via live testing).
     await fetchCustomFieldDefs();
-    initActiveCaseBar(); // sets activeCase synchronously (if restored) - must run before File Explorer's first build below so it roots at the right case from the start, not '/mnt' then a moment later re-rooting
+    initActiveCaseBar(); // sets activeCase synchronously (if restored) - must run before File Explorer's first build below so it roots at the right case from the start, not the evidence root then a moment later re-rooting
     // Explicit call, not just relying on applyActiveCaseToFields()'s own internal call above -
     // that function returns early with no case active, which would otherwise leave the Guided
     // Workflow card showing its default "--" markup instead of the real empty state on a fresh

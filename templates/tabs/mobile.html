@@ -291,7 +291,7 @@
                                             </div>
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder2-open me-1"></i>Destination Directory</div>
                                             <div class="input-group input-group-sm">
-                                                <input type="text" id="mobileDest" class="form-control" value="/mnt" oninput="renderMobilePrereqChecklist()" onchange="renderMobilePrereqChecklist()" aria-label="Destination directory">
+                                                <input type="text" id="mobileDest" class="form-control" value="{{ evidence_root or '/mnt' }}" oninput="renderMobilePrereqChecklist()" onchange="renderMobilePrereqChecklist()" aria-label="Destination directory">
                                                 <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'mobileDest')">
                                                     <i class="bi bi-folder2-open me-1"></i>Browse
                                                 </button>

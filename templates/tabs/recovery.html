@@ -39,16 +39,16 @@
                                             <div id="recoveryDestCol" class="mb-2">
                                                 <label class="telemetry-grid-label d-block mb-1">Destination</label>
                                                 <div class="input-group input-group-sm">
-                                                    <input type="text" id="recoveryDest" class="form-control" value="/mnt" aria-label="Destination directory">
+                                                    <input type="text" id="recoveryDest" class="form-control" value="{{ evidence_root or '/mnt' }}" aria-label="Destination directory">
                                                     <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'recoveryDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                                 </div>
-                                                <div class="small text-warning mt-1"><i class="bi bi-exclamation-triangle me-1"></i>Don't recover straight into <code>/mnt</code> - Browse to a case folder (or another drive), so the recovered files land in their own folder and never on the station's own SD card or the drive being recovered from.</div>
+                                                <div class="small text-warning mt-1"><i class="bi bi-exclamation-triangle me-1"></i>Don't recover straight into <code>{{ evidence_root or '/mnt' }}</code> - Browse to a case folder (or another drive), so the recovered files land in their own folder and never on the station's own SD card or the drive being recovered from.</div>
                                             </div>
 
                                             <div id="recoveryMapfileRow" class="mb-2" style="display:none;">
                                                 <label class="telemetry-grid-label d-block mb-1">Mapfile Path (.map)</label>
                                                 <div class="input-group input-group-sm">
-                                                    <input type="text" id="recoveryMapfilePath" class="form-control font-monospace" placeholder="/mnt/CASE_ITEM-01_ddrescue.map">
+                                                    <input type="text" id="recoveryMapfilePath" class="form-control font-monospace" placeholder="{{ evidence_root or '/mnt' }}/CASE_ITEM-01_ddrescue.map">
                                                     <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('mapfile')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                                 </div>
                                             </div>

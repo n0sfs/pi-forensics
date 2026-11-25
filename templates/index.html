@@ -78,10 +78,8 @@
 
         .app-sidebar.compact { width: 58px; }
 
-        /* Height matches #activeCaseBar's own rendered height (padding: 6px
-           20px around btn-sm content = 51px) so the collapse toggle lines up
-           edge-to-edge with the case bar sitting next to it, not just
-           approximately - confirmed via getBoundingClientRect(), not guessed. */
+        /* 51px: the height of the case bar that used to sit beside it (the case button moved
+           into the header on 2026-11-25); kept so the nav rows below stay where they were. */
         .sidebar-toggle-btn {
             display: flex;
             align-items: center;
@@ -777,6 +775,49 @@
         @media (max-height: 640px) {
             .app-sidebar .nav-link, .app-sidebar.compact .nav-link { padding-top: 10px; padding-bottom: 10px; }
         }
+        /* ---- 2026-11-25 review ---- */
+        /* Header row one now carries the case button + stats (#activeCaseBar moved up). */
+        .navbar #activeCaseBar { min-width: 0; }
+        .navbar #reportingStatsRow { font-size: .85rem; }
+        /* File Explorer listing: Name and the select box stay pinned while the six columns
+           scroll sideways, so the Created column (off-screen on the kiosk and phone) is
+           readable next to the file it belongs to. The header row stays pinned on vertical
+           scroll at every width. */
+        #explorerContainer thead th { position: sticky; top: 0; z-index: 2; background: #1b1f27; }
+        #explorerContainer table { border-collapse: separate; border-spacing: 0; }
+        #explorerContainer table.has-select tr > :first-child { position: sticky; left: 0; z-index: 1; background: #12151c; width: 44px; min-width: 44px; max-width: 44px; box-sizing: border-box; }
+        #explorerContainer table.has-select tr > :nth-child(2) { position: sticky; left: 44px; z-index: 1; background: #12151c; box-shadow: 6px 0 6px -4px rgba(0,0,0,.7); }
+        #explorerContainer table.has-select thead tr > :first-child, #explorerContainer table.has-select thead tr > :nth-child(2) { z-index: 3; background: #1b1f27; }
+        #explorerContainer tr.file-item:hover > td { background: var(--hover-bg); }
+        #explorerContainer tr.file-item.active > td { background: var(--active-bg); }
+        /* The 1rem file icon made the name line taller than the Size/date cells beside it, so
+           their text sat 2-3px higher than the name. */
+        #explorerContainer tbody td .bi { line-height: 1; }
+        @media (max-width: 1100px) {
+            #explorerContainer table.has-select tr > :nth-child(2) { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+        }
+        @media (max-width: 575.98px) {
+            /* A phone's listing is ~290px wide: a pinned Name left too little room for a
+               150px timestamp, so Created slid under it. Nothing is pinned here; the row
+               scrolls as one, every column reachable in full. */
+            #explorerContainer table.has-select tr > :nth-child(-n+2) { position: static; box-shadow: none; }
+            #explorerContainer table.has-select tr > :nth-child(2) { max-width: 180px; }
+        }
+        /* Folder tree: long names (the case root showed its full path) wrapped mid-word inside the
+           narrow tree column. One line, ellipsis, full name as the tooltip. */
+        .explorer-tree-node > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* Reporting / Settings / Help sub-tab strips wrapped to two rows on the kiosk (~50px).
+           One swipeable row below 1200px, as on a phone. */
+        @media (min-width: 768px) and (max-width: 1199.98px) {
+            .settings-nav, .help-nav, .reports-nav {
+                flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity;
+                scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 92%, transparent);
+                mask-image: linear-gradient(90deg, #000 92%, transparent);
+            }
+            .settings-nav::-webkit-scrollbar, .help-nav::-webkit-scrollbar, .reports-nav::-webkit-scrollbar { display: none; }
+            .settings-nav .list-group-item, .help-nav .list-group-item, .reports-nav .list-group-item { scroll-snap-align: start; white-space: nowrap; flex-shrink: 0; }
+            .reports-nav-break { display: none; }
+        }
     </style>
 </head>
 <body>
@@ -834,7 +875,21 @@
             </div>
         </div>
 
-        <div class="d-flex align-items-center gap-2" style="order: 1;">
+        <!-- Active Case Bar (2026-11-25): the case button and the station-wide stat row
+             (Total Cases, etc. - examiner-selected under Settings > Case & Reporting, rendered by
+             loadReportingStats()/renderReportingStatCard()) used to be a second bar of their own
+             under this header. On the 1024x600 kiosk the two bars took 132px (22%) of the
+             screen before any content; they now share the header's first row, which already
+             had the room between the brand and the account menu (header + bar 132 -> 74px). -->
+        <div id="activeCaseBar" role="region" aria-label="Active case" class="d-flex align-items-center gap-3 text-nowrap me-auto ms-md-3" style="order: 1;">
+            <button id="btnCaseAction" class="btn btn-sm btn-outline-info fw-bold" onclick="openCaseManagerModal()">
+                <i class="bi bi-folder-plus me-1"></i><span id="btnCaseActionLabel">Create / Select Case</span>
+            </button>
+            <!-- display:none needs !important here: d-flex carries display:flex !important. -->
+            <div id="reportingStatsRow" class="d-flex flex-nowrap align-items-center gap-3 text-nowrap" style="display:none !important;"></div>
+        </div>
+
+        <div class="d-flex align-items-center gap-2 ms-auto" style="order: 1;">
             {% if is_local_kiosk %}
             {# Re-enabled after live debugging on the deployed station: attached
                directly to the already-running kiosk's Wayland session over SSH,
@@ -931,37 +986,6 @@
         </div>
 
         <main class="app-content-area">
-            <!-- Active Case Bar: persists across every tab below, unlike everything in .container-fluid.
-                 Now the first row in .app-content-area (telemetry moved into the navbar above), so
-                 the sidebar's align-items:stretch aligns its top edge with this bar's top edge.
-                 The Case #/Examiner display that used to live here (2026-09-10) moved to Reporting's
-                 own "Case Report" header instead (#reportHeaderCaseSummary in reporting.html) - it's
-                 alongside the actual report it describes there, and can show the real, full
-                 multi-examiner list (currentExaminersList) instead of just activeCase.examiner (this
-                 app's one single legacy examiner-of-record, still used for job-form auto-fill, but
-                 never the same thing as "who's actually working this case"). The station-wide stat
-                 row (Total Cases, etc.) now shares this same row instead, right-aligned via ms-auto. -->
-            <div id="activeCaseBar" role="region" aria-label="Active case" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap">
-                <button id="btnCaseAction" class="btn btn-sm btn-outline-info fw-bold" onclick="openCaseManagerModal()">
-                    <i class="bi bi-folder-plus me-1"></i><span id="btnCaseActionLabel">Create / Select Case</span>
-                </button>
-
-                <!-- Station-wide stat row (Total Cases, etc.) - examiner-selected (Settings >
-                     Case & Reporting), one card per enabled stat. Right-aligned within this same
-                     bar (ms-auto) rather than its own separate row - loadReportingStats()/
-                     renderReportingStatCard() in main.js are unchanged, only the markup's
-                     location/wrapper class changed. It's already deliberately station-wide, not
-                     case-scoped (stays visible with no case selected), so it belongs next to the
-                     rest of this app's persistent global chrome, not buried in one specific tab. -->
-                <!-- The plain style="display:none" here needs the explicit !important - this
-                     element also carries Bootstrap's d-flex utility (display:flex !important),
-                     which otherwise beats a non-important inline style regardless of source
-                     order and would flash the row visible-but-empty for a moment before JS
-                     ever runs. Same gotcha this app has already hit (and fixed) more than once
-                     elsewhere for exactly this class/inline-style combination. -->
-                <div id="reportingStatsRow" class="d-flex flex-wrap align-items-center gap-3 text-nowrap ms-auto" style="display:none !important;"></div>
-            </div>
-
             <div class="container-fluid px-3 px-md-4">
                 <div class="tab-content" id="forensicTabContent">
 {% include 'tabs/home.html' %}
@@ -1004,6 +1028,9 @@
         // tiles, else null - renderKmlViewer() (main.js) uses this to fall back to locally-cached
         // map imagery instead of blank tiles when tile.openstreetmap.org can't be reached.
         window.OFFLINE_TILES = {{ offline_tiles_json | safe }};
+        // FORENSIC_ROOT (core/config.py EVIDENCE_ROOT) - the default folder for File Explorer,
+        // Browse and every Destination field (main.js EVIDENCE_ROOT_PATH).
+        window.EVIDENCE_ROOT = {{ (evidence_root or '/mnt') | tojson }};
     </script>
     <script src="/static/js/main.js"></script>
 </body>

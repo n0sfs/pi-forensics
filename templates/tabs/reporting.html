@@ -831,7 +831,7 @@
                                                             <button type="button" id="caseTimelineRebuildBtn" class="btn btn-xs btn-outline-light text-nowrap" style="display:none;" onclick="loadCaseTimeline(true)" title="Rescan every evidence item in this case and rebuild the timeline"><i class="bi bi-arrow-repeat me-1"></i>Rebuild</button>
                                                         </span>
                                                     </div>
-                                                    <div id="caseTimelineScroll" class="case-timeline-scroll small border border-secondary rounded-2 bg-app-dark">
+                                                    <div id="caseTimelineScroll" tabindex="0" role="region" aria-label="Evidence timeline entries" class="case-timeline-scroll small border border-secondary rounded-2 bg-app-dark">
                                                         <table class="table table-sm table-dark mb-0 case-timeline-table">
                                                             <colgroup><col class="ctl-col-time"><col class="ctl-col-type"><col class="ctl-col-act"><col></colgroup>
                                                             <thead><tr class="text-info"><th>Timestamp <span id="caseTimelineTzLabel" class="fw-normal text-subtle"></span></th><th>Type</th><th>Activity</th><th>Detail</th></tr></thead>
