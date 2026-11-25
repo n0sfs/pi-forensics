@@ -76,7 +76,7 @@
                                                     </select>
                                                 </div>
                                                 <label class="visually-hidden" for="encVolCredential">Recovery Key / Password</label>
-                                                <input type="password" id="encVolCredential" class="form-control form-control-sm mb-1" placeholder="Recovery Key / Password (optional)">
+                                                <input type="password" id="encVolCredential" class="form-control form-control-sm mb-1" placeholder="Recovery key or password">
                                                 <div id="encVolCredentialHelp" class="small text-subtle mb-2">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); not used to decrypt anything unless "Also unlock this volume now" below is checked.</div>
                                                 <div class="form-check form-switch mb-1">
                                                     <input class="form-check-input" type="checkbox" id="encVolSourceToggle" onchange="toggleEncVolSection()">
@@ -113,8 +113,8 @@
 
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder-symlink me-1"></i>Case & Evidence Metadata</div>
                                             <div class="row g-2 mb-2">
-                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="caseNum">Case Number</label><input type="text" id="caseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
-                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="evidenceId">Evidence ID</label><input type="text" id="evidenceId" class="form-control form-control-sm" placeholder="Evidence ID (e.g. ITEM-01)"></div>
+                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="caseNum">Case Number</label><input type="text" id="caseNum" class="form-control form-control-sm" placeholder="Case number" title="e.g. 2026-CASE-01"></div>
+                                                <div class="col-12 col-sm-6 col-xl-4"><label class="visually-hidden" for="evidenceId">Evidence ID</label><input type="text" id="evidenceId" class="form-control form-control-sm" placeholder="Evidence ID" title="e.g. ITEM-01"></div>
                                                 <div class="col-12 col-xl-4"><label class="visually-hidden" for="examiner">Examiner Name</label><input type="text" id="examiner" class="form-control form-control-sm" placeholder="Examiner Name"></div>
                                             </div>
                                             <div id="acqPrecheck" class="small mb-2" role="status" aria-live="polite" style="display:none;"></div>

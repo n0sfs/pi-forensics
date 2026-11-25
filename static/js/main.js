@@ -642,7 +642,7 @@ async function runAcqPrecheck() {
     }
     if (seq !== acqPrecheckSeq) return;
     evEl.placeholder = data.suggested_evidence_id
-        ? `${data.suggested_evidence_id} (next free)` : 'Evidence ID (e.g. ITEM-01)';
+        ? `${data.suggested_evidence_id} (next free)` : 'Evidence ID';
     box.innerHTML = '';
     const line = (cls, icon, text) => {
         const d = document.createElement('div');
@@ -15708,7 +15708,7 @@ function renderExaminersList() {
         addInput.type = 'text';
         addInput.className = 'form-control form-control-sm';
         addInput.style.maxWidth = '200px';
-        addInput.placeholder = 'Add an examiner name...';
+        addInput.placeholder = 'Add examiner';
         addInput.setAttribute('aria-label', 'Add an examiner name');
         addInput.title = "No user accounts are configured on this station, so examiner names can't be checked against a real account list yet.";
         const doAdd = () => {

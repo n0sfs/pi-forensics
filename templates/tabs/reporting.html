@@ -206,7 +206,7 @@
                                                             <div class="input-group input-group-sm mb-2">
                                                                 <span class="input-group-text bg-app-dark border-secondary text-info" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
                                                                       title="Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab."><i class="bi bi-search"></i></span>
-                                                                <input type="text" id="repSearchInput" class="form-control bg-app-dark text-light border-secondary" placeholder="Quick search this case..." oninput="runCaseSearch()">
+                                                                <input type="text" id="repSearchInput" class="form-control bg-app-dark text-light border-secondary" placeholder="Search this case" oninput="runCaseSearch()">
                                                             </div>
                                                             <!-- Hidden by default (no d-flex/Bootstrap display utility on this
                                                                  element, so a plain style.display toggle in runCaseSearch()
@@ -425,7 +425,7 @@
                                                     <div class="row g-2 mb-2">
                                                         <div class="col-md-6">
                                                             <label class="visually-hidden" for="newCaseNoteAssignedTo">Assign to (optional)</label>
-                                                            <input type="text" id="newCaseNoteAssignedTo" class="form-control form-control-sm" placeholder="Assign to (optional) - a colleague's name, for a hand-off">
+                                                            <input type="text" id="newCaseNoteAssignedTo" class="form-control form-control-sm" placeholder="Assign to (optional)" title="A colleague's name, for a hand-off">
                                                         </div>
                                                     </div>
                                                     <div class="mb-2">
@@ -779,7 +779,7 @@
                                                     <div class="case-timeline-toolbar d-flex flex-wrap align-items-center gap-2 mb-2 small">
                                                         <div class="input-group input-group-sm case-timeline-search">
                                                             <span class="input-group-text bg-app-dark border-secondary text-subtle"><i class="bi bi-search"></i></span>
-                                                            <input type="search" id="caseTimelineSearchInput" class="form-control form-control-sm" placeholder="Search path, activity, contact, message text..." oninput="onCaseTimelineSearchInput()" aria-label="Search the timeline" autocomplete="off" spellcheck="false">
+                                                            <input type="search" id="caseTimelineSearchInput" class="form-control form-control-sm" placeholder="Search timeline" title="Search path, activity, contact, message text" oninput="onCaseTimelineSearchInput()" aria-label="Search the timeline" autocomplete="off" spellcheck="false">
                                                         </div>
                                                         <select id="caseTimelineEvidenceSelect" class="form-select form-select-sm w-auto" onchange="renderCaseTimeline()" aria-label="Evidence item">
                                                             <option value="__all__">All Evidence Items</option>

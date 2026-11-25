@@ -406,6 +406,10 @@
            scrolls horizontally inside its own pane rather than overflowing the page (matches this
            app's existing convention for wide content, e.g. the Help modal's Tool Reference table). */
         #explorerContainer { overflow-x: auto; }
+        /* One line per row (2026-11-25): the four date columns used to wrap to 3 lines each, so a
+           touch row was 70px and the kiosk listing showed 1 of 30 entries. The pane scrolls sideways
+           instead of stacking the timestamps. */
+        #explorerContainer tbody td { white-space: nowrap; vertical-align: middle; }
         .file-item { cursor: pointer; padding: 6px 10px; font-size: 0.85rem; border-bottom: 1px solid rgba(255,255,255,0.04); font-weight: 500; }
         .file-item:hover { background-color: var(--hover-bg); }
         .file-item.active { background-color: var(--active-bg); color: white !important; }
@@ -672,18 +676,18 @@
             /* Checkbox/radio rows were 22-26px tall (hash algorithms, export sections, timeline
                filters, plugin lists): the whole row is the target, 44px tall. */
             .form-check { min-height: 44px; display: flex; align-items: center; margin-bottom: 0; }
-            .form-check-inline { display: inline-flex; }
+            .form-check-inline { display: inline-flex; min-width: 44px; }
             .form-check .form-check-input { margin-top: 0; flex-shrink: 0; }
-            .form-check .form-check-label { padding-left: .4rem; }
+            .form-check .form-check-label { padding-left: .4rem; align-self: stretch; display: flex; align-items: center; }
             /* Expand/collapse rows ("Previous exports", "Customize contents", prerequisites)
                were 21px tall; group toggles in Files & Artifacts were 33px. */
-            details > summary { padding-top: 11px; padding-bottom: 11px; }
+            details > summary { padding-top: 12px; padding-bottom: 12px; }
             .report-file-group-toggle { min-height: 44px; }
             /* Help (i) icons: the old -0.7rem margin made their hit area overlap the control
                beside them (Case Status, Save Report Changes, Timeline month), so a tap on the
                edge of those opened a tooltip instead. 44px wide, and only 8px taller than the
                glyph so it never reaches into the row above or below. */
-            i.bi[data-bs-toggle="tooltip"] { padding: 8px 15px; margin: -8px 0; }
+            i.bi[data-bs-toggle="tooltip"] { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 44px; height: 44px; padding: 0 16px; margin: -14px 0; }
             /* Bare <label><input> chips (Timeline source/category filters, Pattern of Life
                toggles) are not .form-check rows - same 44px row height. */
             label:has(> input.form-check-input) { min-height: 44px; display: inline-flex; align-items: center; }
@@ -696,11 +700,16 @@
             #explorerContainer .form-check-input { width: 24px; height: 24px; }
             #explorerContainer .hit-cell { cursor: pointer; min-width: 44px; }
             #explorerContainer thead th { height: 44px; }
+            /* Breadcrumb crumbs were 16-21px tall; a finger-sized row, scrolling sideways if long. */
+            #explorerPath [role="link"][tabindex] { min-height: 44px; min-width: 44px; justify-content: center; padding: 0 4px; }
         }
         /* Mouse: .btn-xs buttons (Refresh, Preview, Rebuild, Actions...) were 17-22px tall and
            expand/collapse rows 21px, under the 24px WCAG 2.2 minimum target. */
         @media (pointer: fine) {
             .btn-xs { min-height: 26px; }
+            /* Switch / checkbox captions were 21px rows; the label is part of the click target. */
+            label:has(> input.form-check-input) { min-height: 24px; display: inline-flex; align-items: center; }
+            .form-check .form-check-label { min-height: 24px; display: inline-flex; align-items: center; }
             details > summary { padding-top: 2px; padding-bottom: 2px; }
             .btn-close { position: relative; }
             .btn-close::after { content: ''; position: absolute; left: 50%; top: 50%; width: 24px; height: 24px; transform: translate(-50%, -50%); }
@@ -716,7 +725,7 @@
            cut off by the ellipsis. It now scrolls, and is scrolled to the end on every load. */
         #explorerPath { overflow-x: auto; white-space: nowrap; text-overflow: clip; scrollbar-width: none; min-width: 0; }
         #explorerPath::-webkit-scrollbar { display: none; }
-        #explorerPath [role="link"] { cursor: pointer; text-decoration: underline; }
+        #explorerPath [role="link"] { cursor: pointer; text-decoration: underline; display: inline-flex; align-items: center; min-height: 24px; padding: 0 2px; }
         /* Export / template previews: an empty preview was a glaring white slab in the dark UI
            until the first Refresh. Dark until a document is loaded into it. */
         #exportPreviewFrame:not([data-loaded]), #rtbPreviewFrame:not([data-loaded]) { background: var(--bg-dark) !important; }
@@ -879,7 +888,7 @@
                      ancestor, so a tab button living in a different <ul> never gets deactivated
                      automatically, breaking single-active-tab behavior. The divider below is just
                      a visual separator, positioned via a plain <li> so this can't regress that. -->
-                <li><hr class="border-secondary my-2 mx-2"></li>
+                <li role="presentation"><hr class="border-secondary my-2 mx-2" role="none"></li>
                 <li class="nav-item" role="presentation">
                     <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" onclick="loadChainOfCustodyLog(); loadUserGroups(); loadTlsStatus(); loadCaseReportingSettings();" title="Settings">
                         <i class="bi bi-gear-wide-connected"></i><span class="tab-label">Settings</span>
